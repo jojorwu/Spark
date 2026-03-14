@@ -47,7 +47,7 @@ impl Engine {
                 }
                 Event::AboutToWait => {
                     self.scene.update_all_transforms();
-                    // self.renderer.render(&self.scene); // Next step: Implement render call
+                    self.renderer.draw_frame();
                 }
                 _ => (),
             }
