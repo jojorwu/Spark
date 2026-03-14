@@ -2,6 +2,8 @@ use spark_core::Engine;
 use spark_renderer::pipeline::Pipeline;
 use std::fs;
 
+use spark_script::ScriptHost;
+
 fn main() {
     env_logger::init();
     log::info!("Spark Editor starting...");
@@ -51,12 +53,12 @@ fn main() {
         global_transform: Mat4::IDENTITY,
         parent: None,
         children: Vec::new(),
-        data: NodeData::Mesh { vertex_count: 3 },
+        data: NodeData::Mesh { vertex_count: 3, texture_id: None, vertex_buffer_id: Some(0) },
     };
 
     engine.scene.add_node(engine.scene.root, triangle_node);
 
-    let camera_node = Node {
+    let _camera_node = Node {
         name: "MainCamera".to_string(),
         local_transform: Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0)),
         global_transform: Mat4::IDENTITY,
@@ -65,7 +67,11 @@ fn main() {
         data: NodeData::Camera { fov: 45.0, near: 0.1, far: 100.0 },
     };
 
-    engine.scene.add_node(engine.scene.root, camera_node);
+    engine.scene.add_node(engine.scene.root, _camera_node);
+
+    let mut script_host = ScriptHost::new();
+    // Initialize .NET logic would go here if we had a valid runtimeconfig.json
+    // script_host.init_dotnet("path/to/runtimeconfig.json");
 
     engine.run();
 }

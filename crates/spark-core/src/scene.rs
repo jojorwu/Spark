@@ -7,7 +7,8 @@ pub enum NodeData {
     None,
     Mesh {
         vertex_count: u32,
-        // In the future, this will hold a reference to a GPU buffer handle
+        texture_id: Option<String>,
+        vertex_buffer_id: Option<u32>,
     },
     Camera {
         fov: f32,
@@ -89,7 +90,7 @@ impl Scene {
         self.update_transforms(self.root);
     }
 
-    pub fn collect_render_data(&self) -> (Vec<(Mat4, u32)>, Mat4) {
+    pub fn collect_render_data(&self) -> (Vec<(Mat4, u32, Option<String>, Option<u32>)>, Mat4) {
         let mut renderables = Vec::new();
         let mut view_matrix = Mat4::IDENTITY;
         self.collect_data_recursive(self.root, &mut renderables, &mut view_matrix);
@@ -99,13 +100,13 @@ impl Scene {
     fn collect_data_recursive(
         &self,
         node_key: NodeKey,
-        renderables: &mut Vec<(Mat4, u32)>,
+        renderables: &mut Vec<(Mat4, u32, Option<String>, Option<u32>)>,
         view_matrix: &mut Mat4,
     ) {
         if let Some(node) = self.nodes.get(node_key) {
-            match node.data {
-                NodeData::Mesh { vertex_count } => {
-                    renderables.push((node.global_transform, vertex_count));
+            match &node.data {
+                NodeData::Mesh { vertex_count, texture_id, vertex_buffer_id } => {
+                    renderables.push((node.global_transform, *vertex_count, texture_id.clone(), *vertex_buffer_id));
                 }
                 NodeData::Camera { .. } => {
                     *view_matrix = node.global_transform.inverse();

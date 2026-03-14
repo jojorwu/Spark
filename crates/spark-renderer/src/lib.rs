@@ -124,7 +124,7 @@ impl Renderer {
 
     pub fn draw_frame(
         &mut self,
-        renderables: &[(spark_math::Mat4, u32)],
+        renderables: &[(spark_math::Mat4, u32, Option<String>, Option<u32>)],
         view_proj: spark_math::Mat4,
         window: &Window,
     ) {
@@ -208,7 +208,7 @@ impl Renderer {
     fn record_command_buffer(
         &self,
         image_index: u32,
-        renderables: &[(spark_math::Mat4, u32)],
+        renderables: &[(spark_math::Mat4, u32, Option<String>, Option<u32>)],
         view_proj: spark_math::Mat4,
     ) {
         let command_buffer = self.command_buffers[self.current_frame];
@@ -248,10 +248,6 @@ impl Renderer {
                     pipeline.graphics_pipeline,
                 );
 
-                if let Some(vb) = &self.vertex_buffer {
-                    self.device.device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
-                }
-
                 if !self.descriptor_sets.is_empty() {
                     self.device.device.cmd_bind_descriptor_sets(
                         command_buffer,
@@ -263,7 +259,14 @@ impl Renderer {
                     );
                 }
 
-                for (model, vertex_count) in renderables {
+                for (model, vertex_count, _texture_id, vertex_buffer_id) in renderables {
+                    if let Some(_id) = vertex_buffer_id {
+                        // In a full implementation, we'd look up the buffer by ID
+                        if let Some(vb) = &self.vertex_buffer {
+                             self.device.device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
+                        }
+                    }
+
                     let mut constants = [spark_math::Mat4::IDENTITY; 2];
                     constants[0] = *model;
                     constants[1] = view_proj;
@@ -443,6 +446,14 @@ impl Renderer {
     }
 
     pub fn create_texture(&self, width: u32, height: u32, pixels: &[u8]) -> Texture {
+        let size = (width * height * 4) as vk::DeviceSize;
+        let staging_buffer = self.create_buffer(
+            size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        );
+        self.upload_to_buffer(&staging_buffer, pixels);
+
         let image_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .extent(vk::Extent3D { width, height, depth: 1 })
@@ -466,8 +477,11 @@ impl Renderer {
         let memory = unsafe { self.device.device.allocate_memory(&alloc_info, None).unwrap() };
         unsafe { self.device.device.bind_image_memory(image, memory, 0).unwrap() };
 
-        // In a real implementation, we'd use a staging buffer to upload pixels
-        // For brevity in this turn, let's assume we just create the view and sampler
+        self.transition_image_layout(image, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
+        self.copy_buffer_to_image(staging_buffer.handle, image, width, height);
+        self.transition_image_layout(image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+
+        self.destroy_buffer(staging_buffer);
 
         let view_info = vk::ImageViewCreateInfo::default()
             .image(image)
@@ -579,6 +593,126 @@ impl Renderer {
         }
 
         Buffer { handle, memory, size }
+    }
+
+    fn transition_image_layout(
+        &self,
+        image: vk::Image,
+        old_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+    ) {
+        let command_buffer = self.begin_single_time_commands();
+
+        let barrier = vk::ImageMemoryBarrier::default()
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        let (src_stage, dst_stage) = match (old_layout, new_layout) {
+            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+            ),
+            (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+            ),
+            _ => panic!("Unsupported layout transition"),
+        };
+
+        unsafe {
+            self.device.device.cmd_pipeline_barrier(
+                command_buffer,
+                src_stage,
+                dst_stage,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier],
+            );
+        }
+
+        self.end_single_time_commands(command_buffer);
+    }
+
+    fn copy_buffer_to_image(&self, buffer: vk::Buffer, image: vk::Image, width: u32, height: u32) {
+        let command_buffer = self.begin_single_time_commands();
+
+        let region = vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(vk::Extent3D { width, height, depth: 1 });
+
+        unsafe {
+            self.device.device.cmd_copy_buffer_to_image(
+                command_buffer,
+                buffer,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
+        }
+
+        self.end_single_time_commands(command_buffer);
+    }
+
+    fn begin_single_time_commands(&self) -> vk::CommandBuffer {
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_pool(self.command_pool)
+            .command_buffer_count(1);
+
+        let command_buffer = unsafe {
+            self.device.device
+                .allocate_command_buffers(&alloc_info)
+                .unwrap()[0]
+        };
+
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        unsafe {
+            self.device.device
+                .begin_command_buffer(command_buffer, &begin_info)
+                .unwrap();
+        }
+
+        command_buffer
+    }
+
+    fn end_single_time_commands(&self, command_buffer: vk::CommandBuffer) {
+        unsafe {
+            self.device.device.end_command_buffer(command_buffer).unwrap();
+
+            let command_buffers = [command_buffer];
+            let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
+
+            let submits = [submit_info];
+            self.device.device
+                .queue_submit(self.device.graphics_queue, &submits, vk::Fence::null())
+                .unwrap();
+            self.device.device.queue_wait_idle(self.device.graphics_queue).unwrap();
+
+            self.device.device
+                .free_command_buffers(self.command_pool, &[command_buffer]);
+        }
     }
 
     pub fn upload_to_buffer<T: Copy>(&self, buffer: &Buffer, data: &[T]) {
