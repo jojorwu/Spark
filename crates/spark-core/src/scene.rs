@@ -36,6 +36,32 @@ impl Scene {
         if let Some(parent_node) = self.nodes.get_mut(parent) {
             parent_node.children.push(key);
         }
+        self.update_transforms(key);
         key
+    }
+
+    pub fn update_transforms(&mut self, start_node: NodeKey) {
+        let (parent_global, children) = if let Some(node) = self.nodes.get(start_node) {
+            let parent_global = if let Some(parent_key) = node.parent {
+                self.nodes.get(parent_key).map(|p| p.global_transform).unwrap_or(Mat4::IDENTITY)
+            } else {
+                Mat4::IDENTITY
+            };
+            (parent_global, node.children.clone())
+        } else {
+            return;
+        };
+
+        if let Some(node) = self.nodes.get_mut(start_node) {
+            node.global_transform = parent_global * node.local_transform;
+        }
+
+        for child in children {
+            self.update_transforms(child);
+        }
+    }
+
+    pub fn update_all_transforms(&mut self) {
+        self.update_transforms(self.root);
     }
 }

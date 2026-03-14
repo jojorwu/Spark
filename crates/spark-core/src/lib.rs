@@ -6,11 +6,13 @@ use winit::{
     window::WindowBuilder,
 };
 use crate::scene::Scene;
+use spark_renderer::Renderer;
 
 pub struct Engine {
     pub window: winit::window::Window,
     pub event_loop: Option<EventLoop<()>>,
     pub scene: Scene,
+    pub renderer: Renderer,
 }
 
 impl Engine {
@@ -21,10 +23,14 @@ impl Engine {
             .build(&event_loop)
             .expect("Failed to build window");
 
+        let renderer = Renderer::new(&window);
+        let scene = Scene::new();
+
         Self {
             window,
             event_loop: Some(event_loop),
-            scene: Scene::new(),
+            scene,
+            renderer,
         }
     }
 
@@ -40,7 +46,8 @@ impl Engine {
                     elwt.exit();
                 }
                 Event::AboutToWait => {
-                    // Update and Render logic goes here
+                    self.scene.update_all_transforms();
+                    // self.renderer.render(&self.scene); // Next step: Implement render call
                 }
                 _ => (),
             }

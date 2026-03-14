@@ -6,5 +6,7 @@ edition.workspace = true
 [dependencies]
 spark-math = { path = "../spark-math" }
 ash.workspace = true
+ash-window.workspace = true
+raw-window-handle.workspace = true
 log.workspace = true
 winit.workspace = true

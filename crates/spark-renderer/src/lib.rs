@@ -1,4 +1,4 @@
-use ash::{vk, Entry, Instance, Device};
+use ash::{vk, Entry, Instance, Device, extensions::khr::Surface, extensions::khr::Swapchain};
 use std::ffi::CString;
 use winit::window::Window;
 
@@ -6,12 +6,36 @@ use winit::window::Window;
 pub struct Renderer {
     entry: Entry,
     instance: Instance,
+    pdevice: vk::PhysicalDevice,
     device: Device,
+    surface_loader: Surface,
+    surface: vk::SurfaceKHR,
+    swapchain_loader: Swapchain,
+    swapchain: vk::SwapchainKHR,
+    swapchain_images: Vec<vk::Image>,
+    swapchain_image_views: Vec<vk::ImageView>,
 }
 
 impl Renderer {
     pub fn new(_window: &Window) -> Self {
         let entry = unsafe { Entry::load().expect("Failed to load Vulkan") };
+
+        let extensions = {
+            let mut ext = vec![Surface::name().as_ptr()];
+            #[cfg(target_os = "windows")]
+            {
+                use ash::extensions::khr::Win32Surface;
+                ext.push(Win32Surface::name().as_ptr());
+            }
+            #[cfg(target_os = "linux")]
+            {
+                use ash::extensions::khr::XlibSurface;
+                use ash::extensions::khr::WaylandSurface;
+                ext.push(XlibSurface::name().as_ptr());
+                ext.push(WaylandSurface::name().as_ptr());
+            }
+            ext
+        };
 
         let app_name = CString::new("Spark Engine").unwrap();
         let engine_name = CString::new("Spark").unwrap();
@@ -24,13 +48,17 @@ impl Renderer {
             .api_version(vk::API_VERSION_1_3);
 
         let instance_create_info = vk::InstanceCreateInfo::builder()
-            .application_info(&app_info);
+            .application_info(&app_info)
+            .enabled_extension_names(&extensions);
 
         let instance = unsafe {
             entry
                 .create_instance(&instance_create_info, None)
                 .expect("Failed to create Vulkan instance")
         };
+
+        let surface = vk::SurfaceKHR::null();
+        let surface_loader = Surface::new(&entry, &instance);
 
         let pdevices = unsafe {
             instance
@@ -49,8 +77,11 @@ impl Renderer {
             .queue_family_index(0)
             .queue_priorities(&queue_priorities);
 
+        let device_extension_names_raw = [Swapchain::name().as_ptr()];
+
         let device_create_info = vk::DeviceCreateInfo::builder()
-            .queue_create_infos(std::slice::from_ref(&queue_info));
+            .queue_create_infos(std::slice::from_ref(&queue_info))
+            .enabled_extension_names(&device_extension_names_raw);
 
         let device = unsafe {
             instance
@@ -58,10 +89,23 @@ impl Renderer {
                 .expect("Failed to create logical device")
         };
 
+        let swapchain_loader = Swapchain::new(&instance, &device);
+
+        let swapchain = vk::SwapchainKHR::null();
+        let swapchain_images = Vec::new();
+        let swapchain_image_views = Vec::new();
+
         Self {
             entry,
             instance,
+            pdevice,
             device,
+            surface_loader,
+            surface,
+            swapchain_loader,
+            swapchain,
+            swapchain_images,
+            swapchain_image_views,
         }
     }
 }
