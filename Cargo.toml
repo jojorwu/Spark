@@ -15,9 +15,10 @@ authors = ["Spark Contributors"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-ash = "0.37"
-ash-window = "0.12"
-raw-window-handle = "0.5"
+ash = "0.38"
+shaderc = "0.10"
+ash-window = "0.13"
+raw-window-handle = "0.6"
 winit = "0.29"
 glam = "0.24" # Fast math library
 log = "0.4"

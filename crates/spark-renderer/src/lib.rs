@@ -1,6 +1,9 @@
-use ash::{vk, Entry, Instance, Device, extensions::khr::Surface, extensions::khr::Swapchain};
+pub mod pipeline;
+
+use ash::{vk, Entry, Instance, Device, khr::surface::Instance as Surface, khr::swapchain::Device as Swapchain};
 use std::ffi::CString;
 use winit::window::Window;
+use crate::pipeline::Pipeline;
 
 #[allow(dead_code)]
 pub struct Renderer {
@@ -16,7 +19,7 @@ pub struct Renderer {
     swapchain_image_views: Vec<vk::ImageView>,
     swapchain_format: vk::Format,
     swapchain_extent: vk::Extent2D,
-    render_pass: vk::RenderPass,
+    pub render_pass: vk::RenderPass,
     framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -24,35 +27,36 @@ pub struct Renderer {
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
     current_frame: usize,
+    pipeline: Option<Pipeline>,
 }
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 impl Renderer {
     pub fn new(window: &Window) -> Self {
+        use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+
         let entry = unsafe { Entry::load().expect("Failed to load Vulkan") };
 
         let app_name = CString::new("Spark Engine").unwrap();
         let engine_name = CString::new("Spark").unwrap();
 
-        let app_info = vk::ApplicationInfo::builder()
+        let app_info = vk::ApplicationInfo::default()
             .application_name(&app_name)
             .application_version(vk::make_api_version(0, 0, 1, 0))
             .engine_name(&engine_name)
             .engine_version(vk::make_api_version(0, 0, 1, 0))
             .api_version(vk::API_VERSION_1_3);
 
-        let extensions = vec![
-            Surface::name().as_ptr(),
-            #[cfg(target_os = "windows")]
-            ash::extensions::khr::Win32Surface::name().as_ptr(),
-            #[cfg(target_os = "linux")]
-            ash::extensions::khr::XlibSurface::name().as_ptr(),
-        ];
+        let display_handle = window.display_handle().unwrap().as_raw();
+        let window_handle = window.window_handle().unwrap().as_raw();
 
-        let instance_create_info = vk::InstanceCreateInfo::builder()
+        let extensions = ash_window::enumerate_required_extensions(display_handle)
+            .expect("Failed to enumerate required extensions");
+
+        let instance_create_info = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
-            .enabled_extension_names(&extensions);
+            .enabled_extension_names(extensions);
 
         let instance = unsafe {
             entry
@@ -60,7 +64,10 @@ impl Renderer {
                 .expect("Failed to create Vulkan instance")
         };
 
-        let surface = vk::SurfaceKHR::null(); // Placeholder since we have version issues with ash-window
+        let surface = unsafe {
+            ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)
+                .expect("Failed to create surface")
+        };
         let surface_loader = Surface::new(&entry, &instance);
 
         let pdevices = unsafe {
@@ -72,13 +79,13 @@ impl Renderer {
         let pdevice = pdevices[0];
 
         let queue_priorities = [1.0];
-        let queue_info = vk::DeviceQueueCreateInfo::builder()
+        let queue_info = vk::DeviceQueueCreateInfo::default()
             .queue_family_index(0)
             .queue_priorities(&queue_priorities);
 
-        let device_extension_names_raw = [Swapchain::name().as_ptr()];
+        let device_extension_names_raw = [ash::khr::swapchain::NAME.as_ptr()];
 
-        let device_create_info = vk::DeviceCreateInfo::builder()
+        let device_create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(std::slice::from_ref(&queue_info))
             .enabled_extension_names(&device_extension_names_raw);
 
@@ -90,14 +97,78 @@ impl Renderer {
 
         let swapchain_loader = Swapchain::new(&instance, &device);
 
-        // Use defaults for now as we don't have a real surface
-        let format = vk::Format::B8G8R8A8_UNORM;
-        let extent = vk::Extent2D { width: window.inner_size().width, height: window.inner_size().height };
-        let swapchain = vk::SwapchainKHR::null();
-        let images = Vec::new();
-        let views = Vec::new();
+        let surface_format = unsafe {
+            surface_loader
+                .get_physical_device_surface_formats(pdevice, surface)
+                .unwrap()[0]
+        };
 
-        let render_pass = Self::create_render_pass(&device, format);
+        let surface_caps = unsafe {
+            surface_loader
+                .get_physical_device_surface_capabilities(pdevice, surface)
+                .unwrap()
+        };
+
+        let mut extent = surface_caps.current_extent;
+        if extent.width == u32::MAX {
+            extent.width = window.inner_size().width;
+            extent.height = window.inner_size().height;
+        }
+
+        let mut image_count = surface_caps.min_image_count + 1;
+        if surface_caps.max_image_count > 0 && image_count > surface_caps.max_image_count {
+            image_count = surface_caps.max_image_count;
+        }
+
+        let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
+            .surface(surface)
+            .min_image_count(image_count)
+            .image_color_space(surface_format.color_space)
+            .image_format(surface_format.format)
+            .image_extent(extent)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .pre_transform(surface_caps.current_transform)
+            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(vk::PresentModeKHR::FIFO)
+            .clipped(true)
+            .image_array_layers(1);
+
+        let swapchain = unsafe {
+            swapchain_loader
+                .create_swapchain(&swapchain_create_info, None)
+                .expect("Failed to create swapchain")
+        };
+
+        let images = unsafe {
+            swapchain_loader
+                .get_swapchain_images(swapchain)
+                .expect("Failed to get swapchain images")
+        };
+
+        let views: Vec<vk::ImageView> = images
+            .iter()
+            .map(|&image| {
+                let create_info = vk::ImageViewCreateInfo::default()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(surface_format.format)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    });
+                unsafe {
+                    device
+                        .create_image_view(&create_info, None)
+                        .expect("Failed to create image view")
+                }
+            })
+            .collect();
+
+        let render_pass = Self::create_render_pass(&device, surface_format.format);
         let framebuffers = Self::create_framebuffers(&device, render_pass, &views, extent);
 
         let command_pool = Self::create_command_pool(&device);
@@ -117,7 +188,7 @@ impl Renderer {
             swapchain,
             swapchain_images: images,
             swapchain_image_views: views,
-            swapchain_format: format,
+            swapchain_format: surface_format.format,
             swapchain_extent: extent,
             render_pass,
             framebuffers,
@@ -127,13 +198,15 @@ impl Renderer {
             render_finished_semaphores,
             in_flight_fences,
             current_frame: 0,
+            pipeline: None,
         }
     }
 
+    pub fn set_pipeline(&mut self, pipeline: Pipeline) {
+        self.pipeline = Some(pipeline);
+    }
+
     pub fn draw_frame(&mut self) {
-        if self.swapchain == vk::SwapchainKHR::null() {
-            return;
-        }
         unsafe {
             self.device
                 .wait_for_fences(
@@ -143,15 +216,20 @@ impl Renderer {
                 )
                 .expect("Failed to wait for fence");
 
-            let (image_index, _is_suboptimal) = self
-                .swapchain_loader
-                .acquire_next_image(
-                    self.swapchain,
-                    u64::MAX,
-                    self.image_available_semaphores[self.current_frame],
-                    vk::Fence::null(),
-                )
-                .expect("Failed to acquire swapchain image");
+            let result = self.swapchain_loader.acquire_next_image(
+                self.swapchain,
+                u64::MAX,
+                self.image_available_semaphores[self.current_frame],
+                vk::Fence::null(),
+            );
+
+            let image_index = match result {
+                Ok((index, _)) => index,
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                    return;
+                }
+                Err(e) => panic!("Failed to acquire swapchain image: {:?}", e),
+            };
 
             self.device
                 .reset_fences(&[self.in_flight_fences[self.current_frame]])
@@ -171,7 +249,7 @@ impl Renderer {
             let command_buffers = [self.command_buffers[self.current_frame]];
             let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
 
-            let submit_info = vk::SubmitInfo::builder()
+            let submit_info = vk::SubmitInfo::default()
                 .wait_semaphores(&wait_semaphores)
                 .wait_dst_stage_mask(&wait_stages)
                 .command_buffers(&command_buffers)
@@ -182,21 +260,25 @@ impl Renderer {
             self.device
                 .queue_submit(
                     graphics_queue,
-                    &[submit_info.build()],
+                    &[submit_info],
                     self.in_flight_fences[self.current_frame],
                 )
                 .expect("Failed to submit draw command");
 
             let swapchains = [self.swapchain];
             let image_indices = [image_index];
-            let present_info = vk::PresentInfoKHR::builder()
+            let present_info = vk::PresentInfoKHR::default()
                 .wait_semaphores(&signal_semaphores)
                 .swapchains(&swapchains)
                 .image_indices(&image_indices);
 
-            self.swapchain_loader
-                .queue_present(graphics_queue, &present_info)
-                .expect("Failed to present swapchain image");
+            let result = self.swapchain_loader.queue_present(graphics_queue, &present_info);
+            match result {
+                Ok(_) => {},
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
+                }
+                Err(e) => panic!("Failed to present swapchain image: {:?}", e),
+            }
 
             self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
         }
@@ -205,7 +287,7 @@ impl Renderer {
     fn record_command_buffer(&self, image_index: u32) {
         let command_buffer = self.command_buffers[self.current_frame];
 
-        let begin_info = vk::CommandBufferBeginInfo::builder();
+        let begin_info = vk::CommandBufferBeginInfo::default();
 
         unsafe {
             self.device
@@ -218,7 +300,7 @@ impl Renderer {
                 },
             }];
 
-            let render_pass_info = vk::RenderPassBeginInfo::builder()
+            let render_pass_info = vk::RenderPassBeginInfo::default()
                 .render_pass(self.render_pass)
                 .framebuffer(self.framebuffers[image_index as usize])
                 .render_area(vk::Rect2D {
@@ -233,6 +315,15 @@ impl Renderer {
                 vk::SubpassContents::INLINE,
             );
 
+            if let Some(pipeline) = &self.pipeline {
+                self.device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    pipeline.graphics_pipeline,
+                );
+                self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+            }
+
             self.device.cmd_end_render_pass(command_buffer);
 
             self.device
@@ -242,7 +333,7 @@ impl Renderer {
     }
 
     fn create_render_pass(device: &Device, format: vk::Format) -> vk::RenderPass {
-        let color_attachment = vk::AttachmentDescription::builder()
+        let color_attachment = vk::AttachmentDescription::default()
             .format(format)
             .samples(vk::SampleCountFlags::TYPE_1)
             .load_op(vk::AttachmentLoadOp::CLEAR)
@@ -252,15 +343,15 @@ impl Renderer {
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
 
-        let color_attachment_ref = vk::AttachmentReference::builder()
+        let color_attachment_ref = vk::AttachmentReference::default()
             .attachment(0)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
-        let subpass = vk::SubpassDescription::builder()
+        let subpass = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(std::slice::from_ref(&color_attachment_ref));
 
-        let dependency = vk::SubpassDependency::builder()
+        let dependency = vk::SubpassDependency::default()
             .src_subpass(vk::SUBPASS_EXTERNAL)
             .dst_subpass(0)
             .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
@@ -268,7 +359,7 @@ impl Renderer {
             .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
             .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
 
-        let render_pass_info = vk::RenderPassCreateInfo::builder()
+        let render_pass_info = vk::RenderPassCreateInfo::default()
             .attachments(std::slice::from_ref(&color_attachment))
             .subpasses(std::slice::from_ref(&subpass))
             .dependencies(std::slice::from_ref(&dependency));
@@ -290,7 +381,7 @@ impl Renderer {
             .iter()
             .map(|&view| {
                 let attachments = [view];
-                let framebuffer_info = vk::FramebufferCreateInfo::builder()
+                let framebuffer_info = vk::FramebufferCreateInfo::default()
                     .render_pass(render_pass)
                     .attachments(&attachments)
                     .width(extent.width)
@@ -307,7 +398,7 @@ impl Renderer {
     }
 
     fn create_command_pool(device: &Device) -> vk::CommandPool {
-        let pool_info = vk::CommandPoolCreateInfo::builder()
+        let pool_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(0)
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
 
@@ -319,7 +410,7 @@ impl Renderer {
     }
 
     fn create_command_buffers(device: &Device, pool: vk::CommandPool) -> Vec<vk::CommandBuffer> {
-        let alloc_info = vk::CommandBufferAllocateInfo::builder()
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(MAX_FRAMES_IN_FLIGHT as u32);
@@ -338,8 +429,8 @@ impl Renderer {
         let mut render_finished_semaphores = Vec::new();
         let mut in_flight_fences = Vec::new();
 
-        let semaphore_info = vk::SemaphoreCreateInfo::builder();
-        let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
+        let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
 
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             unsafe {
@@ -366,5 +457,53 @@ impl Renderer {
             render_finished_semaphores,
             in_flight_fences,
         )
+    }
+
+    pub fn get_extent(&self) -> vk::Extent2D {
+        self.swapchain_extent
+    }
+
+    pub fn get_device(&self) -> &Device {
+        &self.device
+    }
+}
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.device_wait_idle().ok();
+
+            for &semaphore in &self.image_available_semaphores {
+                self.device.destroy_semaphore(semaphore, None);
+            }
+            for &semaphore in &self.render_finished_semaphores {
+                self.device.destroy_semaphore(semaphore, None);
+            }
+            for &fence in &self.in_flight_fences {
+                self.device.destroy_fence(fence, None);
+            }
+
+            self.device.destroy_command_pool(self.command_pool, None);
+
+            for &framebuffer in &self.framebuffers {
+                self.device.destroy_framebuffer(framebuffer, None);
+            }
+
+            if let Some(pipeline) = self.pipeline.take() {
+                self.device.destroy_pipeline(pipeline.graphics_pipeline, None);
+                self.device.destroy_pipeline_layout(pipeline.layout, None);
+            }
+
+            self.device.destroy_render_pass(self.render_pass, None);
+
+            for &view in &self.swapchain_image_views {
+                self.device.destroy_image_view(view, None);
+            }
+
+            self.swapchain_loader.destroy_swapchain(self.swapchain, None);
+            self.device.destroy_device(None);
+            self.surface_loader.destroy_surface(self.surface, None);
+            self.instance.destroy_instance(None);
+        }
     }
 }

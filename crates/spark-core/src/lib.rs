@@ -45,6 +45,24 @@ impl Engine {
                 } => {
                     elwt.exit();
                 }
+                Event::WindowEvent {
+                    event: WindowEvent::KeyboardInput {
+                        event: input_event,
+                        ..
+                    },
+                    ..
+                } => {
+                    log::info!("Keyboard input: {:?}", input_event);
+                }
+                Event::WindowEvent {
+                    event: WindowEvent::CursorMoved {
+                        position,
+                        ..
+                    },
+                    ..
+                } => {
+                    log::debug!("Mouse position: {:?}", position);
+                }
                 Event::AboutToWait => {
                     self.scene.update_all_transforms();
                     self.renderer.draw_frame();
