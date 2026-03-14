@@ -1,8 +1,11 @@
 use spark_core::Engine;
+pub mod ui;
+
 use spark_renderer::pipeline::Pipeline;
 use std::fs;
 
 use spark_script::ScriptHost;
+use crate::ui::EditorUI;
 
 fn main() {
     env_logger::init();
@@ -69,9 +72,25 @@ fn main() {
 
     engine.scene.add_node(engine.scene.root, _camera_node);
 
-    let mut script_host = ScriptHost::new();
+    let _script_host = ScriptHost::new();
     // Initialize .NET logic would go here if we had a valid runtimeconfig.json
     // script_host.init_dotnet("path/to/runtimeconfig.json");
 
-    engine.run();
+    let mut ui = EditorUI::new(&engine.window);
+
+    engine.run(move |window, event, scene| {
+        match event {
+            winit::event::Event::WindowEvent { event, .. } => {
+                ui.handle_event(window, event)
+            }
+            winit::event::Event::AboutToWait => {
+                ui.begin_frame(window);
+                ui.draw_ui(scene);
+                let _full_output = ui.end_frame(window);
+                // We need to render egui output here eventually
+                false
+            }
+            _ => false,
+        }
+    });
 }

@@ -51,11 +51,18 @@ impl Engine {
         }
     }
 
-    pub fn run(mut self) {
+    pub fn run<F>(mut self, mut ui_callback: F)
+    where
+        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene) -> bool + 'static,
+    {
         let event_loop = self.event_loop.take().unwrap();
         self.plugin_manager.init_plugins(&mut self.scene);
 
         event_loop.run(move |event, elwt| {
+            if ui_callback(&self.window, &event, &mut self.scene) {
+                // UI consumed the event or handled frame begin/end
+            }
+
             match event {
                 Event::WindowEvent {
                     event: WindowEvent::CloseRequested,
@@ -63,23 +70,22 @@ impl Engine {
                 } => {
                     elwt.exit();
                 }
-                Event::WindowEvent {
-                    event: WindowEvent::KeyboardInput {
-                        event: input_event,
-                        ..
-                    },
-                    ..
-                } => {
-                    log::info!("Keyboard input: {:?}", input_event);
-                }
-                Event::WindowEvent {
-                    event: WindowEvent::CursorMoved {
-                        position,
-                        ..
-                    },
-                    ..
-                } => {
-                    log::debug!("Mouse position: {:?}", position);
+                Event::WindowEvent { event, .. } => {
+                    match event {
+                        WindowEvent::KeyboardInput {
+                            event: input_event,
+                            ..
+                        } => {
+                            log::info!("Keyboard input: {:?}", input_event);
+                        }
+                        WindowEvent::CursorMoved {
+                            position,
+                            ..
+                        } => {
+                            log::debug!("Mouse position: {:?}", position);
+                        }
+                        _ => {}
+                    }
                 }
                 Event::AboutToWait => {
                     let now = instant::Instant::now();
