@@ -56,23 +56,37 @@ impl Scene {
     }
 
     pub fn update_transforms(&mut self, start_node: NodeKey) {
-        let (parent_global, children) = if let Some(node) = self.nodes.get(start_node) {
-            let parent_global = if let Some(parent_key) = node.parent {
+        let parent_global = if let Some(node) = self.nodes.get(start_node) {
+            if let Some(parent_key) = node.parent {
                 self.nodes.get(parent_key).map(|p| p.global_transform).unwrap_or(Mat4::IDENTITY)
             } else {
                 Mat4::IDENTITY
-            };
-            (parent_global, node.children.clone())
+            }
         } else {
             return;
         };
 
-        if let Some(node) = self.nodes.get_mut(start_node) {
-            node.global_transform = parent_global * node.local_transform;
-        }
+        self.update_transforms_recursive(start_node, parent_global);
+    }
 
-        for child in children {
-            self.update_transforms(child);
+    fn update_transforms_recursive(&mut self, node_key: NodeKey, parent_global: Mat4) {
+        let current_global = if let Some(node) = self.nodes.get_mut(node_key) {
+            node.global_transform = parent_global * node.local_transform;
+            node.global_transform
+        } else {
+            return;
+        };
+
+        // We still need to collect children to avoid multiple mutable borrows
+        // But we do it in a way that minimizes impact
+        let children = self.nodes.get(node_key).map(|n| n.children.as_slice());
+        if let Some(children) = children {
+            // Safety: node handles in slotmap are stable.
+            // We use a simple loop to avoid cloning the whole Vec.
+            for i in 0..children.len() {
+                let child_key = self.nodes.get(node_key).unwrap().children[i];
+                self.update_transforms_recursive(child_key, current_global);
+            }
         }
     }
 

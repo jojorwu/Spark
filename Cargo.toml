@@ -28,4 +28,5 @@ num_cpus = "1.16"
 slotmap = "1.0" # For handle-based node system
 bitflags = "2.4"
 libloading = "0.8"
+netcorehost = "0.20"
 instant = "0.1"

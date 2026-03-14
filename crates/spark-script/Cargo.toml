@@ -6,4 +6,5 @@ edition.workspace = true
 [dependencies]
 spark-core = { path = "../spark-core" }
 libloading.workspace = true
+netcorehost.workspace = true
 log.workspace = true

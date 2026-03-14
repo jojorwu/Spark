@@ -7,6 +7,7 @@ edition.workspace = true
 spark-core = { path = "../spark-core" }
 spark-renderer = { path = "../spark-renderer" }
 spark-math = { path = "../spark-math" }
+ash.workspace = true
 shaderc.workspace = true
 env_logger.workspace = true
 log.workspace = true

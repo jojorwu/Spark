@@ -26,6 +26,22 @@ fn main() {
 
     engine.renderer.set_pipeline(pipeline);
 
+    use spark_renderer::vertex::Vertex;
+    use spark_math::Vec2;
+    let vertices = [
+        Vertex { pos: Vec3::new(0.0, -0.5, 0.0), color: Vec3::new(1.0, 0.0, 0.0), tex_coord: Vec2::ZERO },
+        Vertex { pos: Vec3::new(0.5, 0.5, 0.0), color: Vec3::new(0.0, 1.0, 0.0), tex_coord: Vec2::ZERO },
+        Vertex { pos: Vec3::new(-0.5, 0.5, 0.0), color: Vec3::new(0.0, 0.0, 1.0), tex_coord: Vec2::ZERO },
+    ];
+
+    let vb = engine.renderer.create_buffer(
+        (std::mem::size_of::<Vertex>() * vertices.len()) as u64,
+        ash::vk::BufferUsageFlags::VERTEX_BUFFER,
+        ash::vk::MemoryPropertyFlags::HOST_VISIBLE | ash::vk::MemoryPropertyFlags::HOST_COHERENT,
+    );
+    engine.renderer.upload_to_buffer(&vb, &vertices);
+    engine.renderer.set_vertex_buffer(vb);
+
     use spark_core::scene::{Node, NodeData};
     use spark_math::{Mat4, Vec3};
 
