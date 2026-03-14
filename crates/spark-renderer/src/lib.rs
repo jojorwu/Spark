@@ -209,11 +209,106 @@ impl Renderer {
         }
     }
 
+    fn create_swapchain_internal(
+        instance: &Instance,
+        pdevice: vk::PhysicalDevice,
+        device: &Device,
+        surface_loader: &Surface,
+        surface: vk::SurfaceKHR,
+        swapchain_loader: &Swapchain,
+        width: u32,
+        height: u32,
+    ) -> (
+        vk::SwapchainKHR,
+        Vec<vk::Image>,
+        Vec<vk::ImageView>,
+        vk::Format,
+        vk::Extent2D,
+    ) {
+        let surface_format = unsafe {
+            surface_loader
+                .get_physical_device_surface_formats(pdevice, surface)
+                .unwrap()[0]
+        };
+
+        let surface_caps = unsafe {
+            surface_loader
+                .get_physical_device_surface_capabilities(pdevice, surface)
+                .unwrap()
+        };
+
+        let mut extent = surface_caps.current_extent;
+        if extent.width == u32::MAX {
+            extent.width = width;
+            extent.height = height;
+        }
+
+        let mut image_count = surface_caps.min_image_count + 1;
+        if surface_caps.max_image_count > 0 && image_count > surface_caps.max_image_count {
+            image_count = surface_caps.max_image_count;
+        }
+
+        let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
+            .surface(surface)
+            .min_image_count(image_count)
+            .image_color_space(surface_format.color_space)
+            .image_format(surface_format.format)
+            .image_extent(extent)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .pre_transform(surface_caps.current_transform)
+            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(vk::PresentModeKHR::FIFO)
+            .clipped(true)
+            .image_array_layers(1);
+
+        let swapchain = unsafe {
+            swapchain_loader
+                .create_swapchain(&swapchain_create_info, None)
+                .expect("Failed to create swapchain")
+        };
+
+        let images = unsafe {
+            swapchain_loader
+                .get_swapchain_images(swapchain)
+                .expect("Failed to get swapchain images")
+        };
+
+        let views: Vec<vk::ImageView> = images
+            .iter()
+            .map(|&image| {
+                let create_info = vk::ImageViewCreateInfo::default()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(surface_format.format)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    });
+                unsafe {
+                    device
+                        .create_image_view(&create_info, None)
+                        .expect("Failed to create image view")
+                }
+            })
+            .collect();
+
+        (swapchain, images, views, surface_format.format, extent)
+    }
+
     pub fn set_pipeline(&mut self, pipeline: Pipeline) {
         self.pipeline = Some(pipeline);
     }
 
-    pub fn draw_frame(&mut self, renderables: &[(spark_math::Mat4, u32)], view_proj: spark_math::Mat4) {
+    pub fn draw_frame(
+        &mut self,
+        renderables: &[(spark_math::Mat4, u32)],
+        view_proj: spark_math::Mat4,
+        window: &Window,
+    ) {
         unsafe {
             self.device
                 .wait_for_fences(
@@ -233,6 +328,7 @@ impl Renderer {
             let image_index = match result {
                 Ok((index, _)) => index,
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                    self.recreate_swapchain(window);
                     return;
                 }
                 Err(e) => panic!("Failed to acquire swapchain image: {:?}", e),
@@ -281,8 +377,9 @@ impl Renderer {
 
             let result = self.swapchain_loader.queue_present(graphics_queue, &present_info);
             match result {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
+                    self.recreate_swapchain(window);
                 }
                 Err(e) => panic!("Failed to present swapchain image: {:?}", e),
             }
@@ -495,6 +592,52 @@ impl Renderer {
 
     pub fn get_device(&self) -> &Device {
         &self.device
+    }
+
+    pub fn recreate_swapchain(&mut self, window: &Window) {
+        unsafe {
+            self.device.device_wait_idle().unwrap();
+            self.cleanup_swapchain();
+
+            let (swapchain, images, views, format, extent) = Self::create_swapchain_internal(
+                &self.instance,
+                self.pdevice,
+                &self.device,
+                &self.surface_loader,
+                self.surface,
+                &self.swapchain_loader,
+                window.inner_size().width,
+                window.inner_size().height,
+            );
+
+            self.swapchain = swapchain;
+            self.swapchain_images = images;
+            self.swapchain_image_views = views;
+            self.swapchain_format = format;
+            self.swapchain_extent = extent;
+
+            self.render_pass = Self::create_render_pass(&self.device, self.swapchain_format);
+            self.framebuffers = Self::create_framebuffers(
+                &self.device,
+                self.render_pass,
+                &self.swapchain_image_views,
+                self.swapchain_extent,
+            );
+        }
+    }
+
+    fn cleanup_swapchain(&mut self) {
+        unsafe {
+            for &framebuffer in &self.framebuffers {
+                self.device.destroy_framebuffer(framebuffer, None);
+            }
+            self.device.destroy_render_pass(self.render_pass, None);
+            for &view in &self.swapchain_image_views {
+                self.device.destroy_image_view(view, None);
+            }
+            self.swapchain_loader
+                .destroy_swapchain(self.swapchain, None);
+        }
     }
 
     pub fn create_buffer(

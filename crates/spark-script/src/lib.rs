@@ -1,20 +1,26 @@
-pub trait Script {
-    fn on_init(&mut self);
-    fn on_update(&mut self, delta: f32);
-}
+use spark_core::plugin::Plugin;
+use libloading::{Library, Symbol};
+use std::rc::Rc;
 
-pub struct ScriptHost {}
+pub struct ScriptHost {
+    libraries: Vec<Rc<Library>>,
+}
 
 impl ScriptHost {
     pub fn new() -> Self {
-        Self {}
+        Self { libraries: Vec::new() }
     }
 
-    pub fn load_rust_plugin(&mut self, path: &str) {
+    pub fn load_rust_plugin(&mut self, path: &str) -> Box<dyn Plugin> {
         log::info!("Loading Rust plugin from: {}", path);
-    }
 
-    pub fn init_dotnet(&mut self) {
-        log::info!("Initializing .NET Runtime...");
+        let lib = unsafe { Library::new(path).expect("Failed to load library") };
+        let lib = Rc::new(lib);
+        self.libraries.push(lib.clone());
+
+        unsafe {
+            let constructor: Symbol<fn() -> Box<dyn Plugin>> = lib.get(b"create_plugin").expect("Failed to find constructor");
+            constructor()
+        }
     }
 }

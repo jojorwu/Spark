@@ -77,6 +77,9 @@ impl Scene {
     }
 
     pub fn update_all_transforms(&mut self) {
+        // For simple parent-child propagation, sequential is usually fine.
+        // But for true multi-threading with Rayon, we'd need a more decoupled approach.
+        // For now, we'll keep the recursive update but ensure we can scale.
         self.update_transforms(self.root);
     }
 

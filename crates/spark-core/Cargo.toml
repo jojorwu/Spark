@@ -10,3 +10,5 @@ winit.workspace = true
 log.workspace = true
 slotmap.workspace = true
 rayon.workspace = true
+num_cpus.workspace = true
+instant.workspace = true

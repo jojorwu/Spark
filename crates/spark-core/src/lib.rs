@@ -1,4 +1,6 @@
 pub mod scene;
+pub mod task;
+pub mod plugin;
 
 use winit::{
     event::{Event, WindowEvent},
@@ -6,6 +8,8 @@ use winit::{
     window::WindowBuilder,
 };
 use crate::scene::Scene;
+use crate::task::TaskSystem;
+use crate::plugin::PluginManager;
 use spark_renderer::Renderer;
 
 pub struct Engine {
@@ -13,6 +17,9 @@ pub struct Engine {
     pub event_loop: Option<EventLoop<()>>,
     pub scene: Scene,
     pub renderer: Renderer,
+    pub task_system: TaskSystem,
+    pub plugin_manager: PluginManager,
+    last_frame_time: instant::Instant,
 }
 
 impl Engine {
@@ -25,17 +32,23 @@ impl Engine {
 
         let renderer = Renderer::new(&window);
         let scene = Scene::new();
+        let task_system = TaskSystem::new();
+        let plugin_manager = PluginManager::new();
 
         Self {
             window,
             event_loop: Some(event_loop),
             scene,
             renderer,
+            task_system,
+            plugin_manager,
+            last_frame_time: instant::Instant::now(),
         }
     }
 
     pub fn run(mut self) {
         let event_loop = self.event_loop.take().unwrap();
+        self.plugin_manager.init_plugins(&mut self.scene);
 
         event_loop.run(move |event, elwt| {
             match event {
@@ -64,6 +77,11 @@ impl Engine {
                     log::debug!("Mouse position: {:?}", position);
                 }
                 Event::AboutToWait => {
+                    let now = instant::Instant::now();
+                    let delta = now.duration_since(self.last_frame_time).as_secs_f32();
+                    self.last_frame_time = now;
+
+                    self.plugin_manager.update_plugins(&mut self.scene, delta);
                     self.scene.update_all_transforms();
                     let (renderables, view_matrix) = self.scene.collect_render_data();
 
@@ -76,7 +94,7 @@ impl Engine {
                     );
                     let view_proj = projection * view_matrix;
 
-                    self.renderer.draw_frame(&renderables, view_proj);
+                    self.renderer.draw_frame(&renderables, view_proj, &self.window);
                 }
                 _ => (),
             }
