@@ -2,6 +2,7 @@ pub mod scene;
 pub mod task;
 pub mod plugin;
 pub mod resource;
+pub mod event;
 
 use winit::{
     event::{Event, WindowEvent},
@@ -12,6 +13,7 @@ use crate::scene::Scene;
 use crate::task::TaskSystem;
 use crate::plugin::PluginManager;
 use crate::resource::ResourceManager;
+use crate::event::EventQueue;
 use spark_renderer::Renderer;
 
 pub struct Engine {
@@ -22,24 +24,26 @@ pub struct Engine {
     pub task_system: TaskSystem,
     pub plugin_manager: PluginManager,
     pub resource_manager: ResourceManager,
+    pub event_queue: EventQueue,
     last_frame_time: instant::Instant,
 }
 
 impl Engine {
-    pub fn new(title: &str) -> Self {
+    pub fn new(title: &str) -> Result<Self, spark_renderer::error::RendererError> {
         let event_loop = EventLoop::new().expect("Failed to create event loop");
         let window = WindowBuilder::new()
             .with_title(title)
             .build(&event_loop)
             .expect("Failed to build window");
 
-        let renderer = Renderer::new(&window);
+        let renderer = Renderer::new(&window)?;
         let scene = Scene::new();
         let task_system = TaskSystem::new();
         let plugin_manager = PluginManager::new();
         let resource_manager = ResourceManager::new();
+        let event_queue = EventQueue::new();
 
-        Self {
+        Ok(Self {
             window,
             event_loop: Some(event_loop),
             scene,
@@ -47,8 +51,9 @@ impl Engine {
             task_system,
             plugin_manager,
             resource_manager,
+            event_queue,
             last_frame_time: instant::Instant::now(),
-        }
+        })
     }
 
     pub fn run<F>(mut self, mut ui_callback: F)
@@ -63,7 +68,8 @@ impl Engine {
                 // UI consumed the event or handled frame begin/end
             }
 
-            match event {
+            use crate::event::EngineEvent;
+            match &event {
                 Event::WindowEvent {
                     event: WindowEvent::CloseRequested,
                     ..
@@ -72,22 +78,28 @@ impl Engine {
                 }
                 Event::WindowEvent { event, .. } => {
                     match event {
+                        WindowEvent::Resized(size) => {
+                            self.event_queue.push(EngineEvent::WindowResized { width: size.width, height: size.height });
+                        }
                         WindowEvent::KeyboardInput {
                             event: input_event,
                             ..
                         } => {
+                            // Map to EngineEvent
                             log::info!("Keyboard input: {:?}", input_event);
                         }
                         WindowEvent::CursorMoved {
                             position,
                             ..
                         } => {
-                            log::debug!("Mouse position: {:?}", position);
+                            self.event_queue.push(EngineEvent::MouseMoved { x: position.x, y: position.y });
                         }
                         _ => {}
                     }
                 }
                 Event::AboutToWait => {
+                    // Logic that uses event_queue would go here
+                    self.event_queue.clear();
                     let now = instant::Instant::now();
                     let delta = now.duration_since(self.last_frame_time).as_secs_f32();
                     self.last_frame_time = now;

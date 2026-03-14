@@ -2,6 +2,7 @@ use ash::{vk, Entry, Instance, khr::surface::Instance as Surface};
 use std::ffi::CString;
 use winit::window::Window;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use crate::error::RendererError;
 
 pub struct VulkanContext {
     pub entry: Entry,
@@ -11,8 +12,8 @@ pub struct VulkanContext {
 }
 
 impl VulkanContext {
-    pub fn new(window: &Window) -> Self {
-        let entry = unsafe { Entry::load().expect("Failed to load Vulkan") };
+    pub fn new(window: &Window) -> Result<Self, RendererError> {
+        let entry = unsafe { Entry::load()? };
 
         let app_name = CString::new("Spark Engine").unwrap();
         let engine_name = CString::new("Spark").unwrap();
@@ -28,7 +29,7 @@ impl VulkanContext {
         let window_handle = window.window_handle().unwrap().as_raw();
 
         let extensions = ash_window::enumerate_required_extensions(display_handle)
-            .expect("Failed to enumerate required extensions");
+            .map_err(|_| RendererError::SurfaceCreation)?;
 
         let instance_create_info = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
@@ -36,22 +37,21 @@ impl VulkanContext {
 
         let instance = unsafe {
             entry
-                .create_instance(&instance_create_info, None)
-                .expect("Failed to create Vulkan instance")
+                .create_instance(&instance_create_info, None)?
         };
 
         let surface = unsafe {
             ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)
-                .expect("Failed to create surface")
+                .map_err(|_| RendererError::SurfaceCreation)?
         };
         let surface_loader = Surface::new(&entry, &instance);
 
-        Self {
+        Ok(Self {
             entry,
             instance,
             surface_loader,
             surface,
-        }
+        })
     }
 }
 

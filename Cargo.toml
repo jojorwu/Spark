@@ -27,6 +27,7 @@ rayon = "1.8"
 num_cpus = "1.16"
 slotmap = "1.0" # For handle-based node system
 bitflags = "2.4"
+thiserror = "1.0"
 libloading = "0.8"
 netcorehost = "0.20"
 image = "0.24"

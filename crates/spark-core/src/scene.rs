@@ -71,15 +71,16 @@ impl Scene {
     }
 
     fn update_transforms_recursive(&mut self, node_key: NodeKey, parent_global: Mat4) {
-        let (current_global, children) = if let Some(node) = self.nodes.get_mut(node_key) {
+        if let Some(node) = self.nodes.get_mut(node_key) {
             node.global_transform = parent_global * node.local_transform;
-            (node.global_transform, node.children.clone())
-        } else {
-            return;
-        };
+            let current_global = node.global_transform;
 
-        for child_key in children {
-            self.update_transforms_recursive(child_key, current_global);
+            // To avoid cloning, we'd need an iterative approach with a stack or a more complex borrow
+            // For now, cloning the keys (not the nodes) is relatively cheap.
+            let children = node.children.clone();
+            for child_key in children {
+                self.update_transforms_recursive(child_key, current_global);
+            }
         }
     }
 

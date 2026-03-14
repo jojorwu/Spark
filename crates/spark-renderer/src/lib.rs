@@ -1,6 +1,7 @@
 pub mod pipeline;
 pub mod vertex;
 pub mod vulkan;
+pub mod error;
 
 use ash::vk;
 use winit::window::Window;
@@ -9,6 +10,7 @@ use crate::vulkan::context::VulkanContext;
 use crate::vulkan::device::VulkanDevice;
 use crate::vulkan::swapchain::VulkanSwapchain;
 use crate::vulkan::texture::Texture;
+use crate::error::RendererError;
 
 #[allow(dead_code)]
 pub struct Renderer {
@@ -38,9 +40,9 @@ pub struct Buffer {
 }
 
 impl Renderer {
-    pub fn new(window: &Window) -> Self {
-        let context = VulkanContext::new(window);
-        let device = VulkanDevice::new(&context.instance, &context.surface_loader, context.surface);
+    pub fn new(window: &Window) -> Result<Self, RendererError> {
+        let context = VulkanContext::new(window)?;
+        let device = VulkanDevice::new(&context.instance, &context.surface_loader, context.surface)?;
         let swapchain = VulkanSwapchain::new(
             &context.instance,
             &device.device,
@@ -62,7 +64,7 @@ impl Renderer {
 
         let descriptor_pool = Self::create_descriptor_pool(&device.device);
 
-        Self {
+        Ok(Self {
             context,
             device,
             swapchain,
@@ -78,7 +80,7 @@ impl Renderer {
             vertex_buffer: None,
             descriptor_pool,
             descriptor_sets: Vec::new(),
-        }
+        })
     }
 
     pub fn set_pipeline(&mut self, pipeline: Pipeline) {
@@ -261,7 +263,6 @@ impl Renderer {
 
                 for (model, vertex_count, _texture_id, vertex_buffer_id) in renderables {
                     if let Some(_id) = vertex_buffer_id {
-                        // In a full implementation, we'd look up the buffer by ID
                         if let Some(vb) = &self.vertex_buffer {
                              self.device.device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
                         }
@@ -443,77 +444,6 @@ impl Renderer {
 
     pub fn get_device(&self) -> &ash::Device {
         &self.device.device
-    }
-
-    pub fn create_texture(&self, width: u32, height: u32, pixels: &[u8]) -> Texture {
-        let size = (width * height * 4) as vk::DeviceSize;
-        let staging_buffer = self.create_buffer(
-            size,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        );
-        self.upload_to_buffer(&staging_buffer, pixels);
-
-        let image_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .extent(vk::Extent3D { width, height, depth: 1 })
-            .mip_levels(1)
-            .array_layers(1)
-            .format(vk::Format::R8G8B8A8_SRGB)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .samples(vk::SampleCountFlags::TYPE_1);
-
-        let image = unsafe { self.device.device.create_image(&image_info, None).unwrap() };
-        let mem_reqs = unsafe { self.device.device.get_image_memory_requirements(image) };
-        let mem_type = self.find_memory_type(mem_reqs.memory_type_bits, vk::MemoryPropertyFlags::DEVICE_LOCAL);
-
-        let alloc_info = vk::MemoryAllocateInfo::default()
-            .allocation_size(mem_reqs.size)
-            .memory_type_index(mem_type);
-
-        let memory = unsafe { self.device.device.allocate_memory(&alloc_info, None).unwrap() };
-        unsafe { self.device.device.bind_image_memory(image, memory, 0).unwrap() };
-
-        self.transition_image_layout(image, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
-        self.copy_buffer_to_image(staging_buffer.handle, image, width, height);
-        self.transition_image_layout(image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-
-        self.destroy_buffer(staging_buffer);
-
-        let view_info = vk::ImageViewCreateInfo::default()
-            .image(image)
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_SRGB)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
-
-        let view = unsafe { self.device.device.create_image_view(&view_info, None).unwrap() };
-
-        let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR)
-            .address_mode_u(vk::SamplerAddressMode::REPEAT)
-            .address_mode_v(vk::SamplerAddressMode::REPEAT)
-            .address_mode_w(vk::SamplerAddressMode::REPEAT)
-            .anisotropy_enable(false)
-            .max_anisotropy(1.0)
-            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
-            .unnormalized_coordinates(false)
-            .compare_enable(false)
-            .compare_op(vk::CompareOp::ALWAYS)
-            .mipmap_mode(vk::SamplerMipmapMode::LINEAR);
-
-        let sampler = unsafe { self.device.device.create_sampler(&sampler_info, None).unwrap() };
-
-        Texture { image, memory, view, sampler }
     }
 
     pub fn recreate_swapchain(&mut self, window: &Window) {
