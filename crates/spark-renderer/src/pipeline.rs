@@ -19,6 +19,10 @@ impl Pipeline {
 
         let main_function_name = CString::new("main").unwrap();
 
+        use crate::vertex::Vertex;
+        let binding_descriptions = [Vertex::get_binding_description()];
+        let attribute_descriptions = Vertex::get_attribute_descriptions();
+
         let shader_stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::VERTEX)
@@ -30,7 +34,9 @@ impl Pipeline {
                 .name(&main_function_name),
         ];
 
-        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
+        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&binding_descriptions)
+            .vertex_attribute_descriptions(&attribute_descriptions);
 
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
@@ -75,7 +81,13 @@ impl Pipeline {
             .attachments(std::slice::from_ref(&color_blend_attachment))
             .blend_constants([0.0, 0.0, 0.0, 0.0]);
 
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
+        let push_constant_ranges = [vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size((std::mem::size_of::<spark_math::Mat4>() * 2) as u32)];
+
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+            .push_constant_ranges(&push_constant_ranges);
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(&pipeline_layout_info, None)

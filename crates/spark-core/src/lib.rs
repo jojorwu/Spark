@@ -65,7 +65,18 @@ impl Engine {
                 }
                 Event::AboutToWait => {
                     self.scene.update_all_transforms();
-                    self.renderer.draw_frame();
+                    let (renderables, view_matrix) = self.scene.collect_render_data();
+
+                    let extent = self.renderer.get_extent();
+                    let projection = spark_math::Mat4::perspective_rh(
+                        45.0f32.to_radians(),
+                        extent.width as f32 / extent.height as f32,
+                        0.1,
+                        100.0,
+                    );
+                    let view_proj = projection * view_matrix;
+
+                    self.renderer.draw_frame(&renderables, view_proj);
                 }
                 _ => (),
             }

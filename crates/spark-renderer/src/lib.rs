@@ -1,4 +1,5 @@
 pub mod pipeline;
+pub mod vertex;
 
 use ash::{vk, Entry, Instance, Device, khr::surface::Instance as Surface, khr::swapchain::Device as Swapchain};
 use std::ffi::CString;
@@ -31,6 +32,12 @@ pub struct Renderer {
 }
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
+
+pub struct Buffer {
+    pub handle: vk::Buffer,
+    pub memory: vk::DeviceMemory,
+    pub size: vk::DeviceSize,
+}
 
 impl Renderer {
     pub fn new(window: &Window) -> Self {
@@ -206,7 +213,7 @@ impl Renderer {
         self.pipeline = Some(pipeline);
     }
 
-    pub fn draw_frame(&mut self) {
+    pub fn draw_frame(&mut self, renderables: &[(spark_math::Mat4, u32)], view_proj: spark_math::Mat4) {
         unsafe {
             self.device
                 .wait_for_fences(
@@ -242,7 +249,7 @@ impl Renderer {
                 )
                 .expect("Failed to reset command buffer");
 
-            self.record_command_buffer(image_index);
+            self.record_command_buffer(image_index, renderables, view_proj);
 
             let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
             let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -284,7 +291,12 @@ impl Renderer {
         }
     }
 
-    fn record_command_buffer(&self, image_index: u32) {
+    fn record_command_buffer(
+        &self,
+        image_index: u32,
+        renderables: &[(spark_math::Mat4, u32)],
+        view_proj: spark_math::Mat4,
+    ) {
         let command_buffer = self.command_buffers[self.current_frame];
 
         let begin_info = vk::CommandBufferBeginInfo::default();
@@ -321,7 +333,25 @@ impl Renderer {
                     vk::PipelineBindPoint::GRAPHICS,
                     pipeline.graphics_pipeline,
                 );
-                self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+
+                for (model, vertex_count) in renderables {
+                    let mut constants = [spark_math::Mat4::IDENTITY; 2];
+                    constants[0] = *model;
+                    constants[1] = view_proj;
+
+                    let bytes = std::slice::from_raw_parts(
+                        constants.as_ptr() as *const u8,
+                        std::mem::size_of::<spark_math::Mat4>() * 2,
+                    );
+                    self.device.cmd_push_constants(
+                        command_buffer,
+                        pipeline.layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        bytes,
+                    );
+                    self.device.cmd_draw(command_buffer, *vertex_count, 1, 0, 0);
+                }
             }
 
             self.device.cmd_end_render_pass(command_buffer);
@@ -465,6 +495,79 @@ impl Renderer {
 
     pub fn get_device(&self) -> &Device {
         &self.device
+    }
+
+    pub fn create_buffer(
+        &self,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+        properties: vk::MemoryPropertyFlags,
+    ) -> Buffer {
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(size)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let handle = unsafe {
+            self.device
+                .create_buffer(&buffer_info, None)
+                .expect("Failed to create buffer")
+        };
+
+        let mem_requirements = unsafe { self.device.get_buffer_memory_requirements(handle) };
+        let mem_type_index = self.find_memory_type(mem_requirements.memory_type_bits, properties);
+
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_requirements.size)
+            .memory_type_index(mem_type_index);
+
+        let memory = unsafe {
+            self.device
+                .allocate_memory(&alloc_info, None)
+                .expect("Failed to allocate buffer memory")
+        };
+
+        unsafe {
+            self.device
+                .bind_buffer_memory(handle, memory, 0)
+                .expect("Failed to bind buffer memory");
+        }
+
+        Buffer { handle, memory, size }
+    }
+
+    pub fn upload_to_buffer<T: Copy>(&self, buffer: &Buffer, data: &[T]) {
+        unsafe {
+            let ptr = self.device
+                .map_memory(buffer.memory, 0, buffer.size, vk::MemoryMapFlags::empty())
+                .expect("Failed to map memory");
+            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut T, data.len());
+            self.device.unmap_memory(buffer.memory);
+        }
+    }
+
+    pub fn destroy_buffer(&self, buffer: Buffer) {
+        unsafe {
+            self.device.destroy_buffer(buffer.handle, None);
+            self.device.free_memory(buffer.memory, None);
+        }
+    }
+
+    fn find_memory_type(&self, type_filter: u32, properties: vk::MemoryPropertyFlags) -> u32 {
+        let mem_properties = unsafe {
+            self.instance
+                .get_physical_device_memory_properties(self.pdevice)
+        };
+
+        for i in 0..mem_properties.memory_type_count {
+            if (type_filter & (1 << i)) != 0
+                && (mem_properties.memory_types[i as usize].property_flags & properties) == properties
+            {
+                return i;
+            }
+        }
+
+        panic!("Failed to find suitable memory type")
     }
 }
 

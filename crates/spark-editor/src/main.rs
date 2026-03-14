@@ -26,5 +26,30 @@ fn main() {
 
     engine.renderer.set_pipeline(pipeline);
 
+    use spark_core::scene::{Node, NodeData};
+    use spark_math::{Mat4, Vec3};
+
+    let triangle_node = Node {
+        name: "MyTriangle".to_string(),
+        local_transform: Mat4::from_translation(Vec3::new(0.0, 0.0, -5.0)),
+        global_transform: Mat4::IDENTITY,
+        parent: None,
+        children: Vec::new(),
+        data: NodeData::Mesh { vertex_count: 3 },
+    };
+
+    engine.scene.add_node(engine.scene.root, triangle_node);
+
+    let camera_node = Node {
+        name: "MainCamera".to_string(),
+        local_transform: Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0)),
+        global_transform: Mat4::IDENTITY,
+        parent: None,
+        children: Vec::new(),
+        data: NodeData::Camera { fov: 45.0, near: 0.1, far: 100.0 },
+    };
+
+    engine.scene.add_node(engine.scene.root, camera_node);
+
     engine.run();
 }
