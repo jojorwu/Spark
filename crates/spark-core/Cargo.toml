@@ -1,0 +1,12 @@
+[package]
+name = "spark-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+spark-math = { path = "../spark-math" }
+spark-renderer = { path = "../spark-renderer" }
+winit.workspace = true
+log.workspace = true
+slotmap.workspace = true
+rayon.workspace = true

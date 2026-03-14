@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/spark-core",
+    "crates/spark-renderer",
+    "crates/spark-math",
+    "crates/spark-script",
+    "crates/spark-editor",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Spark Contributors"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+ash = "0.37"
+winit = "0.29"
+glam = "0.24" # Fast math library
+log = "0.4"
+env_logger = "0.10"
+rayon = "1.8"
+slotmap = "1.0" # For handle-based node system
+bitflags = "2.4"

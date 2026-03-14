@@ -1,0 +1,8 @@
+[package]
+name = "spark-script"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+spark-core = { path = "../spark-core" }
+log.workspace = true

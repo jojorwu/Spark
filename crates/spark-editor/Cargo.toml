@@ -1,0 +1,9 @@
+[package]
+name = "spark-editor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+spark-core = { path = "../spark-core" }
+env_logger.workspace = true
+log.workspace = true

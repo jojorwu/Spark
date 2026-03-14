@@ -1,0 +1,10 @@
+[package]
+name = "spark-renderer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+spark-math = { path = "../spark-math" }
+ash.workspace = true
+log.workspace = true
+winit.workspace = true
