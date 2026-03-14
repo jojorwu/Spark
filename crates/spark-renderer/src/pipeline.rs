@@ -4,6 +4,7 @@ use std::ffi::CString;
 pub struct Pipeline {
     pub layout: vk::PipelineLayout,
     pub graphics_pipeline: vk::Pipeline,
+    pub descriptor_set_layout: vk::DescriptorSetLayout,
 }
 
 impl Pipeline {
@@ -86,8 +87,26 @@ impl Pipeline {
             .offset(0)
             .size((std::mem::size_of::<spark_math::Mat4>() * 2) as u32)];
 
+        let descriptor_set_layout_bindings = [vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+
+        let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(&descriptor_set_layout_bindings);
+
+        let descriptor_set_layout = unsafe {
+            device
+                .create_descriptor_set_layout(&descriptor_set_layout_info, None)
+                .expect("Failed to create descriptor set layout")
+        };
+
+        let set_layouts = [descriptor_set_layout];
+
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-            .push_constant_ranges(&push_constant_ranges);
+            .push_constant_ranges(&push_constant_ranges)
+            .set_layouts(&set_layouts);
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(&pipeline_layout_info, None)
@@ -120,6 +139,7 @@ impl Pipeline {
         Self {
             layout: pipeline_layout,
             graphics_pipeline: graphics_pipelines[0],
+            descriptor_set_layout,
         }
     }
 

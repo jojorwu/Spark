@@ -27,7 +27,8 @@ fn main() {
     engine.renderer.set_pipeline(pipeline);
 
     use spark_renderer::vertex::Vertex;
-    use spark_math::Vec2;
+    use spark_math::{Vec2, Vec3, Mat4};
+
     let vertices = [
         Vertex { pos: Vec3::new(0.0, -0.5, 0.0), color: Vec3::new(1.0, 0.0, 0.0), tex_coord: Vec2::ZERO },
         Vertex { pos: Vec3::new(0.5, 0.5, 0.0), color: Vec3::new(0.0, 1.0, 0.0), tex_coord: Vec2::ZERO },
@@ -43,7 +44,6 @@ fn main() {
     engine.renderer.set_vertex_buffer(vb);
 
     use spark_core::scene::{Node, NodeData};
-    use spark_math::{Mat4, Vec3};
 
     let triangle_node = Node {
         name: "MyTriangle".to_string(),

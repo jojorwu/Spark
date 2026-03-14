@@ -70,23 +70,15 @@ impl Scene {
     }
 
     fn update_transforms_recursive(&mut self, node_key: NodeKey, parent_global: Mat4) {
-        let current_global = if let Some(node) = self.nodes.get_mut(node_key) {
+        let (current_global, children) = if let Some(node) = self.nodes.get_mut(node_key) {
             node.global_transform = parent_global * node.local_transform;
-            node.global_transform
+            (node.global_transform, node.children.clone())
         } else {
             return;
         };
 
-        // We still need to collect children to avoid multiple mutable borrows
-        // But we do it in a way that minimizes impact
-        let children = self.nodes.get(node_key).map(|n| n.children.as_slice());
-        if let Some(children) = children {
-            // Safety: node handles in slotmap are stable.
-            // We use a simple loop to avoid cloning the whole Vec.
-            for i in 0..children.len() {
-                let child_key = self.nodes.get(node_key).unwrap().children[i];
-                self.update_transforms_recursive(child_key, current_global);
-            }
+        for child_key in children {
+            self.update_transforms_recursive(child_key, current_global);
         }
     }
 

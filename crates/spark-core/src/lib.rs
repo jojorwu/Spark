@@ -1,6 +1,7 @@
 pub mod scene;
 pub mod task;
 pub mod plugin;
+pub mod resource;
 
 use winit::{
     event::{Event, WindowEvent},
@@ -10,6 +11,7 @@ use winit::{
 use crate::scene::Scene;
 use crate::task::TaskSystem;
 use crate::plugin::PluginManager;
+use crate::resource::ResourceManager;
 use spark_renderer::Renderer;
 
 pub struct Engine {
@@ -19,6 +21,7 @@ pub struct Engine {
     pub renderer: Renderer,
     pub task_system: TaskSystem,
     pub plugin_manager: PluginManager,
+    pub resource_manager: ResourceManager,
     last_frame_time: instant::Instant,
 }
 
@@ -34,6 +37,7 @@ impl Engine {
         let scene = Scene::new();
         let task_system = TaskSystem::new();
         let plugin_manager = PluginManager::new();
+        let resource_manager = ResourceManager::new();
 
         Self {
             window,
@@ -42,6 +46,7 @@ impl Engine {
             renderer,
             task_system,
             plugin_manager,
+            resource_manager,
             last_frame_time: instant::Instant::now(),
         }
     }
