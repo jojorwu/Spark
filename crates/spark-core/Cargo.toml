@@ -14,4 +14,5 @@ rayon.workspace = true
 num_cpus.workspace = true
 instant.workspace = true
 image.workspace = true
+egui.workspace = true
 gltf.workspace = true

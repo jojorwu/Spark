@@ -2,6 +2,7 @@ pub mod pipeline;
 pub mod vertex;
 pub mod vulkan;
 pub mod error;
+pub mod ui;
 
 use ash::vk;
 use winit::window::Window;
@@ -10,7 +11,9 @@ use crate::vulkan::context::VulkanContext;
 use crate::vulkan::device::VulkanDevice;
 use crate::vulkan::swapchain::VulkanSwapchain;
 use crate::vulkan::texture::Texture;
+pub use ash;
 use crate::error::RendererError;
+use crate::ui::EguiRenderer;
 
 #[allow(dead_code)]
 pub struct Renderer {
@@ -26,9 +29,11 @@ pub struct Renderer {
     in_flight_fences: Vec<vk::Fence>,
     current_frame: usize,
     pipeline: Option<Pipeline>,
-    vertex_buffer: Option<Buffer>,
+    pub vertex_buffers: Vec<Buffer>,
+    index_buffer: Option<Buffer>,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
+    egui_renderer: Option<EguiRenderer>,
 }
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -63,6 +68,7 @@ impl Renderer {
             Self::create_sync_objects(&device.device);
 
         let descriptor_pool = Self::create_descriptor_pool(&device.device);
+        let egui_renderer = EguiRenderer::new(&device.device, render_pass);
 
         Ok(Self {
             context,
@@ -77,9 +83,11 @@ impl Renderer {
             in_flight_fences,
             current_frame: 0,
             pipeline: None,
-            vertex_buffer: None,
+            vertex_buffers: Vec::new(),
+            index_buffer: None,
             descriptor_pool,
             descriptor_sets: Vec::new(),
+            egui_renderer: Some(egui_renderer),
         })
     }
 
@@ -120,8 +128,13 @@ impl Renderer {
         }
     }
 
-    pub fn set_vertex_buffer(&mut self, buffer: Buffer) {
-        self.vertex_buffer = Some(buffer);
+    pub fn add_vertex_buffer(&mut self, buffer: Buffer) -> u32 {
+        self.vertex_buffers.push(buffer);
+        (self.vertex_buffers.len() - 1) as u32
+    }
+
+    pub fn set_index_buffer(&mut self, buffer: Buffer) {
+        self.index_buffer = Some(buffer);
     }
 
     pub fn draw_frame(
@@ -129,6 +142,7 @@ impl Renderer {
         renderables: &[(spark_math::Mat4, u32, Option<String>, Option<u32>)],
         view_proj: spark_math::Mat4,
         window: &Window,
+        egui_output: Option<egui::FullOutput>,
     ) {
         unsafe {
             self.device.device
@@ -166,7 +180,7 @@ impl Renderer {
                 )
                 .expect("Failed to reset command buffer");
 
-            self.record_command_buffer(image_index, renderables, view_proj);
+            self.record_command_buffer(image_index, renderables, view_proj, egui_output);
 
             let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
             let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -208,10 +222,11 @@ impl Renderer {
     }
 
     fn record_command_buffer(
-        &self,
+        &mut self,
         image_index: u32,
         renderables: &[(spark_math::Mat4, u32, Option<String>, Option<u32>)],
         view_proj: spark_math::Mat4,
+        egui_output: Option<egui::FullOutput>,
     ) {
         let command_buffer = self.command_buffers[self.current_frame];
 
@@ -262,8 +277,8 @@ impl Renderer {
                 }
 
                 for (model, vertex_count, _texture_id, vertex_buffer_id) in renderables {
-                    if let Some(_id) = vertex_buffer_id {
-                        if let Some(vb) = &self.vertex_buffer {
+                    if let Some(id) = vertex_buffer_id {
+                        if let Some(vb) = self.get_buffer(*id) {
                              self.device.device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
                         }
                     }
@@ -284,6 +299,12 @@ impl Renderer {
                         bytes,
                     );
                     self.device.device.cmd_draw(command_buffer, *vertex_count, 1, 0, 0);
+                }
+            }
+
+            if let Some(output) = egui_output {
+                if let Some(egui) = &mut self.egui_renderer {
+                    egui.draw(&self.device.device, self.device.graphics_queue, command_buffer, output);
                 }
             }
 
@@ -444,6 +465,14 @@ impl Renderer {
 
     pub fn get_device(&self) -> &ash::Device {
         &self.device.device
+    }
+
+    pub fn get_buffer(&self, id: u32) -> Option<&Buffer> {
+        self.vertex_buffers.get(id as usize)
+    }
+
+    pub fn get_graphics_queue(&self) -> vk::Queue {
+        self.device.graphics_queue
     }
 
     pub fn recreate_swapchain(&mut self, window: &Window) {
@@ -716,8 +745,17 @@ impl Drop for Renderer {
 
             self.device.device.destroy_descriptor_pool(self.descriptor_pool, None);
 
-            if let Some(vb) = self.vertex_buffer.take() {
+            if let Some(mut egui) = self.egui_renderer.take() {
+                egui.destroy(&self.device.device);
+            }
+
+            let vertex_buffers = std::mem::take(&mut self.vertex_buffers);
+            for vb in vertex_buffers {
                 self.destroy_buffer(vb);
+            }
+
+            if let Some(ib) = self.index_buffer.take() {
+                self.destroy_buffer(ib);
             }
         }
     }

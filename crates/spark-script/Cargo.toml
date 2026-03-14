@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 spark-core = { path = "../spark-core" }
+spark-math = { path = "../spark-math" }
 libloading.workspace = true
 netcorehost.workspace = true
 log.workspace = true

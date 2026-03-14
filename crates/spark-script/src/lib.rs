@@ -1,3 +1,4 @@
+pub mod ffi;
 use spark_core::plugin::Plugin;
 use libloading::{Library, Symbol};
 use std::rc::Rc;

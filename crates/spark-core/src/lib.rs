@@ -58,14 +58,15 @@ impl Engine {
 
     pub fn run<F>(mut self, mut ui_callback: F)
     where
-        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene) -> bool + 'static,
+        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene) -> (bool, Option<egui::FullOutput>) + 'static,
     {
         let event_loop = self.event_loop.take().unwrap();
         self.plugin_manager.init_plugins(&mut self.scene);
 
         event_loop.run(move |event, elwt| {
-            if ui_callback(&self.window, &event, &mut self.scene) {
-                // UI consumed the event or handled frame begin/end
+            let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene);
+            if ui_consumed {
+                // UI consumed the event
             }
 
             use crate::event::EngineEvent;
@@ -117,7 +118,7 @@ impl Engine {
                     );
                     let view_proj = projection * view_matrix;
 
-                    self.renderer.draw_frame(&renderables, view_proj, &self.window);
+                    self.renderer.draw_frame(&renderables, view_proj, &self.window, egui_output);
                 }
                 _ => (),
             }

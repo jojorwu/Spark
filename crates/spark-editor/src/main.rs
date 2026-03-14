@@ -45,7 +45,7 @@ fn main() {
         ash::vk::MemoryPropertyFlags::HOST_VISIBLE | ash::vk::MemoryPropertyFlags::HOST_COHERENT,
     );
     engine.renderer.upload_to_buffer(&vb, &vertices);
-    engine.renderer.set_vertex_buffer(vb);
+    engine.renderer.add_vertex_buffer(vb);
 
     use spark_core::scene::{Node, NodeData};
 
@@ -78,15 +78,15 @@ fn main() {
     engine.run(move |window, event, scene| {
         match event {
             winit::event::Event::WindowEvent { event, .. } => {
-                ui.handle_event(window, event)
+                (ui.handle_event(window, event), None)
             }
             winit::event::Event::AboutToWait => {
                 ui.begin_frame(window);
                 ui.draw_ui(scene);
-                let _full_output = ui.end_frame(window);
-                false
+                let full_output = ui.end_frame(window);
+                (false, Some(full_output))
             }
-            _ => false,
+            _ => (false, None),
         }
     });
 }
