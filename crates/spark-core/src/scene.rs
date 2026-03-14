@@ -1,5 +1,5 @@
 use slotmap::{SlotMap, new_key_type};
-use spark_math::Mat4;
+use spark_math::{Mat4, Vec4Swizzles};
 
 new_key_type! { pub struct NodeKey; }
 
@@ -9,6 +9,7 @@ pub enum NodeData {
         vertex_count: u32,
         texture_id: Option<String>,
         vertex_buffer_id: Option<u32>,
+        bounding_radius: f32,
     },
     Camera {
         fov: f32,
@@ -91,23 +92,54 @@ impl Scene {
         self.update_transforms(self.root);
     }
 
-    pub fn collect_render_data(&self) -> (Vec<(Mat4, u32, Option<String>, Option<u32>)>, Mat4) {
+    pub fn collect_render_data(
+        &self,
+        frustum: Option<&spark_math::Frustum>,
+    ) -> (Vec<(Mat4, u32, Option<String>, Option<u32>)>, Vec<(u32, Vec<Mat4>)>, Mat4) {
         let mut renderables = Vec::new();
+        let mut instanced = std::collections::HashMap::new();
         let mut view_matrix = Mat4::IDENTITY;
-        self.collect_data_recursive(self.root, &mut renderables, &mut view_matrix);
-        (renderables, view_matrix)
+        self.collect_data_recursive(self.root, &mut renderables, &mut instanced, &mut view_matrix, frustum);
+
+        let instanced_data = instanced.into_iter().map(|(vb_id, transforms)| (vb_id, transforms)).collect();
+
+        (renderables, instanced_data, view_matrix)
     }
 
     fn collect_data_recursive(
         &self,
         node_key: NodeKey,
         renderables: &mut Vec<(Mat4, u32, Option<String>, Option<u32>)>,
+        instanced: &mut std::collections::HashMap<u32, Vec<Mat4>>,
         view_matrix: &mut Mat4,
+        frustum: Option<&spark_math::Frustum>,
     ) {
         if let Some(node) = self.nodes.get(node_key) {
             match &node.data {
-                NodeData::Mesh { vertex_count, texture_id, vertex_buffer_id } => {
-                    renderables.push((node.global_transform, *vertex_count, texture_id.clone(), *vertex_buffer_id));
+                NodeData::Mesh {
+                    vertex_count,
+                    texture_id,
+                    vertex_buffer_id,
+                    bounding_radius,
+                } => {
+                    let visible = if let Some(f) = frustum {
+                        let translation = node.global_transform.w_axis.xyz();
+                        f.intersects_sphere(translation, *bounding_radius)
+                    } else {
+                        true
+                    };
+                    if visible {
+                        if let Some(vb_id) = vertex_buffer_id {
+                            instanced.entry(*vb_id).or_insert_with(Vec::new).push(node.global_transform);
+                        } else {
+                            renderables.push((
+                                node.global_transform,
+                                *vertex_count,
+                                texture_id.clone(),
+                                *vertex_buffer_id,
+                            ));
+                        }
+                    }
                 }
                 NodeData::Camera { .. } => {
                     *view_matrix = node.global_transform.inverse();
@@ -115,7 +147,7 @@ impl Scene {
                 _ => {}
             }
             for child in &node.children {
-                self.collect_data_recursive(*child, renderables, view_matrix);
+                self.collect_data_recursive(*child, renderables, instanced, view_matrix, frustum);
             }
         }
     }

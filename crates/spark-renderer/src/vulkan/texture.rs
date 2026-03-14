@@ -5,4 +5,5 @@ pub struct Texture {
     pub memory: vk::DeviceMemory,
     pub view: vk::ImageView,
     pub sampler: vk::Sampler,
+    pub mip_levels: u32,
 }

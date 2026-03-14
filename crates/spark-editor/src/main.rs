@@ -10,12 +10,20 @@ fn main() {
     env_logger::init();
     log::info!("Spark Editor starting...");
 
-    let mut engine = Engine::new("Spark Engine Editor").expect("Failed to initialize engine");
+    let compiler = shaderc::Compiler::new().unwrap();
+
+    let ui_vert_code = fs::read_to_string("assets/shaders/ui.vert").unwrap();
+    let ui_frag_code = fs::read_to_string("assets/shaders/ui.frag").unwrap();
+    let ui_vert_spirv = compiler.compile_into_spirv(&ui_vert_code, shaderc::ShaderKind::Vertex, "ui.vert", "main", None).unwrap();
+    let ui_frag_spirv = compiler.compile_into_spirv(&ui_frag_code, shaderc::ShaderKind::Fragment, "ui.frag", "main", None).unwrap();
+
+    let mut engine = Engine::new(
+        "Spark Engine Editor",
+        Some((ui_vert_spirv.as_binary(), ui_frag_spirv.as_binary()))
+    ).expect("Failed to initialize engine");
 
     let vert_code = fs::read_to_string("assets/shaders/triangle.vert").expect("Failed to read vertex shader");
     let frag_code = fs::read_to_string("assets/shaders/triangle.frag").expect("Failed to read fragment shader");
-
-    let compiler = shaderc::Compiler::new().unwrap();
 
     let vert_spirv = compiler.compile_into_spirv(&vert_code, shaderc::ShaderKind::Vertex, "triangle.vert", "main", None).unwrap();
     let frag_spirv = compiler.compile_into_spirv(&frag_code, shaderc::ShaderKind::Fragment, "triangle.frag", "main", None).unwrap();
@@ -55,7 +63,12 @@ fn main() {
         global_transform: Mat4::IDENTITY,
         parent: None,
         children: Vec::new(),
-        data: NodeData::Mesh { vertex_count: 3, texture_id: None, vertex_buffer_id: Some(0) },
+        data: NodeData::Mesh {
+            vertex_count: 3,
+            texture_id: None,
+            vertex_buffer_id: Some(0),
+            bounding_radius: 1.0,
+        },
     };
 
     engine.scene.add_node(engine.scene.root, triangle_node);

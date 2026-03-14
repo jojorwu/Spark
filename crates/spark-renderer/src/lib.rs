@@ -30,6 +30,7 @@ pub struct Renderer {
     current_frame: usize,
     pipeline: Option<Pipeline>,
     pub vertex_buffers: Vec<Buffer>,
+    pub instance_buffers: Vec<Buffer>,
     index_buffer: Option<Buffer>,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
@@ -45,7 +46,10 @@ pub struct Buffer {
 }
 
 impl Renderer {
-    pub fn new(window: &Window) -> Result<Self, RendererError> {
+    pub fn new(
+        window: &Window,
+        ui_shaders: Option<(&[u32], &[u32])>
+    ) -> Result<Self, RendererError> {
         let context = VulkanContext::new(window)?;
         let device = VulkanDevice::new(&context.instance, &context.surface_loader, context.surface)?;
         let swapchain = VulkanSwapchain::new(
@@ -68,7 +72,9 @@ impl Renderer {
             Self::create_sync_objects(&device.device);
 
         let descriptor_pool = Self::create_descriptor_pool(&device.device);
-        let egui_renderer = EguiRenderer::new(&device.device, render_pass);
+        let egui_renderer = ui_shaders.map(|(v, f)| {
+            EguiRenderer::new(&device.device, render_pass, v, f, swapchain.extent)
+        });
 
         Ok(Self {
             context,
@@ -84,10 +90,11 @@ impl Renderer {
             current_frame: 0,
             pipeline: None,
             vertex_buffers: Vec::new(),
+            instance_buffers: Vec::new(),
             index_buffer: None,
             descriptor_pool,
             descriptor_sets: Vec::new(),
-            egui_renderer: Some(egui_renderer),
+            egui_renderer,
         })
     }
 
@@ -133,6 +140,11 @@ impl Renderer {
         (self.vertex_buffers.len() - 1) as u32
     }
 
+    pub fn add_instance_buffer(&mut self, buffer: Buffer) -> u32 {
+        self.instance_buffers.push(buffer);
+        (self.instance_buffers.len() - 1) as u32
+    }
+
     pub fn set_index_buffer(&mut self, buffer: Buffer) {
         self.index_buffer = Some(buffer);
     }
@@ -140,6 +152,7 @@ impl Renderer {
     pub fn draw_frame(
         &mut self,
         renderables: &[(spark_math::Mat4, u32, Option<String>, Option<u32>)],
+        instanced_renderables: &[(u32, u32, u32)], // (vertex_buffer_id, instance_buffer_id, instance_count)
         view_proj: spark_math::Mat4,
         window: &Window,
         egui_output: Option<egui::FullOutput>,
@@ -180,7 +193,7 @@ impl Renderer {
                 )
                 .expect("Failed to reset command buffer");
 
-            self.record_command_buffer(image_index, renderables, view_proj, egui_output);
+            self.record_command_buffer(image_index, renderables, instanced_renderables, view_proj, egui_output);
 
             let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
             let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -224,7 +237,8 @@ impl Renderer {
     fn record_command_buffer(
         &mut self,
         image_index: u32,
-        renderables: &[(spark_math::Mat4, u32, Option<String>, Option<u32>)],
+        _renderables: &[(spark_math::Mat4, u32, Option<String>, Option<u32>)],
+        instanced_renderables: &[(u32, u32, u32)],
         view_proj: spark_math::Mat4,
         egui_output: Option<egui::FullOutput>,
     ) {
@@ -276,35 +290,44 @@ impl Renderer {
                     );
                 }
 
-                for (model, vertex_count, _texture_id, vertex_buffer_id) in renderables {
-                    if let Some(id) = vertex_buffer_id {
-                        if let Some(vb) = self.get_buffer(*id) {
-                             self.device.device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
-                        }
+                let view_proj_bytes = std::slice::from_raw_parts(
+                    &view_proj as *const _ as *const u8,
+                    std::mem::size_of::<spark_math::Mat4>(),
+                );
+                self.device.device.cmd_push_constants(
+                    command_buffer,
+                    pipeline.layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    view_proj_bytes,
+                );
+
+                // Instanced draw calls
+                for (vb_id, instance_buffer_id, instance_count) in instanced_renderables {
+                    if let (Some(vb), Some(ib)) = (self.get_buffer(*vb_id), self.get_instance_buffer(*instance_buffer_id)) {
+                        self.device.device.cmd_bind_vertex_buffers(
+                            command_buffer,
+                            0,
+                            &[vb.handle, ib.handle],
+                            &[0, 0]
+                        );
+
+                        let vertex_count = (vb.size / std::mem::size_of::<crate::vertex::Vertex>() as u64) as u32;
+                        self.device.device.cmd_draw(command_buffer, vertex_count, *instance_count, 0, 0);
                     }
-
-                    let mut constants = [spark_math::Mat4::IDENTITY; 2];
-                    constants[0] = *model;
-                    constants[1] = view_proj;
-
-                    let bytes = std::slice::from_raw_parts(
-                        constants.as_ptr() as *const u8,
-                        std::mem::size_of::<spark_math::Mat4>() * 2,
-                    );
-                    self.device.device.cmd_push_constants(
-                        command_buffer,
-                        pipeline.layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        bytes,
-                    );
-                    self.device.device.cmd_draw(command_buffer, *vertex_count, 1, 0, 0);
                 }
             }
 
             if let Some(output) = egui_output {
+                let extent = self.get_extent();
                 if let Some(egui) = &mut self.egui_renderer {
-                    egui.draw(&self.device.device, self.device.graphics_queue, command_buffer, output);
+                    egui.draw(
+                        &self.device.device,
+                        self.device.graphics_queue,
+                        command_buffer,
+                        output,
+                        [extent.width as f32, extent.height as f32]
+                    );
                 }
             }
 
@@ -471,6 +494,10 @@ impl Renderer {
         self.vertex_buffers.get(id as usize)
     }
 
+    pub fn get_instance_buffer(&self, id: u32) -> Option<&Buffer> {
+        self.instance_buffers.get(id as usize)
+    }
+
     pub fn get_graphics_queue(&self) -> vk::Queue {
         self.device.graphics_queue
     }
@@ -513,6 +540,286 @@ impl Renderer {
             self.swapchain.loader
                 .destroy_swapchain(self.swapchain.handle, None);
         }
+    }
+
+    pub fn create_texture_from_image(&self, img: &image::DynamicImage) -> Texture {
+        let (width, height) = (img.width(), img.height());
+        let mip_levels = (((width.max(height) as f32).log2().floor()) as u32) + 1;
+
+        let rgba = img.to_rgba8();
+        let pixels = rgba.as_raw();
+        let image_size = (pixels.len()) as u64;
+
+        let staging_buffer = self.create_buffer(
+            image_size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        );
+
+        self.upload_to_buffer(&staging_buffer, pixels);
+
+        let (image, memory) = self.create_image(
+            width,
+            height,
+            mip_levels,
+            vk::Format::R8G8B8A8_SRGB,
+            vk::ImageTiling::OPTIMAL,
+            vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        );
+
+        self.transition_image_layout(
+            image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            mip_levels,
+        );
+        self.copy_buffer_to_image(staging_buffer.handle, image, width, height);
+
+        self.generate_mipmaps(image, vk::Format::R8G8B8A8_SRGB, width, height, mip_levels);
+
+        let view = self.create_image_view(image, vk::Format::R8G8B8A8_SRGB, mip_levels);
+        let sampler = self.create_texture_sampler(mip_levels);
+
+        self.destroy_buffer(staging_buffer);
+
+        Texture {
+            image,
+            memory,
+            view,
+            sampler,
+            mip_levels,
+        }
+    }
+
+    fn create_image(
+        &self,
+        width: u32,
+        height: u32,
+        mip_levels: u32,
+        format: vk::Format,
+        tiling: vk::ImageTiling,
+        usage: vk::ImageUsageFlags,
+        properties: vk::MemoryPropertyFlags,
+    ) -> (vk::Image, vk::DeviceMemory) {
+        let image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .extent(vk::Extent3D { width, height, depth: 1 })
+            .mip_levels(mip_levels)
+            .array_layers(1)
+            .format(format)
+            .tiling(tiling)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .usage(usage)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let image = unsafe {
+            self.device.device
+                .create_image(&image_info, None)
+                .expect("Failed to create image")
+        };
+
+        let mem_requirements = unsafe { self.device.device.get_image_memory_requirements(image) };
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_requirements.size)
+            .memory_type_index(self.find_memory_type(mem_requirements.memory_type_bits, properties));
+
+        let memory = unsafe {
+            self.device.device
+                .allocate_memory(&alloc_info, None)
+                .expect("Failed to allocate image memory")
+        };
+
+        unsafe {
+            self.device.device
+                .bind_image_memory(image, memory, 0)
+                .expect("Failed to bind image memory");
+        }
+
+        (image, memory)
+    }
+
+    fn create_image_view(&self, image: vk::Image, format: vk::Format, mip_levels: u32) -> vk::ImageView {
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(format)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: mip_levels,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        unsafe {
+            self.device.device
+                .create_image_view(&view_info, None)
+                .expect("Failed to create image view")
+        }
+    }
+
+    fn create_texture_sampler(&self, mip_levels: u32) -> vk::Sampler {
+        let properties = unsafe {
+            self.context.instance.get_physical_device_properties(self.device.pdevice)
+        };
+
+        let sampler_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR)
+            .address_mode_u(vk::SamplerAddressMode::REPEAT)
+            .address_mode_v(vk::SamplerAddressMode::REPEAT)
+            .address_mode_w(vk::SamplerAddressMode::REPEAT)
+            .anisotropy_enable(true)
+            .max_anisotropy(properties.limits.max_sampler_anisotropy)
+            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+            .unnormalized_coordinates(false)
+            .compare_enable(false)
+            .compare_op(vk::CompareOp::ALWAYS)
+            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .min_lod(0.0)
+            .max_lod(mip_levels as f32)
+            .mip_lod_bias(0.0);
+
+        unsafe {
+            self.device.device
+                .create_sampler(&sampler_info, None)
+                .expect("Failed to create texture sampler")
+        }
+    }
+
+    fn generate_mipmaps(
+        &self,
+        image: vk::Image,
+        _format: vk::Format,
+        width: u32,
+        height: u32,
+        mip_levels: u32,
+    ) {
+        // Check if image format supports linear filtering
+        let properties = unsafe {
+            self.context.instance.get_physical_device_format_properties(self.device.pdevice, _format)
+        };
+
+        if !properties.optimal_tiling_features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR) {
+            panic!("Texture image format does not support linear filtering!");
+        }
+
+        let command_buffer = self.begin_single_time_commands();
+
+        let mut barrier = vk::ImageMemoryBarrier::default()
+            .image(image)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_array_layer: 0,
+                layer_count: 1,
+                level_count: 1,
+                ..Default::default()
+            });
+
+        let mut mip_width = width as i32;
+        let mut mip_height = height as i32;
+
+        for i in 1..mip_levels {
+            barrier.subresource_range.base_mip_level = i - 1;
+            barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+            barrier.new_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+            barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+            barrier.dst_access_mask = vk::AccessFlags::TRANSFER_READ;
+
+            unsafe {
+                self.device.device.cmd_pipeline_barrier(
+                    command_buffer,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier],
+                );
+            }
+
+            let blit = vk::ImageBlit::default()
+                .src_offsets([
+                    vk::Offset3D { x: 0, y: 0, z: 0 },
+                    vk::Offset3D { x: mip_width, y: mip_height, z: 1 },
+                ])
+                .src_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: i - 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .dst_offsets([
+                    vk::Offset3D { x: 0, y: 0, z: 0 },
+                    vk::Offset3D {
+                        x: if mip_width > 1 { mip_width / 2 } else { 1 },
+                        y: if mip_height > 1 { mip_height / 2 } else { 1 },
+                        z: 1,
+                    },
+                ])
+                .dst_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: i,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+
+            unsafe {
+                self.device.device.cmd_blit_image(
+                    command_buffer,
+                    image,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[blit],
+                    vk::Filter::LINEAR,
+                );
+            }
+
+            barrier.old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+            barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+            barrier.src_access_mask = vk::AccessFlags::TRANSFER_READ;
+            barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+
+            unsafe {
+                self.device.device.cmd_pipeline_barrier(
+                    command_buffer,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier],
+                );
+            }
+
+            if mip_width > 1 { mip_width /= 2; }
+            if mip_height > 1 { mip_height /= 2; }
+        }
+
+        barrier.subresource_range.base_mip_level = mip_levels - 1;
+        barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+        barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+        barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+        barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+
+        unsafe {
+            self.device.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier],
+            );
+        }
+
+        self.end_single_time_commands(command_buffer);
     }
 
     pub fn create_buffer(
@@ -559,6 +866,7 @@ impl Renderer {
         image: vk::Image,
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
+        mip_levels: u32,
     ) {
         let command_buffer = self.begin_single_time_commands();
 
@@ -571,7 +879,7 @@ impl Renderer {
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 base_mip_level: 0,
-                level_count: 1,
+                level_count: mip_levels,
                 base_array_layer: 0,
                 layer_count: 1,
             });
@@ -752,6 +1060,11 @@ impl Drop for Renderer {
             let vertex_buffers = std::mem::take(&mut self.vertex_buffers);
             for vb in vertex_buffers {
                 self.destroy_buffer(vb);
+            }
+
+            let instance_buffers = std::mem::take(&mut self.instance_buffers);
+            for ib in instance_buffers {
+                self.destroy_buffer(ib);
             }
 
             if let Some(ib) = self.index_buffer.take() {

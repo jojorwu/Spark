@@ -20,9 +20,14 @@ impl Pipeline {
 
         let main_function_name = CString::new("main").unwrap();
 
-        use crate::vertex::Vertex;
-        let binding_descriptions = [Vertex::get_binding_description()];
-        let attribute_descriptions = Vertex::get_attribute_descriptions();
+        use crate::vertex::{Vertex, InstanceData};
+        let binding_descriptions = [
+            Vertex::get_binding_description(),
+            InstanceData::get_binding_description(),
+        ];
+        let mut attribute_descriptions = Vec::new();
+        attribute_descriptions.extend_from_slice(&Vertex::get_attribute_descriptions());
+        attribute_descriptions.extend_from_slice(&InstanceData::get_attribute_descriptions());
 
         let shader_stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -85,7 +90,7 @@ impl Pipeline {
         let push_constant_ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX)
             .offset(0)
-            .size((std::mem::size_of::<spark_math::Mat4>() * 2) as u32)];
+            .size((std::mem::size_of::<spark_math::Mat4>()) as u32)];
 
         let descriptor_set_layout_bindings = [vk::DescriptorSetLayoutBinding::default()
             .binding(0)

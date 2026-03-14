@@ -29,14 +29,17 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(title: &str) -> Result<Self, spark_renderer::error::RendererError> {
+    pub fn new(
+        title: &str,
+        ui_shaders: Option<(&[u32], &[u32])>
+    ) -> Result<Self, spark_renderer::error::RendererError> {
         let event_loop = EventLoop::new().expect("Failed to create event loop");
         let window = WindowBuilder::new()
             .with_title(title)
             .build(&event_loop)
             .expect("Failed to build window");
 
-        let renderer = Renderer::new(&window)?;
+        let renderer = Renderer::new(&window, ui_shaders)?;
         let scene = Scene::new();
         let task_system = TaskSystem::new();
         let plugin_manager = PluginManager::new();
@@ -107,7 +110,6 @@ impl Engine {
 
                     self.plugin_manager.update_plugins(&mut self.scene, delta);
                     self.scene.update_all_transforms();
-                    let (renderables, view_matrix) = self.scene.collect_render_data();
 
                     let extent = self.renderer.get_extent();
                     let projection = spark_math::Mat4::perspective_rh(
@@ -116,9 +118,34 @@ impl Engine {
                         0.1,
                         100.0,
                     );
+
+                    // First pass to find camera
+                    let (_, _, view_matrix) = self.scene.collect_render_data(None);
+                    let frustum = spark_math::Frustum::from_matrix(projection * view_matrix);
+
+                    // Second pass for culled rendering
+                    let (renderables, instanced_raw, _) = self.scene.collect_render_data(Some(&frustum));
+
+                    // Prepare instance buffers
+                    let mut instanced_renderables = Vec::new();
+                    for (vb_id, transforms) in instanced_raw {
+                        let instance_buffer = self.renderer.create_buffer(
+                            (std::mem::size_of::<spark_math::Mat4>() * transforms.len()) as u64,
+                            spark_renderer::ash::vk::BufferUsageFlags::VERTEX_BUFFER,
+                            spark_renderer::ash::vk::MemoryPropertyFlags::HOST_VISIBLE | spark_renderer::ash::vk::MemoryPropertyFlags::HOST_COHERENT,
+                        );
+                        self.renderer.upload_to_buffer(&instance_buffer, &transforms);
+                        let ib_id = self.renderer.add_instance_buffer(instance_buffer);
+                        instanced_renderables.push((vb_id, ib_id, transforms.len() as u32));
+                    }
+
                     let view_proj = projection * view_matrix;
 
-                    self.renderer.draw_frame(&renderables, view_proj, &self.window, egui_output);
+                    self.renderer.draw_frame(&renderables, &instanced_renderables, view_proj, &self.window, egui_output);
+
+                    // Clear temporary instance buffers for next frame
+                    // In a real engine, we'd reuse them or use a ring buffer.
+                    self.renderer.instance_buffers.clear();
                 }
                 _ => (),
             }
