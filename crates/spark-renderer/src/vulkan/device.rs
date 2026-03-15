@@ -6,6 +6,8 @@ pub struct VulkanDevice {
     pub device: Device,
     pub graphics_queue: vk::Queue,
     pub graphics_family: u32,
+    pub msaa_samples: vk::SampleCountFlags,
+    pub depth_format: vk::Format,
 }
 
 impl VulkanDevice {
@@ -43,12 +45,48 @@ impl VulkanDevice {
 
         let graphics_queue = unsafe { device.get_device_queue(graphics_family, 0) };
 
+        let msaa_samples = Self::get_max_usable_sample_count(instance, pdevice);
+        let depth_format = Self::find_depth_format(instance, pdevice);
+
         Ok(Self {
             pdevice,
             device,
             graphics_queue,
             graphics_family,
+            msaa_samples,
+            depth_format,
         })
+    }
+
+    fn get_max_usable_sample_count(instance: &Instance, pdevice: vk::PhysicalDevice) -> vk::SampleCountFlags {
+        let props = unsafe { instance.get_physical_device_properties(pdevice) };
+        let counts = props.limits.framebuffer_color_sample_counts & props.limits.framebuffer_depth_sample_counts;
+
+        if counts.contains(vk::SampleCountFlags::TYPE_64) { return vk::SampleCountFlags::TYPE_64; }
+        if counts.contains(vk::SampleCountFlags::TYPE_32) { return vk::SampleCountFlags::TYPE_32; }
+        if counts.contains(vk::SampleCountFlags::TYPE_16) { return vk::SampleCountFlags::TYPE_16; }
+        if counts.contains(vk::SampleCountFlags::TYPE_8) { return vk::SampleCountFlags::TYPE_8; }
+        if counts.contains(vk::SampleCountFlags::TYPE_4) { return vk::SampleCountFlags::TYPE_4; }
+        if counts.contains(vk::SampleCountFlags::TYPE_2) { return vk::SampleCountFlags::TYPE_2; }
+
+        vk::SampleCountFlags::TYPE_1
+    }
+
+    fn find_depth_format(instance: &Instance, pdevice: vk::PhysicalDevice) -> vk::Format {
+        let candidates = [
+            vk::Format::D32_SFLOAT,
+            vk::Format::D32_SFLOAT_S8_UINT,
+            vk::Format::D24_UNORM_S8_UINT,
+        ];
+
+        for &format in &candidates {
+            let props = unsafe { instance.get_physical_device_format_properties(pdevice, format) };
+            if props.optimal_tiling_features.contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT) {
+                return format;
+            }
+        }
+
+        vk::Format::D16_UNORM
     }
 
     fn score_device(instance: &Instance, pdevice: vk::PhysicalDevice) -> u32 {

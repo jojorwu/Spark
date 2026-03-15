@@ -230,6 +230,7 @@ fn main() {
         engine.renderer.get_extent(),
         vert_spirv.as_binary(),
         frag_spirv.as_binary(),
+        engine.renderer.get_msaa_samples(),
     );
 
     engine.renderer.set_pipeline(pipeline);

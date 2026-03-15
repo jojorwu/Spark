@@ -20,6 +20,7 @@ impl Pipeline {
         extent: vk::Extent2D,
         vert_shader_code: &[u32],
         frag_shader_code: &[u32],
+        msaa_samples: vk::SampleCountFlags,
     ) -> Self {
         let vert_shader_module = Self::create_shader_module(device, vert_shader_code);
         let frag_shader_module = Self::create_shader_module(device, frag_shader_code);
@@ -56,9 +57,9 @@ impl Pipeline {
 
         let viewports = [vk::Viewport::default()
             .x(0.0)
-            .y(0.0)
+            .y(extent.height as f32)
             .width(extent.width as f32)
-            .height(extent.height as f32)
+            .height(-(extent.height as f32))
             .min_depth(0.0)
             .max_depth(1.0)];
 
@@ -76,12 +77,12 @@ impl Pipeline {
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
             .cull_mode(vk::CullModeFlags::BACK)
-            .front_face(vk::FrontFace::CLOCKWISE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false);
 
         let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
             .sample_shading_enable(false)
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+            .rasterization_samples(msaa_samples);
 
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(true)

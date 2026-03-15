@@ -21,12 +21,18 @@ pub struct Renderer {
     device: VulkanDevice,
     swapchain: VulkanSwapchain,
     pub render_pass: vk::RenderPass,
-    pub hdr_image: vk::Image,
-    pub hdr_memory: vk::DeviceMemory,
-    pub hdr_view: vk::ImageView,
-    pub depth_image: vk::Image,
-    pub depth_memory: vk::DeviceMemory,
-    pub depth_view: vk::ImageView,
+    pub hdr_images: Vec<vk::Image>,
+    pub hdr_memories: Vec<vk::DeviceMemory>,
+    pub hdr_views: Vec<vk::ImageView>,
+    pub depth_images: Vec<vk::Image>,
+    pub depth_memories: Vec<vk::DeviceMemory>,
+    pub depth_views: Vec<vk::ImageView>,
+    pub msaa_color_images: Vec<vk::Image>,
+    pub msaa_color_memories: Vec<vk::DeviceMemory>,
+    pub msaa_color_views: Vec<vk::ImageView>,
+    pub msaa_depth_images: Vec<vk::Image>,
+    pub msaa_depth_memories: Vec<vk::DeviceMemory>,
+    pub msaa_depth_views: Vec<vk::ImageView>,
     pub shadow_image: vk::Image,
     pub shadow_memory: vk::DeviceMemory,
     pub shadow_view: vk::ImageView,
@@ -86,19 +92,66 @@ impl Renderer {
             window.inner_size().height,
         );
 
-        let (hdr_image, hdr_memory, hdr_view) = Self::create_hdr_resources(
-            &device.device,
-            device.pdevice,
-            &context.instance,
-            swapchain.extent,
-        );
+        let mut hdr_images = Vec::new();
+        let mut hdr_memories = Vec::new();
+        let mut hdr_views = Vec::new();
+        let mut depth_images = Vec::new();
+        let mut depth_memories = Vec::new();
+        let mut depth_views = Vec::new();
+        let mut msaa_color_images = Vec::new();
+        let mut msaa_color_memories = Vec::new();
+        let mut msaa_color_views = Vec::new();
+        let mut msaa_depth_images = Vec::new();
+        let mut msaa_depth_memories = Vec::new();
+        let mut msaa_depth_views = Vec::new();
 
-        let (depth_image, depth_memory, depth_view) = Self::create_depth_resources(
-            &device.device,
-            device.pdevice,
-            &context.instance,
-            swapchain.extent,
-        );
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            let (hdr_image, hdr_memory, hdr_view) = Self::create_hdr_resources(
+                &device.device,
+                device.pdevice,
+                &context.instance,
+                swapchain.extent,
+                vk::SampleCountFlags::TYPE_1,
+            );
+            hdr_images.push(hdr_image);
+            hdr_memories.push(hdr_memory);
+            hdr_views.push(hdr_view);
+
+            let (depth_image, depth_memory, depth_view) = Self::create_depth_resources(
+                &device.device,
+                device.pdevice,
+                &context.instance,
+                swapchain.extent,
+                vk::SampleCountFlags::TYPE_1,
+                device.depth_format,
+            );
+            depth_images.push(depth_image);
+            depth_memories.push(depth_memory);
+            depth_views.push(depth_view);
+
+            let (msaa_c_image, msaa_c_memory, msaa_c_view) = Self::create_hdr_resources(
+                &device.device,
+                device.pdevice,
+                &context.instance,
+                swapchain.extent,
+                device.msaa_samples,
+            );
+            msaa_color_images.push(msaa_c_image);
+            msaa_color_memories.push(msaa_c_memory);
+            msaa_color_views.push(msaa_c_view);
+
+            let (msaa_d_image, msaa_d_memory, msaa_d_view) = Self::create_depth_resources(
+                &device.device,
+                device.pdevice,
+                &context.instance,
+                swapchain.extent,
+                device.msaa_samples,
+                device.depth_format,
+            );
+            msaa_depth_images.push(msaa_d_image);
+            msaa_depth_memories.push(msaa_d_memory);
+            msaa_depth_views.push(msaa_d_view);
+        }
 
         let (shadow_image, shadow_memory, shadow_view, shadow_sampler) =
             Self::create_shadow_resources(&device.device, device.pdevice, &context.instance);
@@ -123,13 +176,16 @@ impl Renderer {
             unsafe { device.device.create_pipeline_layout(&info, None).unwrap() }
         };
 
-        let render_pass = Self::create_render_pass(&device.device, swapchain.format);
+        let render_pass = Self::create_render_pass(&device.device, swapchain.format, device.msaa_samples, device.depth_format);
         let framebuffers = Self::create_framebuffers(
             &device.device,
             render_pass,
-            hdr_view,
-            depth_view,
+            &hdr_views,
+            &depth_views,
+            &msaa_color_views,
+            &msaa_depth_views,
             swapchain.extent,
+            device.msaa_samples,
         );
 
         let post_process_render_pass = Self::create_post_process_render_pass(&device.device, swapchain.format);
@@ -161,13 +217,14 @@ impl Renderer {
                     width: (swapchain.extent.width >> i).max(1),
                     height: (swapchain.extent.height >> i).max(1),
                 },
+                vk::SampleCountFlags::TYPE_1,
             );
             bloom_images.push(img);
             bloom_memories.push(mem);
             bloom_views.push(view);
         }
         let egui_renderer = ui_shaders.map(|(v, f)| {
-            EguiRenderer::new(&device.device, render_pass, v, f, swapchain.extent)
+                EguiRenderer::new(&device.device, render_pass, v, f, swapchain.extent, device.msaa_samples)
         });
 
         Ok(Self {
@@ -175,12 +232,18 @@ impl Renderer {
             device,
             swapchain,
             render_pass,
-            hdr_image,
-            hdr_memory,
-            hdr_view,
-            depth_image,
-            depth_memory,
-            depth_view,
+            hdr_images,
+            hdr_memories,
+            hdr_views,
+            depth_images,
+            depth_memories,
+            depth_views,
+            msaa_color_images,
+            msaa_color_memories,
+            msaa_color_views,
+            msaa_depth_images,
+            msaa_depth_memories,
+            msaa_depth_views,
             post_process_render_pass,
             post_process_framebuffers,
             shadow_image,
@@ -243,7 +306,7 @@ impl Renderer {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let image_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(self.hdr_view)
+                .image_view(self.hdr_views[i])
                 .sampler(self.shadow_sampler)];
 
             let bloom_info = [vk::DescriptorImageInfo::default()
@@ -504,7 +567,7 @@ impl Renderer {
                 self.device.device.cmd_end_render_pass(command_buffer);
             }
 
-            let clear_values = [
+            let mut clear_values = vec![
                 vk::ClearValue {
                     color: vk::ClearColorValue {
                         float32: [0.1, 0.1, 0.1, 1.0],
@@ -517,6 +580,14 @@ impl Renderer {
                     },
                 },
             ];
+
+            if self.device.msaa_samples != vk::SampleCountFlags::TYPE_1 {
+                clear_values.push(vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: [0.1, 0.1, 0.1, 1.0],
+                    },
+                });
+            }
 
             let render_pass_info = vk::RenderPassBeginInfo::default()
                 .render_pass(self.render_pass)
@@ -613,7 +684,7 @@ impl Renderer {
             // --- Post Process Pass ---
             if let Some(post_pipeline) = self.post_process_pipeline {
                 // Bloom Filter Pass (Extract bright areas)
-                if let Some(bloom_pipe) = self.bloom_pipeline {
+                if let Some(_bloom_pipe) = self.bloom_pipeline {
                      // We would need a dedicated render pass and framebuffer for the bloom filter.
                      // For this high-level skeleton, we'll focus on the Tone Mapping dispatch.
                 }
@@ -717,24 +788,26 @@ impl Renderer {
         }
     }
 
-    fn create_render_pass(device: &ash::Device, _format: vk::Format) -> vk::RenderPass {
+    fn create_render_pass(device: &ash::Device, _format: vk::Format, msaa_samples: vk::SampleCountFlags, depth_format: vk::Format) -> vk::RenderPass {
+        let is_msaa = msaa_samples != vk::SampleCountFlags::TYPE_1;
+
         let color_attachment = vk::AttachmentDescription::default()
             .format(vk::Format::R16G16B16A16_SFLOAT) // Intermediate HDR format
-            .samples(vk::SampleCountFlags::TYPE_1)
+            .samples(msaa_samples)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
             .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            .final_layout(if is_msaa { vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL } else { vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL });
 
         let color_attachment_ref = vk::AttachmentReference::default()
             .attachment(0)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
         let depth_attachment = vk::AttachmentDescription::default()
-            .format(vk::Format::D32_SFLOAT)
-            .samples(vk::SampleCountFlags::TYPE_1)
+            .format(depth_format)
+            .samples(msaa_samples)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::DONT_CARE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
@@ -746,10 +819,31 @@ impl Renderer {
             .attachment(1)
             .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
-        let subpass = vk::SubpassDescription::default()
+        let mut attachments = vec![color_attachment, depth_attachment];
+        let mut subpass = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(std::slice::from_ref(&color_attachment_ref))
             .depth_stencil_attachment(&depth_attachment_ref);
+
+        let color_resolve_attachment_ref;
+        if is_msaa {
+            let color_resolve_attachment = vk::AttachmentDescription::default()
+                .format(vk::Format::R16G16B16A16_SFLOAT)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+
+            color_resolve_attachment_ref = vk::AttachmentReference::default()
+                .attachment(2)
+                .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+            attachments.push(color_resolve_attachment);
+            subpass = subpass.resolve_attachments(std::slice::from_ref(&color_resolve_attachment_ref));
+        }
 
         let dependency = vk::SubpassDependency::default()
             .src_subpass(vk::SUBPASS_EXTERNAL)
@@ -759,7 +853,6 @@ impl Renderer {
             .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS)
             .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE);
 
-        let attachments = [color_attachment, depth_attachment];
         let render_pass_info = vk::RenderPassCreateInfo::default()
             .attachments(&attachments)
             .subpasses(std::slice::from_ref(&subpass))
@@ -801,13 +894,21 @@ impl Renderer {
     fn create_framebuffers(
         device: &ash::Device,
         render_pass: vk::RenderPass,
-        hdr_view: vk::ImageView,
-        depth_view: vk::ImageView,
+        hdr_views: &[vk::ImageView],
+        _depth_views: &[vk::ImageView],
+        msaa_color_views: &[vk::ImageView],
+        msaa_depth_views: &[vk::ImageView],
         extent: vk::Extent2D,
+        msaa_samples: vk::SampleCountFlags,
     ) -> Vec<vk::Framebuffer> {
+        let is_msaa = msaa_samples != vk::SampleCountFlags::TYPE_1;
         (0..MAX_FRAMES_IN_FLIGHT)
-            .map(|_| {
-                let attachments = [hdr_view, depth_view];
+            .map(|i| {
+                let attachments = if is_msaa {
+                    vec![msaa_color_views[i], msaa_depth_views[i], hdr_views[i]]
+                } else {
+                    vec![hdr_views[i], msaa_depth_views[i]] // In non-MSAA, hdr_image is attachment 0, msaa_depth is attachment 1
+                };
                 let framebuffer_info = vk::FramebufferCreateInfo::default()
                     .render_pass(render_pass)
                     .attachments(&attachments)
@@ -934,6 +1035,10 @@ impl Renderer {
         self.device.graphics_queue
     }
 
+    pub fn get_msaa_samples(&self) -> vk::SampleCountFlags {
+        self.device.msaa_samples
+    }
+
     fn create_shadow_render_pass(device: &ash::Device) -> vk::RenderPass {
         let shadow_attachment = vk::AttachmentDescription::default()
             .format(vk::Format::D32_SFLOAT)
@@ -979,6 +1084,7 @@ impl Renderer {
         pdevice: vk::PhysicalDevice,
         instance: &ash::Instance,
         extent: vk::Extent2D,
+        samples: vk::SampleCountFlags,
     ) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
         let format = vk::Format::R16G16B16A16_SFLOAT;
 
@@ -994,8 +1100,8 @@ impl Renderer {
             .format(format)
             .tiling(vk::ImageTiling::OPTIMAL)
             .initial_layout(vk::ImageLayout::UNDEFINED)
-            .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
-            .samples(vk::SampleCountFlags::TYPE_1)
+            .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSIENT_ATTACHMENT)
+            .samples(samples)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
         let image = unsafe {
@@ -1060,8 +1166,9 @@ impl Renderer {
         pdevice: vk::PhysicalDevice,
         instance: &ash::Instance,
         extent: vk::Extent2D,
+        samples: vk::SampleCountFlags,
+        format: vk::Format,
     ) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
-        let format = vk::Format::D32_SFLOAT;
 
         let image_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
@@ -1075,8 +1182,8 @@ impl Renderer {
             .format(format)
             .tiling(vk::ImageTiling::OPTIMAL)
             .initial_layout(vk::ImageLayout::UNDEFINED)
-            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
-            .samples(vk::SampleCountFlags::TYPE_1)
+            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::TRANSIENT_ATTACHMENT)
+            .samples(samples)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
         let image = unsafe {
@@ -1144,7 +1251,7 @@ impl Renderer {
         instance: &ash::Instance,
     ) -> (vk::Image, vk::DeviceMemory, vk::ImageView, vk::Sampler) {
         let extent = vk::Extent2D { width: Self::SHADOW_MAP_CASCADE_SIZE, height: Self::SHADOW_MAP_CASCADE_SIZE };
-        let format = vk::Format::D32_SFLOAT;
+        let format = vk::Format::D32_SFLOAT; // We can probably use depth_format here too, but shadow maps are usually simpler
 
         let image_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
@@ -1258,33 +1365,90 @@ impl Renderer {
 
             self.swapchain = swapchain;
 
-            let (depth_image, depth_memory, depth_view) = Self::create_depth_resources(
-                &self.device.device,
-                self.device.pdevice,
-                &self.context.instance,
-                self.swapchain.extent,
-            );
-            self.depth_image = depth_image;
-            self.depth_memory = depth_memory;
-            self.depth_view = depth_view;
+            let mut hdr_images = Vec::new();
+            let mut hdr_memories = Vec::new();
+            let mut hdr_views = Vec::new();
+            let mut depth_images = Vec::new();
+            let mut depth_memories = Vec::new();
+            let mut depth_views = Vec::new();
+            let mut msaa_color_images = Vec::new();
+            let mut msaa_color_memories = Vec::new();
+            let mut msaa_color_views = Vec::new();
+            let mut msaa_depth_images = Vec::new();
+            let mut msaa_depth_memories = Vec::new();
+            let mut msaa_depth_views = Vec::new();
 
-            let (hdr_image, hdr_memory, hdr_view) = Self::create_hdr_resources(
-                &self.device.device,
-                self.device.pdevice,
-                &self.context.instance,
-                self.swapchain.extent,
-            );
-            self.hdr_image = hdr_image;
-            self.hdr_memory = hdr_memory;
-            self.hdr_view = hdr_view;
+            for _ in 0..MAX_FRAMES_IN_FLIGHT {
+                let (hdr_image, hdr_memory, hdr_view) = Self::create_hdr_resources(
+                    &self.device.device,
+                    self.device.pdevice,
+                    &self.context.instance,
+                    self.swapchain.extent,
+                    vk::SampleCountFlags::TYPE_1,
+                );
+                hdr_images.push(hdr_image);
+                hdr_memories.push(hdr_memory);
+                hdr_views.push(hdr_view);
 
-            self.render_pass = Self::create_render_pass(&self.device.device, self.swapchain.format);
+                let (depth_image, depth_memory, depth_view) = Self::create_depth_resources(
+                    &self.device.device,
+                    self.device.pdevice,
+                    &self.context.instance,
+                    self.swapchain.extent,
+                    vk::SampleCountFlags::TYPE_1,
+                    self.device.depth_format,
+                );
+                depth_images.push(depth_image);
+                depth_memories.push(depth_memory);
+                depth_views.push(depth_view);
+
+                let (msaa_c_image, msaa_c_memory, msaa_c_view) = Self::create_hdr_resources(
+                    &self.device.device,
+                    self.device.pdevice,
+                    &self.context.instance,
+                    self.swapchain.extent,
+                    self.device.msaa_samples,
+                );
+                msaa_color_images.push(msaa_c_image);
+                msaa_color_memories.push(msaa_c_memory);
+                msaa_color_views.push(msaa_c_view);
+
+                let (msaa_d_image, msaa_d_memory, msaa_d_view) = Self::create_depth_resources(
+                    &self.device.device,
+                    self.device.pdevice,
+                    &self.context.instance,
+                    self.swapchain.extent,
+                    self.device.msaa_samples,
+                    self.device.depth_format,
+                );
+                msaa_depth_images.push(msaa_d_image);
+                msaa_depth_memories.push(msaa_d_memory);
+                msaa_depth_views.push(msaa_d_view);
+            }
+
+            self.hdr_images = hdr_images;
+            self.hdr_memories = hdr_memories;
+            self.hdr_views = hdr_views;
+            self.depth_images = depth_images;
+            self.depth_memories = depth_memories;
+            self.depth_views = depth_views;
+            self.msaa_color_images = msaa_color_images;
+            self.msaa_color_memories = msaa_color_memories;
+            self.msaa_color_views = msaa_color_views;
+            self.msaa_depth_images = msaa_depth_images;
+            self.msaa_depth_memories = msaa_depth_memories;
+            self.msaa_depth_views = msaa_depth_views;
+
+            self.render_pass = Self::create_render_pass(&self.device.device, self.swapchain.format, self.device.msaa_samples, self.device.depth_format);
             self.framebuffers = Self::create_framebuffers(
                 &self.device.device,
                 self.render_pass,
-                self.hdr_view,
-                self.depth_view,
+                &self.hdr_views,
+                &self.depth_views,
+                &self.msaa_color_views,
+                &self.msaa_depth_views,
                 self.swapchain.extent,
+                self.device.msaa_samples,
             );
         }
     }
@@ -1298,12 +1462,19 @@ impl Renderer {
             for &view in &self.swapchain.views {
                 self.device.device.destroy_image_view(view, None);
             }
-            self.device.device.destroy_image_view(self.hdr_view, None);
-            self.device.device.destroy_image(self.hdr_image, None);
-            self.device.device.free_memory(self.hdr_memory, None);
-            self.device.device.destroy_image_view(self.depth_view, None);
-            self.device.device.destroy_image(self.depth_image, None);
-            self.device.device.free_memory(self.depth_memory, None);
+            for &view in &self.hdr_views { self.device.device.destroy_image_view(view, None); }
+            for &img in &self.hdr_images { self.device.device.destroy_image(img, None); }
+            for &mem in &self.hdr_memories { self.device.device.free_memory(mem, None); }
+            for &view in &self.depth_views { self.device.device.destroy_image_view(view, None); }
+            for &img in &self.depth_images { self.device.device.destroy_image(img, None); }
+            for &mem in &self.depth_memories { self.device.device.free_memory(mem, None); }
+            for &view in &self.msaa_color_views { self.device.device.destroy_image_view(view, None); }
+            for &img in &self.msaa_color_images { self.device.device.destroy_image(img, None); }
+            for &mem in &self.msaa_color_memories { self.device.device.free_memory(mem, None); }
+            for &view in &self.msaa_depth_views { self.device.device.destroy_image_view(view, None); }
+            for &img in &self.msaa_depth_images { self.device.device.destroy_image(img, None); }
+            for &mem in &self.msaa_depth_memories { self.device.device.free_memory(mem, None); }
+
             self.swapchain.loader
                 .destroy_swapchain(self.swapchain.handle, None);
         }
@@ -1828,6 +1999,19 @@ impl Drop for Renderer {
                 self.device.device.destroy_pipeline_layout(pipeline.layout, None);
                 self.device.device.destroy_descriptor_set_layout(pipeline.descriptor_set_layout, None);
             }
+
+            for &view in &self.hdr_views { self.device.device.destroy_image_view(view, None); }
+            for &img in &self.hdr_images { self.device.device.destroy_image(img, None); }
+            for &mem in &self.hdr_memories { self.device.device.free_memory(mem, None); }
+            for &view in &self.depth_views { self.device.device.destroy_image_view(view, None); }
+            for &img in &self.depth_images { self.device.device.destroy_image(img, None); }
+            for &mem in &self.depth_memories { self.device.device.free_memory(mem, None); }
+            for &view in &self.msaa_color_views { self.device.device.destroy_image_view(view, None); }
+            for &img in &self.msaa_color_images { self.device.device.destroy_image(img, None); }
+            for &mem in &self.msaa_color_memories { self.device.device.free_memory(mem, None); }
+            for &view in &self.msaa_depth_views { self.device.device.destroy_image_view(view, None); }
+            for &img in &self.msaa_depth_images { self.device.device.destroy_image(img, None); }
+            for &mem in &self.msaa_depth_memories { self.device.device.free_memory(mem, None); }
 
             self.device.device.destroy_descriptor_pool(self.descriptor_pool, None);
             self.device.device.destroy_descriptor_pool(self.post_process_descriptor_pool, None);

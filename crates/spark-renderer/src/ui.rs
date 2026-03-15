@@ -21,6 +21,7 @@ impl EguiRenderer {
         vert_shader_code: &[u32],
         frag_shader_code: &[u32],
         extent: vk::Extent2D,
+        msaa_samples: vk::SampleCountFlags,
     ) -> Self {
         let binding = vk::DescriptorSetLayoutBinding::default()
             .binding(0)
@@ -75,6 +76,7 @@ impl EguiRenderer {
             vert_shader_code,
             frag_shader_code,
             extent,
+            msaa_samples,
         );
 
         Self {
@@ -184,6 +186,7 @@ impl EguiRenderer {
         vert_code: &[u32],
         frag_code: &[u32],
         extent: vk::Extent2D,
+        msaa_samples: vk::SampleCountFlags,
     ) -> vk::Pipeline {
         let vert_module = {
             let info = vk::ShaderModuleCreateInfo::default().code(vert_code);
@@ -251,7 +254,7 @@ impl EguiRenderer {
             .line_width(1.0);
 
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+            .rasterization_samples(msaa_samples);
 
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .blend_enable(true)
