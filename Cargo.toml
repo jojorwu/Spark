@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/spark-core",
+    "crates/spark-renderer",
+    "crates/spark-math",
+    "crates/spark-script",
+    "crates/spark-editor",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Spark Contributors"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+ash = "0.38"
+shaderc = "0.10"
+ash-window = "0.13"
+raw-window-handle = "0.6"
+winit = "0.29"
+glam = "0.24" # Fast math library
+log = "0.4"
+env_logger = "0.10"
+rayon = "1.8"
+num_cpus = "1.16"
+slotmap = "1.0" # For handle-based node system
+bitflags = "2.4"
+thiserror = "1.0"
+libloading = "0.8"
+netcorehost = "0.20"
+image = "0.24"
+gltf = "1.4"
+instant = "0.1"
+egui = "0.26"
+egui-winit = "0.26"
+egui-ash = "0.4"
+bytemuck = "1.14"
