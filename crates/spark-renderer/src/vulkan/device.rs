@@ -1,5 +1,5 @@
-use ash::{vk, Instance, Device, khr::surface::Instance as Surface};
 use crate::error::RendererError;
+use ash::{khr::surface::Instance as Surface, vk, Device, Instance};
 
 pub struct VulkanDevice {
     pub pdevice: vk::PhysicalDevice,
@@ -11,11 +11,12 @@ pub struct VulkanDevice {
 }
 
 impl VulkanDevice {
-    pub fn new(instance: &Instance, surface_loader: &Surface, surface: vk::SurfaceKHR) -> Result<Self, RendererError> {
-        let pdevices = unsafe {
-            instance
-                .enumerate_physical_devices()?
-        };
+    pub fn new(
+        instance: &Instance,
+        surface_loader: &Surface,
+        surface: vk::SurfaceKHR,
+    ) -> Result<Self, RendererError> {
+        let pdevices = unsafe { instance.enumerate_physical_devices()? };
 
         let (pdevice, graphics_family) = pdevices
             .iter()
@@ -23,7 +24,8 @@ impl VulkanDevice {
             .filter(|&(_, score)| score > 0)
             .max_by_key(|&(_, score)| score)
             .and_then(|(p, _)| {
-                Self::find_queue_families(instance, surface_loader, surface, p).map(|family| (p, family))
+                Self::find_queue_families(instance, surface_loader, surface, p)
+                    .map(|family| (p, family))
             })
             .ok_or(RendererError::NoSuitableDevice)?;
 
@@ -38,10 +40,7 @@ impl VulkanDevice {
             .queue_create_infos(std::slice::from_ref(&queue_info))
             .enabled_extension_names(&device_extension_names_raw);
 
-        let device = unsafe {
-            instance
-                .create_device(pdevice, &device_create_info, None)?
-        };
+        let device = unsafe { instance.create_device(pdevice, &device_create_info, None)? };
 
         let graphics_queue = unsafe { device.get_device_queue(graphics_family, 0) };
 
@@ -58,16 +57,32 @@ impl VulkanDevice {
         })
     }
 
-    fn get_max_usable_sample_count(instance: &Instance, pdevice: vk::PhysicalDevice) -> vk::SampleCountFlags {
+    fn get_max_usable_sample_count(
+        instance: &Instance,
+        pdevice: vk::PhysicalDevice,
+    ) -> vk::SampleCountFlags {
         let props = unsafe { instance.get_physical_device_properties(pdevice) };
-        let counts = props.limits.framebuffer_color_sample_counts & props.limits.framebuffer_depth_sample_counts;
+        let counts = props.limits.framebuffer_color_sample_counts
+            & props.limits.framebuffer_depth_sample_counts;
 
-        if counts.contains(vk::SampleCountFlags::TYPE_64) { return vk::SampleCountFlags::TYPE_64; }
-        if counts.contains(vk::SampleCountFlags::TYPE_32) { return vk::SampleCountFlags::TYPE_32; }
-        if counts.contains(vk::SampleCountFlags::TYPE_16) { return vk::SampleCountFlags::TYPE_16; }
-        if counts.contains(vk::SampleCountFlags::TYPE_8) { return vk::SampleCountFlags::TYPE_8; }
-        if counts.contains(vk::SampleCountFlags::TYPE_4) { return vk::SampleCountFlags::TYPE_4; }
-        if counts.contains(vk::SampleCountFlags::TYPE_2) { return vk::SampleCountFlags::TYPE_2; }
+        if counts.contains(vk::SampleCountFlags::TYPE_64) {
+            return vk::SampleCountFlags::TYPE_64;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_32) {
+            return vk::SampleCountFlags::TYPE_32;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_16) {
+            return vk::SampleCountFlags::TYPE_16;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_8) {
+            return vk::SampleCountFlags::TYPE_8;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_4) {
+            return vk::SampleCountFlags::TYPE_4;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_2) {
+            return vk::SampleCountFlags::TYPE_2;
+        }
 
         vk::SampleCountFlags::TYPE_1
     }
@@ -81,7 +96,10 @@ impl VulkanDevice {
 
         for &format in &candidates {
             let props = unsafe { instance.get_physical_device_format_properties(pdevice, format) };
-            if props.optimal_tiling_features.contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT) {
+            if props
+                .optimal_tiling_features
+                .contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
+            {
                 return format;
             }
         }

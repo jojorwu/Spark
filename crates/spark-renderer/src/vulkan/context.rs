@@ -1,8 +1,8 @@
-use ash::{vk, Entry, Instance, khr::surface::Instance as Surface};
+use crate::error::RendererError;
+use ash::{khr::surface::Instance as Surface, vk, Entry, Instance};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::ffi::CString;
 use winit::window::Window;
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use crate::error::RendererError;
 
 pub struct VulkanContext {
     pub entry: Entry,
@@ -35,10 +35,7 @@ impl VulkanContext {
             .application_info(&app_info)
             .enabled_extension_names(extensions);
 
-        let instance = unsafe {
-            entry
-                .create_instance(&instance_create_info, None)?
-        };
+        let instance = unsafe { entry.create_instance(&instance_create_info, None)? };
 
         let surface = unsafe {
             ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)

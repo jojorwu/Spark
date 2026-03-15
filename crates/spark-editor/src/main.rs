@@ -227,13 +227,49 @@ fn main() {
     let pipeline = Pipeline::new(
         engine.renderer.get_device(),
         engine.renderer.render_pass,
+        0, // Subpass 0: Geometry
         engine.renderer.get_extent(),
         vert_spirv.as_binary(),
         frag_spirv.as_binary(),
         engine.renderer.get_msaa_samples(),
+        false, // Not deferred lighting
+        0,
     );
 
     engine.renderer.set_pipeline(pipeline);
+
+    // Initialize Deferred Pipeline
+    let def_vert_code = fs::read_to_string("assets/shaders/deferred.vert").unwrap();
+    let def_frag_code = fs::read_to_string("assets/shaders/deferred.frag").unwrap();
+    let def_vert_spirv = compiler.compile_into_spirv(&def_vert_code, shaderc::ShaderKind::Vertex, "deferred.vert", "main", None).unwrap();
+
+    let mut def_options = shaderc::CompileOptions::new().unwrap();
+    let msaa_count = match engine.renderer.get_msaa_samples() {
+        ash::vk::SampleCountFlags::TYPE_1 => 1,
+        ash::vk::SampleCountFlags::TYPE_2 => 2,
+        ash::vk::SampleCountFlags::TYPE_4 => 4,
+        ash::vk::SampleCountFlags::TYPE_8 => 8,
+        ash::vk::SampleCountFlags::TYPE_16 => 16,
+        ash::vk::SampleCountFlags::TYPE_32 => 32,
+        ash::vk::SampleCountFlags::TYPE_64 => 64,
+        _ => 1,
+    };
+    def_options.add_macro_definition("MSAA_SAMPLES", Some(&msaa_count.to_string()));
+    let def_frag_spirv = compiler.compile_into_spirv(&def_frag_code, shaderc::ShaderKind::Fragment, "deferred.frag", "main", Some(&def_options)).unwrap();
+
+    let deferred_pipeline = Pipeline::new(
+        engine.renderer.get_device(),
+        engine.renderer.render_pass,
+        1, // Subpass 1: Lighting
+        engine.renderer.get_extent(),
+        def_vert_spirv.as_binary(),
+        def_frag_spirv.as_binary(),
+        engine.renderer.get_msaa_samples(),
+        true, // Deferred lighting
+        4,    // 4 input attachments (Albedo, Normal, Position, Depth)
+    );
+
+    engine.renderer.set_deferred_pipeline(deferred_pipeline.graphics_pipeline, deferred_pipeline.layout, deferred_pipeline.descriptor_set_layout);
 
     use spark_renderer::vertex::Vertex;
     use spark_math::{Vec2, Vec3, Mat4};

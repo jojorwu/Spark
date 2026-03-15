@@ -1,4 +1,7 @@
-use ash::{vk, Device, Instance, khr::surface::Instance as Surface, khr::swapchain::Device as SwapchainLoader};
+use ash::{
+    khr::surface::Instance as Surface, khr::swapchain::Device as SwapchainLoader, vk, Device,
+    Instance,
+};
 
 pub struct VulkanSwapchain {
     pub loader: SwapchainLoader,
@@ -48,7 +51,13 @@ impl VulkanSwapchain {
         loader: &SwapchainLoader,
         width: u32,
         height: u32,
-    ) -> (vk::SwapchainKHR, Vec<vk::Image>, Vec<vk::ImageView>, vk::Format, vk::Extent2D) {
+    ) -> (
+        vk::SwapchainKHR,
+        Vec<vk::Image>,
+        Vec<vk::ImageView>,
+        vk::Format,
+        vk::Extent2D,
+    ) {
         let formats = unsafe {
             surface_loader
                 .get_physical_device_surface_formats(pdevice, surface)
@@ -56,9 +65,14 @@ impl VulkanSwapchain {
         };
 
         // Prefer HDR/High-bit-depth formats
-        let surface_format = formats.iter().cloned().find(|f| {
-            f.format == vk::Format::A2B10G10R10_UNORM_PACK32 || f.format == vk::Format::R16G16B16A16_SFLOAT
-        }).unwrap_or(formats[0]);
+        let surface_format = formats
+            .iter()
+            .cloned()
+            .find(|f| {
+                f.format == vk::Format::A2B10G10R10_UNORM_PACK32
+                    || f.format == vk::Format::R16G16B16A16_SFLOAT
+            })
+            .unwrap_or(formats[0]);
 
         let surface_caps = unsafe {
             surface_loader

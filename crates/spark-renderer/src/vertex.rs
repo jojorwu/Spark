@@ -1,5 +1,5 @@
-use spark_math::{Vec3, Vec2};
 use ash::vk;
+use spark_math::{Vec2, Vec3};
 use std::mem;
 
 #[repr(C)]

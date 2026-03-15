@@ -17,17 +17,20 @@ impl Pipeline {
     pub fn new(
         device: &Device,
         render_pass: vk::RenderPass,
+        subpass: u32,
         extent: vk::Extent2D,
         vert_shader_code: &[u32],
         frag_shader_code: &[u32],
         msaa_samples: vk::SampleCountFlags,
+        is_deferred_lighting: bool,
+        input_attachments_count: u32,
     ) -> Self {
         let vert_shader_module = Self::create_shader_module(device, vert_shader_code);
         let frag_shader_module = Self::create_shader_module(device, frag_shader_code);
 
         let main_function_name = CString::new("main").unwrap();
 
-        use crate::vertex::{Vertex, InstanceData};
+        use crate::vertex::{InstanceData, Vertex};
         let binding_descriptions = [
             Vertex::get_binding_description(),
             InstanceData::get_binding_description(),
@@ -47,9 +50,13 @@ impl Pipeline {
                 .name(&main_function_name),
         ];
 
-        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(&binding_descriptions)
-            .vertex_attribute_descriptions(&attribute_descriptions);
+        let vertex_input_info = if is_deferred_lighting {
+            vk::PipelineVertexInputStateCreateInfo::default()
+        } else {
+            vk::PipelineVertexInputStateCreateInfo::default()
+                .vertex_binding_descriptions(&binding_descriptions)
+                .vertex_attribute_descriptions(&attribute_descriptions)
+        };
 
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
@@ -76,51 +83,91 @@ impl Pipeline {
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::BACK)
+            .cull_mode(if is_deferred_lighting {
+                vk::CullModeFlags::NONE
+            } else {
+                vk::CullModeFlags::BACK
+            })
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false);
 
         let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
             .sample_shading_enable(false)
-            .rasterization_samples(msaa_samples);
+            .rasterization_samples(if is_deferred_lighting {
+                vk::SampleCountFlags::TYPE_1
+            } else {
+                msaa_samples
+            });
 
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(true)
-            .depth_write_enable(true)
+            .depth_test_enable(!is_deferred_lighting)
+            .depth_write_enable(!is_deferred_lighting)
             .depth_compare_op(vk::CompareOp::LESS)
             .depth_bounds_test_enable(false)
             .stencil_test_enable(false);
 
-        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+        let mut color_blend_attachments = vec![vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
-            .blend_enable(false);
+            .blend_enable(false)];
+        if !is_deferred_lighting {
+            for _ in 0..3 {
+                // Albedo, Normal, Position
+                color_blend_attachments.push(
+                    vk::PipelineColorBlendAttachmentState::default()
+                        .color_write_mask(vk::ColorComponentFlags::RGBA)
+                        .blend_enable(false),
+                );
+            }
+        }
 
         let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
             .logic_op_enable(false)
             .logic_op(vk::LogicOp::COPY)
-            .attachments(std::slice::from_ref(&color_blend_attachment))
+            .attachments(&color_blend_attachments)
             .blend_constants([0.0, 0.0, 0.0, 0.0]);
 
         let push_constant_ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(160)]; // 2xMat4 + 2xVec4
+            .size(160)];
 
-        let descriptor_set_layout_bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        ];
+        let mut descriptor_set_layout_bindings = Vec::new();
+        if is_deferred_lighting {
+            for i in 0..input_attachments_count {
+                descriptor_set_layout_bindings.push(
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(i)
+                        .descriptor_type(vk::DescriptorType::INPUT_ATTACHMENT)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                );
+            }
+            descriptor_set_layout_bindings.push(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(input_attachments_count)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            );
+        } else {
+            descriptor_set_layout_bindings.push(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            );
+            descriptor_set_layout_bindings.push(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(1)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            );
+        }
 
-        let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default()
-            .bindings(&descriptor_set_layout_bindings);
+        let descriptor_set_layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&descriptor_set_layout_bindings);
 
         let descriptor_set_layout = unsafe {
             device
@@ -150,7 +197,7 @@ impl Pipeline {
             .color_blend_state(&color_blending)
             .layout(pipeline_layout)
             .render_pass(render_pass)
-            .subpass(0);
+            .subpass(subpass);
 
         let graphics_pipelines = unsafe {
             device

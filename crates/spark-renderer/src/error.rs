@@ -1,5 +1,5 @@
-use thiserror::Error;
 use ash::vk;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum RendererError {

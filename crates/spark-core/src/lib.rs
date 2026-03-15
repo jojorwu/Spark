@@ -152,7 +152,7 @@ impl Engine {
                     let light_proj = spark_math::Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 0.1, 100.0);
                     let light_view_proj = light_proj * light_view;
 
-                    let main_light = lights.first().cloned().unwrap_or((
+                    let _main_light = lights.first().cloned().unwrap_or((
                         spark_math::Mat4::IDENTITY,
                         crate::scene::LightType::Directional,
                         spark_math::Vec3::ONE,
@@ -160,12 +160,17 @@ impl Engine {
                         10.0
                     ));
 
+                    // Convert lights for renderer
+                    let renderer_lights: Vec<(spark_math::Vec3, spark_math::Vec3, f32)> = lights.iter().map(|(trans, _type, col, intensity, _range)| {
+                        (trans.w_axis.xyz(), *col, *intensity)
+                    }).collect();
+                    self.renderer.update_lights(&renderer_lights);
+
                     self.renderer.draw_frame(
                         &renderables,
                         &instanced_renderables,
                         view_proj,
                         light_view_proj,
-                        (main_light.0.w_axis.xyz(), main_light.2 * main_light.3),
                         &self.window,
                         egui_output
                     );

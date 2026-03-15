@@ -29,11 +29,13 @@ impl EguiRenderer {
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
-        let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
-            .bindings(std::slice::from_ref(&binding));
+        let layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(std::slice::from_ref(&binding));
 
         let descriptor_set_layout = unsafe {
-            device.create_descriptor_set_layout(&layout_info, None).unwrap()
+            device
+                .create_descriptor_set_layout(&layout_info, None)
+                .unwrap()
         };
 
         let push_constant_ranges = [vk::PushConstantRange::default()
@@ -58,16 +60,12 @@ impl EguiRenderer {
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&pool_sizes)
             .max_sets(1);
-        let descriptor_pool = unsafe {
-            device.create_descriptor_pool(&pool_info, None).unwrap()
-        };
+        let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None).unwrap() };
 
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&layouts);
-        let descriptor_set = unsafe {
-            device.allocate_descriptor_sets(&alloc_info).unwrap()[0]
-        };
+        let descriptor_set = unsafe { device.allocate_descriptor_sets(&alloc_info).unwrap()[0] };
 
         let pipeline = Self::create_pipeline(
             device,
@@ -111,7 +109,11 @@ impl EguiRenderer {
 
         for primitive in &clipped_primitives {
             if let egui::epaint::Primitive::Mesh(mesh) = &primitive.primitive {
-                self.update_buffers(renderer, mesh.vertices.len() as u64, mesh.indices.len() as u64);
+                self.update_buffers(
+                    renderer,
+                    mesh.vertices.len() as u64,
+                    mesh.indices.len() as u64,
+                );
 
                 if let (Some(vb), Some(ib)) = (&self.vertex_buffer, &self.index_buffer) {
                     renderer.upload_to_buffer(vb, &mesh.vertices);
@@ -119,9 +121,16 @@ impl EguiRenderer {
 
                     unsafe {
                         let device = renderer.get_device();
-                        device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+                        device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            self.pipeline,
+                        );
                         let texture_id = mesh.texture_id;
-                        let ds = self.texture_descriptor_sets.get(&texture_id).unwrap_or(&self.descriptor_set);
+                        let ds = self
+                            .texture_descriptor_sets
+                            .get(&texture_id)
+                            .unwrap_or(&self.descriptor_set);
 
                         device.cmd_bind_descriptor_sets(
                             command_buffer,
@@ -132,10 +141,8 @@ impl EguiRenderer {
                             &[],
                         );
 
-                        let bytes = std::slice::from_raw_parts(
-                            screen_size.as_ptr() as *const u8,
-                            8,
-                        );
+                        let bytes =
+                            std::slice::from_raw_parts(screen_size.as_ptr() as *const u8, 8);
                         device.cmd_push_constants(
                             command_buffer,
                             self.pipeline_layout,
@@ -145,8 +152,20 @@ impl EguiRenderer {
                         );
 
                         device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
-                        device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
-                        device.cmd_draw_indexed(command_buffer, mesh.indices.len() as u32, 1, 0, 0, 0);
+                        device.cmd_bind_index_buffer(
+                            command_buffer,
+                            ib.handle,
+                            0,
+                            vk::IndexType::UINT32,
+                        );
+                        device.cmd_draw_indexed(
+                            command_buffer,
+                            mesh.indices.len() as u32,
+                            1,
+                            0,
+                            0,
+                            0,
+                        );
                     }
                 }
             }
@@ -253,8 +272,8 @@ impl EguiRenderer {
             .cull_mode(vk::CullModeFlags::NONE)
             .line_width(1.0);
 
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(msaa_samples);
+        let multisample =
+            vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(msaa_samples);
 
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .blend_enable(true)
@@ -275,7 +294,7 @@ impl EguiRenderer {
             .color_blend_state(&color_blend)
             .layout(layout)
             .render_pass(render_pass)
-            .subpass(0);
+            .subpass(1);
 
         let pipeline = unsafe {
             device
@@ -305,25 +324,41 @@ impl EguiRenderer {
                 );
                 renderer.upload_to_buffer(&staging, &pixels);
 
-                let (image, memory) = renderer.create_image(
-                    size[0], size[1], 1,
+                let (image, memory) = renderer.create_image_basic(
+                    size[0],
+                    size[1],
+                    1,
                     vk::Format::R8G8B8A8_UNORM,
                     vk::ImageTiling::OPTIMAL,
                     vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-                    vk::MemoryPropertyFlags::DEVICE_LOCAL
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
                 );
 
-                renderer.transition_image_layout(image, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, 1);
-                renderer.copy_buffer_to_image(staging.handle, image, size[0], size[1]);
-                renderer.transition_image_layout(image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, 1);
+                renderer.transition_image_layout_basic(
+                    image,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    1,
+                );
+                renderer.copy_buffer_to_image_basic(staging.handle, image, size[0], size[1]);
+                renderer.transition_image_layout_basic(
+                    image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    1,
+                );
 
-                let view = renderer.create_image_view(image, vk::Format::R8G8B8A8_UNORM, 1);
+                let view = renderer.create_image_view_basic(image, vk::Format::R8G8B8A8_UNORM, 1);
                 let sampler = renderer.create_texture_sampler(1);
 
                 renderer.destroy_buffer(staging);
 
                 let texture = crate::vulkan::texture::Texture {
-                    image, memory, view, sampler, mip_levels: 1,
+                    image,
+                    memory,
+                    view,
+                    sampler,
+                    mip_levels: 1,
                 };
 
                 let layouts = [self.descriptor_set_layout];
@@ -332,7 +367,10 @@ impl EguiRenderer {
                     .set_layouts(&layouts);
 
                 let ds = unsafe {
-                    renderer.get_device().allocate_descriptor_sets(&alloc_info).unwrap()[0]
+                    renderer
+                        .get_device()
+                        .allocate_descriptor_sets(&alloc_info)
+                        .unwrap()[0]
                 };
 
                 let image_info = [vk::DescriptorImageInfo::default()
