@@ -6,9 +6,12 @@ pub struct EguiRenderer {
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     pub descriptor_pool: vk::DescriptorPool,
     pub descriptor_set: vk::DescriptorSet,
+    pub textures: std::collections::HashMap<egui::TextureId, crate::vulkan::texture::Texture>,
+    pub texture_descriptor_sets: std::collections::HashMap<egui::TextureId, vk::DescriptorSet>,
     pub vertex_buffer: Option<crate::Buffer>,
     pub index_buffer: Option<crate::Buffer>,
-    pub font_texture: Option<crate::vulkan::texture::Texture>,
+    pub max_vertices: u64,
+    pub max_indices: u64,
 }
 
 impl EguiRenderer {
@@ -80,54 +83,97 @@ impl EguiRenderer {
             descriptor_set_layout,
             descriptor_pool,
             descriptor_set,
+            textures: std::collections::HashMap::new(),
+            texture_descriptor_sets: std::collections::HashMap::new(),
             vertex_buffer: None,
             index_buffer: None,
-            font_texture: None,
+            max_vertices: 0,
+            max_indices: 0,
         }
     }
 
     pub fn draw(
         &mut self,
-        device: &ash::Device,
-        _graphics_queue: vk::Queue,
+        renderer: &mut crate::Renderer,
         command_buffer: vk::CommandBuffer,
-        _full_output: egui::FullOutput,
+        full_output: egui::FullOutput,
         screen_size: [f32; 2],
+        ctx: &egui::Context,
     ) {
-        // In a real implementation, we would use the shapes from full_output
-        // and tessellate them here or in the caller.
-        // Since we are in a simplified environment, we will focus on the pipeline setup.
-
+        self.update_textures(renderer, &full_output.textures_delta);
         if self.pipeline == vk::Pipeline::null() {
             return;
         }
 
-        unsafe {
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
-            device.cmd_bind_descriptor_sets(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_layout,
-                0,
-                &[self.descriptor_set],
-                &[],
-            );
+        let clipped_primitives = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
 
-            let bytes = std::slice::from_raw_parts(
-                screen_size.as_ptr() as *const u8,
-                8,
-            );
-            device.cmd_push_constants(
-                command_buffer,
-                self.pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                bytes,
-            );
+        for primitive in &clipped_primitives {
+            if let egui::epaint::Primitive::Mesh(mesh) = &primitive.primitive {
+                self.update_buffers(renderer, mesh.vertices.len() as u64, mesh.indices.len() as u64);
 
-            // Here we would iterate over tessellated shapes and issue draw calls.
-            // For now, we'll just ensure the pipeline state is correctly set up.
-            log::debug!("Drawing Egui with screen size: {:?}", screen_size);
+                if let (Some(vb), Some(ib)) = (&self.vertex_buffer, &self.index_buffer) {
+                    renderer.upload_to_buffer(vb, &mesh.vertices);
+                    renderer.upload_to_buffer(ib, &mesh.indices);
+
+                    unsafe {
+                        let device = renderer.get_device();
+                        device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+                        let texture_id = mesh.texture_id;
+                        let ds = self.texture_descriptor_sets.get(&texture_id).unwrap_or(&self.descriptor_set);
+
+                        device.cmd_bind_descriptor_sets(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            self.pipeline_layout,
+                            0,
+                            &[*ds],
+                            &[],
+                        );
+
+                        let bytes = std::slice::from_raw_parts(
+                            screen_size.as_ptr() as *const u8,
+                            8,
+                        );
+                        device.cmd_push_constants(
+                            command_buffer,
+                            self.pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX,
+                            0,
+                            bytes,
+                        );
+
+                        device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
+                        device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
+                        device.cmd_draw_indexed(command_buffer, mesh.indices.len() as u32, 1, 0, 0, 0);
+                    }
+                }
+            }
+        }
+    }
+
+    fn update_buffers(&mut self, renderer: &crate::Renderer, vertex_count: u64, index_count: u64) {
+        if self.vertex_buffer.is_none() || self.max_vertices < vertex_count {
+            if let Some(vb) = self.vertex_buffer.take() {
+                renderer.destroy_buffer(vb);
+            }
+            self.max_vertices = vertex_count.next_power_of_two().max(1024);
+            self.vertex_buffer = Some(renderer.create_buffer(
+                self.max_vertices * std::mem::size_of::<egui::epaint::Vertex>() as u64,
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ));
+        }
+
+        if self.index_buffer.is_none() || self.max_indices < index_count {
+            if let Some(ib) = self.index_buffer.take() {
+                renderer.destroy_buffer(ib);
+            }
+            self.max_indices = index_count.next_power_of_two().max(1024);
+            self.index_buffer = Some(renderer.create_buffer(
+                self.max_indices * 4,
+                vk::BufferUsageFlags::INDEX_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ));
         }
     }
 
@@ -242,13 +288,96 @@ impl EguiRenderer {
         pipeline
     }
 
-    pub fn destroy(&mut self, device: &ash::Device) {
+    fn update_textures(&mut self, renderer: &crate::Renderer, delta: &egui::TexturesDelta) {
+        for (id, delta) in &delta.set {
+            // Simplify: handle only full updates for now
+            if let egui::ImageData::Color(image) = &delta.image {
+                let size = [image.size[0] as u32, image.size[1] as u32];
+                let pixels: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+
+                let staging = renderer.create_buffer(
+                    pixels.len() as u64,
+                    vk::BufferUsageFlags::TRANSFER_SRC,
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                );
+                renderer.upload_to_buffer(&staging, &pixels);
+
+                let (image, memory) = renderer.create_image(
+                    size[0], size[1], 1,
+                    vk::Format::R8G8B8A8_UNORM,
+                    vk::ImageTiling::OPTIMAL,
+                    vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL
+                );
+
+                renderer.transition_image_layout(image, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, 1);
+                renderer.copy_buffer_to_image(staging.handle, image, size[0], size[1]);
+                renderer.transition_image_layout(image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, 1);
+
+                let view = renderer.create_image_view(image, vk::Format::R8G8B8A8_UNORM, 1);
+                let sampler = renderer.create_texture_sampler(1);
+
+                renderer.destroy_buffer(staging);
+
+                let texture = crate::vulkan::texture::Texture {
+                    image, memory, view, sampler, mip_levels: 1,
+                };
+
+                let layouts = [self.descriptor_set_layout];
+                let alloc_info = vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(self.descriptor_pool)
+                    .set_layouts(&layouts);
+
+                let ds = unsafe {
+                    renderer.get_device().allocate_descriptor_sets(&alloc_info).unwrap()[0]
+                };
+
+                let image_info = [vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(view)
+                    .sampler(sampler)];
+
+                let write = [vk::WriteDescriptorSet::default()
+                    .dst_set(ds)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&image_info)];
+
+                unsafe {
+                    renderer.get_device().update_descriptor_sets(&write, &[]);
+                }
+
+                self.textures.insert(*id, texture);
+                self.texture_descriptor_sets.insert(*id, ds);
+            }
+        }
+        for id in &delta.free {
+            if let Some(tex) = self.textures.remove(id) {
+                renderer.destroy_texture(tex);
+            }
+            self.texture_descriptor_sets.remove(id);
+        }
+    }
+
+    pub fn destroy(&mut self, renderer: &crate::Renderer) {
+        let device = renderer.get_device();
         unsafe {
+            let textures = std::mem::take(&mut self.textures);
+            for (_, tex) in textures {
+                renderer.destroy_texture(tex);
+            }
             device.destroy_descriptor_pool(self.descriptor_pool, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             device.destroy_pipeline_layout(self.pipeline_layout, None);
             if self.pipeline != vk::Pipeline::null() {
                 device.destroy_pipeline(self.pipeline, None);
+            }
+
+            if let Some(vb) = self.vertex_buffer.take() {
+                renderer.destroy_buffer(vb);
+            }
+            if let Some(ib) = self.index_buffer.take() {
+                renderer.destroy_buffer(ib);
             }
         }
     }

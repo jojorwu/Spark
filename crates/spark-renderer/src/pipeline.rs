@@ -77,6 +77,13 @@ impl Pipeline {
             .sample_shading_enable(false)
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::LESS)
+            .depth_bounds_test_enable(false)
+            .stencil_test_enable(false);
+
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
             .blend_enable(false);
@@ -90,13 +97,20 @@ impl Pipeline {
         let push_constant_ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX)
             .offset(0)
-            .size((std::mem::size_of::<spark_math::Mat4>()) as u32)];
+            .size((std::mem::size_of::<spark_math::Mat4>() * 2) as u32)];
 
-        let descriptor_set_layout_bindings = [vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+        let descriptor_set_layout_bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        ];
 
         let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default()
             .bindings(&descriptor_set_layout_bindings);
@@ -125,6 +139,7 @@ impl Pipeline {
             .viewport_state(&viewport_state)
             .rasterization_state(&rasterizer)
             .multisample_state(&multisampling)
+            .depth_stencil_state(&depth_stencil)
             .color_blend_state(&color_blending)
             .layout(pipeline_layout)
             .render_pass(render_pass)

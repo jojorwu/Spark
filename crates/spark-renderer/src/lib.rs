@@ -21,6 +21,17 @@ pub struct Renderer {
     device: VulkanDevice,
     swapchain: VulkanSwapchain,
     pub render_pass: vk::RenderPass,
+    pub depth_image: vk::Image,
+    pub depth_memory: vk::DeviceMemory,
+    pub depth_view: vk::ImageView,
+    pub shadow_image: vk::Image,
+    pub shadow_memory: vk::DeviceMemory,
+    pub shadow_view: vk::ImageView,
+    pub shadow_sampler: vk::Sampler,
+    pub shadow_render_pass: vk::RenderPass,
+    pub shadow_framebuffer: vk::Framebuffer,
+    pub shadow_pipeline: Option<vk::Pipeline>,
+    pub shadow_pipeline_layout: vk::PipelineLayout,
     framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -62,8 +73,44 @@ impl Renderer {
             window.inner_size().height,
         );
 
+        let (depth_image, depth_memory, depth_view) = Self::create_depth_resources(
+            &device.device,
+            device.pdevice,
+            &context.instance,
+            swapchain.extent,
+        );
+
+        let (shadow_image, shadow_memory, shadow_view, shadow_sampler) =
+            Self::create_shadow_resources(&device.device, device.pdevice, &context.instance);
+        let shadow_render_pass = Self::create_shadow_render_pass(&device.device);
+        let shadow_framebuffer = {
+            let attachments = [shadow_view];
+            let info = vk::FramebufferCreateInfo::default()
+                .render_pass(shadow_render_pass)
+                .attachments(&attachments)
+                .width(Self::SHADOW_MAP_CASCADE_SIZE)
+                .height(Self::SHADOW_MAP_CASCADE_SIZE)
+                .layers(1);
+            unsafe { device.device.create_framebuffer(&info, None).unwrap() }
+        };
+
+        let shadow_pipeline_layout = {
+            let push_constant_ranges = [vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::VERTEX)
+                .offset(0)
+                .size((std::mem::size_of::<spark_math::Mat4>() * 2) as u32)];
+            let info = vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&push_constant_ranges);
+            unsafe { device.device.create_pipeline_layout(&info, None).unwrap() }
+        };
+
         let render_pass = Self::create_render_pass(&device.device, swapchain.format);
-        let framebuffers = Self::create_framebuffers(&device.device, render_pass, &swapchain.views, swapchain.extent);
+        let framebuffers = Self::create_framebuffers(
+            &device.device,
+            render_pass,
+            &swapchain.views,
+            depth_view,
+            swapchain.extent,
+        );
 
         let command_pool = Self::create_command_pool(&device.device, device.graphics_family);
         let command_buffers = Self::create_command_buffers(&device.device, command_pool);
@@ -81,6 +128,17 @@ impl Renderer {
             device,
             swapchain,
             render_pass,
+            depth_image,
+            depth_memory,
+            depth_view,
+            shadow_image,
+            shadow_memory,
+            shadow_view,
+            shadow_sampler,
+            shadow_render_pass,
+            shadow_framebuffer,
+            shadow_pipeline: None,
+            shadow_pipeline_layout,
             framebuffers,
             command_pool,
             command_buffers,
@@ -102,6 +160,10 @@ impl Renderer {
         self.pipeline = Some(pipeline);
     }
 
+    pub fn set_shadow_pipeline(&mut self, pipeline: vk::Pipeline) {
+        self.shadow_pipeline = Some(pipeline);
+    }
+
     pub fn set_texture(&mut self, texture: &Texture) {
         if let Some(pipeline) = &self.pipeline {
             let layouts = [pipeline.descriptor_set_layout];
@@ -120,12 +182,25 @@ impl Renderer {
                 .image_view(texture.view)
                 .sampler(texture.sampler)];
 
-            let descriptor_writes = [vk::WriteDescriptorSet::default()
-                .dst_set(sets[0])
-                .dst_binding(0)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&image_info)];
+            let shadow_image_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(self.shadow_view)
+                .sampler(self.shadow_sampler)];
+
+            let descriptor_writes = [
+                vk::WriteDescriptorSet::default()
+                    .dst_set(sets[0])
+                    .dst_binding(0)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&image_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(sets[0])
+                    .dst_binding(1)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&shadow_image_info),
+            ];
 
             unsafe {
                 self.device.device.update_descriptor_sets(&descriptor_writes, &[]);
@@ -154,8 +229,9 @@ impl Renderer {
         renderables: &[(spark_math::Mat4, u32, Option<String>, Option<u32>)],
         instanced_renderables: &[(u32, u32, u32)], // (vertex_buffer_id, instance_buffer_id, instance_count)
         view_proj: spark_math::Mat4,
+        light_view_proj: spark_math::Mat4,
         window: &Window,
-        egui_output: Option<egui::FullOutput>,
+        egui_output: Option<(egui::FullOutput, egui::Context)>,
     ) {
         unsafe {
             self.device.device
@@ -193,7 +269,7 @@ impl Renderer {
                 )
                 .expect("Failed to reset command buffer");
 
-            self.record_command_buffer(image_index, renderables, instanced_renderables, view_proj, egui_output);
+            self.record_command_buffer(image_index, renderables, instanced_renderables, view_proj, light_view_proj, egui_output);
 
             let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
             let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -240,7 +316,8 @@ impl Renderer {
         _renderables: &[(spark_math::Mat4, u32, Option<String>, Option<u32>)],
         instanced_renderables: &[(u32, u32, u32)],
         view_proj: spark_math::Mat4,
-        egui_output: Option<egui::FullOutput>,
+        light_view_proj: spark_math::Mat4,
+        egui_output: Option<(egui::FullOutput, egui::Context)>,
     ) {
         let command_buffer = self.command_buffers[self.current_frame];
 
@@ -251,11 +328,83 @@ impl Renderer {
                 .begin_command_buffer(command_buffer, &begin_info)
                 .expect("Failed to begin recording command buffer");
 
-            let clear_values = [vk::ClearValue {
-                color: vk::ClearColorValue {
-                    float32: [0.1, 0.1, 0.1, 1.0],
+            // --- Shadow Pass ---
+            if let Some(shadow_pipeline) = self.shadow_pipeline {
+                let shadow_clear_values = [vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue {
+                        depth: 1.0,
+                        stencil: 0,
+                    },
+                }];
+
+                let shadow_render_pass_info = vk::RenderPassBeginInfo::default()
+                    .render_pass(self.shadow_render_pass)
+                    .framebuffer(self.shadow_framebuffer)
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D { width: Self::SHADOW_MAP_CASCADE_SIZE, height: Self::SHADOW_MAP_CASCADE_SIZE },
+                    })
+                    .clear_values(&shadow_clear_values);
+
+                self.device.device.cmd_begin_render_pass(
+                    command_buffer,
+                    &shadow_render_pass_info,
+                    vk::SubpassContents::INLINE,
+                );
+
+                self.device.device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    shadow_pipeline,
+                );
+
+                let light_view_proj_bytes = std::slice::from_raw_parts(
+                    &light_view_proj as *const _ as *const u8,
+                    std::mem::size_of::<spark_math::Mat4>(),
+                );
+
+                // We use push constants to send light_view_proj.
+                // We need to offset the model matrix push constant or use a separate range.
+                // In shadow pass, we need model and light_view_proj.
+
+                for (vb_id, instance_buffer_id, instance_count) in instanced_renderables {
+                    if let (Some(vb), Some(ib)) = (self.get_buffer(*vb_id), self.get_instance_buffer(*instance_buffer_id)) {
+                        self.device.device.cmd_bind_vertex_buffers(
+                            command_buffer,
+                            0,
+                            &[vb.handle, ib.handle],
+                            &[0, 0]
+                        );
+
+                        self.device.device.cmd_push_constants(
+                            command_buffer,
+                            self.shadow_pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX,
+                            0, // Offset 0 for light_view_proj
+                            light_view_proj_bytes,
+                        );
+
+                        let vertex_count = (vb.size / std::mem::size_of::<crate::vertex::Vertex>() as u64) as u32;
+                        self.device.device.cmd_draw(command_buffer, vertex_count, *instance_count, 0, 0);
+                    }
+                }
+
+                self.device.device.cmd_end_render_pass(command_buffer);
+            }
+
+            let clear_values = [
+                vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: [0.1, 0.1, 0.1, 1.0],
+                    },
                 },
-            }];
+                vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue {
+                        depth: 1.0,
+                        stencil: 0,
+                    },
+                },
+            ];
 
             let render_pass_info = vk::RenderPassBeginInfo::default()
                 .render_pass(self.render_pass)
@@ -290,9 +439,13 @@ impl Renderer {
                     );
                 }
 
+                let mut view_proj_constants = [spark_math::Mat4::IDENTITY; 2];
+                view_proj_constants[0] = view_proj;
+                view_proj_constants[1] = light_view_proj;
+
                 let view_proj_bytes = std::slice::from_raw_parts(
-                    &view_proj as *const _ as *const u8,
-                    std::mem::size_of::<spark_math::Mat4>(),
+                    view_proj_constants.as_ptr() as *const u8,
+                    std::mem::size_of::<spark_math::Mat4>() * 2,
                 );
                 self.device.device.cmd_push_constants(
                     command_buffer,
@@ -318,16 +471,13 @@ impl Renderer {
                 }
             }
 
-            if let Some(output) = egui_output {
+            if let Some((output, ctx)) = egui_output {
                 let extent = self.get_extent();
-                if let Some(egui) = &mut self.egui_renderer {
-                    egui.draw(
-                        &self.device.device,
-                        self.device.graphics_queue,
-                        command_buffer,
-                        output,
-                        [extent.width as f32, extent.height as f32]
-                    );
+                let screen_size = [extent.width as f32, extent.height as f32];
+
+                if let Some(mut egui) = self.egui_renderer.take() {
+                    egui.draw(self, command_buffer, output, screen_size, &ctx);
+                    self.egui_renderer = Some(egui);
                 }
             }
 
@@ -354,20 +504,36 @@ impl Renderer {
             .attachment(0)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
+        let depth_attachment = vk::AttachmentDescription::default()
+            .format(vk::Format::D32_SFLOAT)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+        let depth_attachment_ref = vk::AttachmentReference::default()
+            .attachment(1)
+            .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
         let subpass = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-            .color_attachments(std::slice::from_ref(&color_attachment_ref));
+            .color_attachments(std::slice::from_ref(&color_attachment_ref))
+            .depth_stencil_attachment(&depth_attachment_ref);
 
         let dependency = vk::SubpassDependency::default()
             .src_subpass(vk::SUBPASS_EXTERNAL)
             .dst_subpass(0)
-            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS)
             .src_access_mask(vk::AccessFlags::empty())
-            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS)
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE);
 
+        let attachments = [color_attachment, depth_attachment];
         let render_pass_info = vk::RenderPassCreateInfo::default()
-            .attachments(std::slice::from_ref(&color_attachment))
+            .attachments(&attachments)
             .subpasses(std::slice::from_ref(&subpass))
             .dependencies(std::slice::from_ref(&dependency));
 
@@ -382,12 +548,13 @@ impl Renderer {
         device: &ash::Device,
         render_pass: vk::RenderPass,
         views: &[vk::ImageView],
+        depth_view: vk::ImageView,
         extent: vk::Extent2D,
     ) -> Vec<vk::Framebuffer> {
         views
             .iter()
             .map(|&view| {
-                let attachments = [view];
+                let attachments = [view, depth_view];
                 let framebuffer_info = vk::FramebufferCreateInfo::default()
                     .render_pass(render_pass)
                     .attachments(&attachments)
@@ -432,11 +599,11 @@ impl Renderer {
     fn create_descriptor_pool(device: &ash::Device) -> vk::DescriptorPool {
         let pool_sizes = [vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(10)]; // Arbitrary large enough for now
+            .descriptor_count(100)]; // Increased capacity
 
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&pool_sizes)
-            .max_sets(10);
+            .max_sets(100);
 
         unsafe {
             device
@@ -498,13 +665,251 @@ impl Renderer {
         self.instance_buffers.get(id as usize)
     }
 
+    pub fn clear_instance_buffers(&mut self) {
+        unsafe {
+            // In a real engine, we'd wait for the specific fence of the frame
+            // using these buffers, but for now we wait for idle.
+            self.device.device.device_wait_idle().ok();
+            let buffers = std::mem::take(&mut self.instance_buffers);
+            for buffer in buffers {
+                self.destroy_buffer(buffer);
+            }
+        }
+    }
+
     pub fn get_graphics_queue(&self) -> vk::Queue {
         self.device.graphics_queue
+    }
+
+    fn create_shadow_render_pass(device: &ash::Device) -> vk::RenderPass {
+        let shadow_attachment = vk::AttachmentDescription::default()
+            .format(vk::Format::D32_SFLOAT)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+
+        let shadow_attachment_ref = vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+        let subpass = vk::SubpassDescription::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .depth_stencil_attachment(&shadow_attachment_ref);
+
+        let dependency = vk::SubpassDependency::default()
+            .src_subpass(vk::SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(vk::PipelineStageFlags::FRAGMENT_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS)
+            .src_access_mask(vk::AccessFlags::SHADER_READ)
+            .dst_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE)
+            .dependency_flags(vk::DependencyFlags::BY_REGION);
+
+        let render_pass_info = vk::RenderPassCreateInfo::default()
+            .attachments(std::slice::from_ref(&shadow_attachment))
+            .subpasses(std::slice::from_ref(&subpass))
+            .dependencies(std::slice::from_ref(&dependency));
+
+        unsafe {
+            device
+                .create_render_pass(&render_pass_info, None)
+                .expect("Failed to create shadow render pass")
+        }
+    }
+
+    fn create_depth_resources(
+        device: &ash::Device,
+        pdevice: vk::PhysicalDevice,
+        instance: &ash::Instance,
+        extent: vk::Extent2D,
+    ) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
+        let format = vk::Format::D32_SFLOAT;
+
+        let image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .extent(vk::Extent3D {
+                width: extent.width,
+                height: extent.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .format(format)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let image = unsafe {
+            device
+                .create_image(&image_info, None)
+                .expect("Failed to create depth image")
+        };
+
+        let mem_requirements = unsafe { device.get_image_memory_requirements(image) };
+        let mem_properties = unsafe { instance.get_physical_device_memory_properties(pdevice) };
+        let mut mem_type_index = 0;
+        let properties = vk::MemoryPropertyFlags::DEVICE_LOCAL;
+
+        for i in 0..mem_properties.memory_type_count {
+            if (mem_requirements.memory_type_bits & (1 << i)) != 0
+                && (mem_properties.memory_types[i as usize].property_flags & properties) == properties
+            {
+                mem_type_index = i;
+                break;
+            }
+        }
+
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_requirements.size)
+            .memory_type_index(mem_type_index);
+
+        let memory = unsafe {
+            device
+                .allocate_memory(&alloc_info, None)
+                .expect("Failed to allocate depth image memory")
+        };
+
+        unsafe {
+            device
+                .bind_image_memory(image, memory, 0)
+                .expect("Failed to bind depth image memory");
+        }
+
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(format)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::DEPTH,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        let view = unsafe {
+            device
+                .create_image_view(&view_info, None)
+                .expect("Failed to create depth image view")
+        };
+
+        (image, memory, view)
+    }
+
+    const SHADOW_MAP_CASCADE_SIZE: u32 = 2048;
+
+    fn create_shadow_resources(
+        device: &ash::Device,
+        pdevice: vk::PhysicalDevice,
+        instance: &ash::Instance,
+    ) -> (vk::Image, vk::DeviceMemory, vk::ImageView, vk::Sampler) {
+        let extent = vk::Extent2D { width: Self::SHADOW_MAP_CASCADE_SIZE, height: Self::SHADOW_MAP_CASCADE_SIZE };
+        let format = vk::Format::D32_SFLOAT;
+
+        let image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .extent(vk::Extent3D {
+                width: extent.width,
+                height: extent.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .format(format)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let image = unsafe {
+            device
+                .create_image(&image_info, None)
+                .expect("Failed to create shadow image")
+        };
+
+        let mem_requirements = unsafe { device.get_image_memory_requirements(image) };
+        let mem_properties = unsafe { instance.get_physical_device_memory_properties(pdevice) };
+        let mut mem_type_index = 0;
+        let properties = vk::MemoryPropertyFlags::DEVICE_LOCAL;
+
+        for i in 0..mem_properties.memory_type_count {
+            if (mem_requirements.memory_type_bits & (1 << i)) != 0
+                && (mem_properties.memory_types[i as usize].property_flags & properties) == properties
+            {
+                mem_type_index = i;
+                break;
+            }
+        }
+
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_requirements.size)
+            .memory_type_index(mem_type_index);
+
+        let memory = unsafe {
+            device
+                .allocate_memory(&alloc_info, None)
+                .expect("Failed to allocate shadow image memory")
+        };
+
+        unsafe {
+            device
+                .bind_image_memory(image, memory, 0)
+                .expect("Failed to bind shadow image memory");
+        }
+
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(format)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::DEPTH,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        let view = unsafe {
+            device
+                .create_image_view(&view_info, None)
+                .expect("Failed to create shadow image view")
+        };
+
+        let sampler_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR)
+            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+            .anisotropy_enable(false)
+            .border_color(vk::BorderColor::FLOAT_OPAQUE_WHITE)
+            .unnormalized_coordinates(false)
+            .compare_enable(true)
+            .compare_op(vk::CompareOp::LESS_OR_EQUAL)
+            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .min_lod(0.0)
+            .max_lod(1.0);
+
+        let sampler = unsafe {
+            device
+                .create_sampler(&sampler_info, None)
+                .expect("Failed to create shadow sampler")
+        };
+
+        (image, memory, view, sampler)
     }
 
     pub fn recreate_swapchain(&mut self, window: &Window) {
         unsafe {
             self.device.device.device_wait_idle().unwrap();
+            // Don't cleanup shadow resources here, they don't depend on window size
             self.cleanup_swapchain();
 
             let swapchain = VulkanSwapchain::new(
@@ -518,11 +923,23 @@ impl Renderer {
             );
 
             self.swapchain = swapchain;
+
+            let (depth_image, depth_memory, depth_view) = Self::create_depth_resources(
+                &self.device.device,
+                self.device.pdevice,
+                &self.context.instance,
+                self.swapchain.extent,
+            );
+            self.depth_image = depth_image;
+            self.depth_memory = depth_memory;
+            self.depth_view = depth_view;
+
             self.render_pass = Self::create_render_pass(&self.device.device, self.swapchain.format);
             self.framebuffers = Self::create_framebuffers(
                 &self.device.device,
                 self.render_pass,
                 &self.swapchain.views,
+                self.depth_view,
                 self.swapchain.extent,
             );
         }
@@ -537,6 +954,9 @@ impl Renderer {
             for &view in &self.swapchain.views {
                 self.device.device.destroy_image_view(view, None);
             }
+            self.device.device.destroy_image_view(self.depth_view, None);
+            self.device.device.destroy_image(self.depth_image, None);
+            self.device.device.free_memory(self.depth_memory, None);
             self.swapchain.loader
                 .destroy_swapchain(self.swapchain.handle, None);
         }
@@ -1031,6 +1451,17 @@ impl Drop for Renderer {
         unsafe {
             self.device.device.device_wait_idle().ok();
 
+            self.device.device.destroy_sampler(self.shadow_sampler, None);
+            self.device.device.destroy_image_view(self.shadow_view, None);
+            self.device.device.destroy_image(self.shadow_image, None);
+            self.device.device.free_memory(self.shadow_memory, None);
+            self.device.device.destroy_framebuffer(self.shadow_framebuffer, None);
+            self.device.device.destroy_render_pass(self.shadow_render_pass, None);
+            self.device.device.destroy_pipeline_layout(self.shadow_pipeline_layout, None);
+            if let Some(p) = self.shadow_pipeline {
+                self.device.device.destroy_pipeline(p, None);
+            }
+
             for &semaphore in &self.image_available_semaphores {
                 self.device.device.destroy_semaphore(semaphore, None);
             }
@@ -1054,7 +1485,7 @@ impl Drop for Renderer {
             self.device.device.destroy_descriptor_pool(self.descriptor_pool, None);
 
             if let Some(mut egui) = self.egui_renderer.take() {
-                egui.destroy(&self.device.device);
+                egui.destroy(self);
             }
 
             let vertex_buffers = std::mem::take(&mut self.vertex_buffers);

@@ -61,7 +61,7 @@ impl Engine {
 
     pub fn run<F>(mut self, mut ui_callback: F)
     where
-        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene) -> (bool, Option<egui::FullOutput>) + 'static,
+        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
     {
         let event_loop = self.event_loop.take().unwrap();
         self.plugin_manager.init_plugins(&mut self.scene);
@@ -141,11 +141,28 @@ impl Engine {
 
                     let view_proj = projection * view_matrix;
 
-                    self.renderer.draw_frame(&renderables, &instanced_renderables, view_proj, &self.window, egui_output);
+                    // Calculate Light View-Projection for Shadows
+                    let light_pos = spark_math::Vec3::new(10.0, 10.0, 10.0);
+                    let light_view = spark_math::Mat4::look_at_rh(
+                        light_pos,
+                        spark_math::Vec3::ZERO,
+                        spark_math::Vec3::Y,
+                    );
+                    let light_proj = spark_math::Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 0.1, 100.0);
+                    let light_view_proj = light_proj * light_view;
+
+                    self.renderer.draw_frame(
+                        &renderables,
+                        &instanced_renderables,
+                        view_proj,
+                        light_view_proj,
+                        &self.window,
+                        egui_output
+                    );
 
                     // Clear temporary instance buffers for next frame
                     // In a real engine, we'd reuse them or use a ring buffer.
-                    self.renderer.instance_buffers.clear();
+                    self.renderer.clear_instance_buffers();
                 }
                 _ => (),
             }
