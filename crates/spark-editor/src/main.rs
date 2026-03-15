@@ -238,9 +238,9 @@ fn main() {
     use spark_math::{Vec2, Vec3, Mat4};
 
     let vertices = [
-        Vertex { pos: Vec3::new(0.0, -0.5, 0.0), color: Vec3::new(1.0, 0.0, 0.0), tex_coord: Vec2::ZERO },
-        Vertex { pos: Vec3::new(0.5, 0.5, 0.0), color: Vec3::new(0.0, 1.0, 0.0), tex_coord: Vec2::ZERO },
-        Vertex { pos: Vec3::new(-0.5, 0.5, 0.0), color: Vec3::new(0.0, 0.0, 1.0), tex_coord: Vec2::ZERO },
+        Vertex { pos: Vec3::new(0.0, -0.5, 0.0), normal: Vec3::Z, color: Vec3::new(1.0, 0.0, 0.0), tex_coord: Vec2::ZERO },
+        Vertex { pos: Vec3::new(0.5, 0.5, 0.0), normal: Vec3::Z, color: Vec3::new(0.0, 1.0, 0.0), tex_coord: Vec2::ZERO },
+        Vertex { pos: Vec3::new(-0.5, 0.5, 0.0), normal: Vec3::Z, color: Vec3::new(0.0, 0.0, 1.0), tex_coord: Vec2::ZERO },
     ];
 
     let vb = engine.renderer.create_buffer(

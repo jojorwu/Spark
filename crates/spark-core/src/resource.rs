@@ -68,14 +68,24 @@ impl ResourceManager {
 
                 let mut vertices = Vec::new();
                 let mut max_dist_sq = 0.0f32;
+                let normals = reader.read_normals().map(|n| n.collect::<Vec<_>>());
+
                 for i in 0..positions.len() {
                     let p = positions[i];
                     let dist_sq = p[0]*p[0] + p[1]*p[1] + p[2]*p[2];
                     if dist_sq > max_dist_sq {
                         max_dist_sq = dist_sq;
                     }
+
+                    let n = if let Some(ref normals) = normals {
+                        spark_math::Vec3::from_array(normals[i])
+                    } else {
+                        spark_math::Vec3::Y
+                    };
+
                     vertices.push(Vertex {
                         pos: spark_math::Vec3::from_array(p),
+                        normal: n,
                         color: spark_math::Vec3::ONE,
                         tex_coord: Vec2::ZERO,
                     });

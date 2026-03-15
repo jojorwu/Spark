@@ -6,6 +6,7 @@ use std::mem;
 #[derive(Clone, Copy, Debug)]
 pub struct Vertex {
     pub pos: Vec3,
+    pub normal: Vec3,
     pub color: Vec3,
     pub tex_coord: Vec2,
 }
@@ -59,7 +60,7 @@ impl Vertex {
             .input_rate(vk::VertexInputRate::VERTEX)
     }
 
-    pub fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
+    pub fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 4] {
         [
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
@@ -70,12 +71,17 @@ impl Vertex {
                 .binding(0)
                 .location(1)
                 .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(12), // Offset of color (3 * 4 bytes)
+                .offset(12), // normal
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(2)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(24), // color
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(3)
                 .format(vk::Format::R32G32_SFLOAT)
-                .offset(24), // Offset of tex_coord (6 * 4 bytes)
+                .offset(36), // tex_coord
         ]
     }
 }

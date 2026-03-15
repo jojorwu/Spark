@@ -340,6 +340,7 @@ impl Renderer {
         instanced_renderables: &[(u32, u32, u32)], // (vertex_buffer_id, instance_buffer_id, instance_count)
         view_proj: spark_math::Mat4,
         light_view_proj: spark_math::Mat4,
+        light_data: (spark_math::Vec3, spark_math::Vec3), // (position, color)
         window: &Window,
         egui_output: Option<(egui::FullOutput, egui::Context)>,
     ) {
@@ -379,7 +380,7 @@ impl Renderer {
                 )
                 .expect("Failed to reset command buffer");
 
-            self.record_command_buffer(image_index, renderables, instanced_renderables, view_proj, light_view_proj, egui_output);
+            self.record_command_buffer(image_index, renderables, instanced_renderables, view_proj, light_view_proj, light_data, egui_output);
 
             let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
             let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -427,6 +428,7 @@ impl Renderer {
         instanced_renderables: &[(u32, u32, u32)],
         view_proj: spark_math::Mat4,
         light_view_proj: spark_math::Mat4,
+        light_data: (spark_math::Vec3, spark_math::Vec3),
         egui_output: Option<(egui::FullOutput, egui::Context)>,
     ) {
         let command_buffer = self.command_buffers[self.current_frame];
@@ -549,13 +551,28 @@ impl Renderer {
                     );
                 }
 
-                let mut view_proj_constants = [spark_math::Mat4::IDENTITY; 2];
-                view_proj_constants[0] = view_proj;
-                view_proj_constants[1] = light_view_proj;
+                #[repr(C)]
+                struct MainPushConstants {
+                    view_proj: spark_math::Mat4,
+                    light_view_proj: spark_math::Mat4,
+                    light_pos: spark_math::Vec3,
+                    _pad1: f32,
+                    light_color: spark_math::Vec3,
+                    _pad2: f32,
+                }
+
+                let pc = MainPushConstants {
+                    view_proj,
+                    light_view_proj,
+                    light_pos: light_data.0,
+                    _pad1: 0.0,
+                    light_color: light_data.1,
+                    _pad2: 0.0,
+                };
 
                 let view_proj_bytes = std::slice::from_raw_parts(
-                    view_proj_constants.as_ptr() as *const u8,
-                    std::mem::size_of::<spark_math::Mat4>() * 2,
+                    &pc as *const _ as *const u8,
+                    std::mem::size_of::<MainPushConstants>(),
                 );
                 self.device.device.cmd_push_constants(
                     command_buffer,

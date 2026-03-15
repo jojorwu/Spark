@@ -16,6 +16,18 @@ pub enum NodeData {
         near: f32,
         far: f32,
     },
+    Light {
+        light_type: LightType,
+        color: spark_math::Vec3,
+        intensity: f32,
+        range: f32, // For point lights
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum LightType {
+    Directional,
+    Point,
 }
 
 pub struct Node {
@@ -95,15 +107,21 @@ impl Scene {
     pub fn collect_render_data(
         &self,
         frustum: Option<&spark_math::Frustum>,
-    ) -> (Vec<(Mat4, u32, Option<String>, Option<u32>)>, Vec<(u32, Vec<Mat4>)>, Mat4) {
+    ) -> (
+        Vec<(Mat4, u32, Option<String>, Option<u32>)>,
+        Vec<(u32, Vec<Mat4>)>,
+        Mat4,
+        Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>
+    ) {
         let mut renderables = Vec::new();
         let mut instanced = std::collections::HashMap::new();
         let mut view_matrix = Mat4::IDENTITY;
-        self.collect_data_recursive(self.root, &mut renderables, &mut instanced, &mut view_matrix, frustum);
+        let mut lights = Vec::new();
+        self.collect_data_recursive(self.root, &mut renderables, &mut instanced, &mut view_matrix, &mut lights, frustum);
 
         let instanced_data = instanced.into_iter().map(|(vb_id, transforms)| (vb_id, transforms)).collect();
 
-        (renderables, instanced_data, view_matrix)
+        (renderables, instanced_data, view_matrix, lights)
     }
 
     fn collect_data_recursive(
@@ -112,6 +130,7 @@ impl Scene {
         renderables: &mut Vec<(Mat4, u32, Option<String>, Option<u32>)>,
         instanced: &mut std::collections::HashMap<u32, Vec<Mat4>>,
         view_matrix: &mut Mat4,
+        lights: &mut Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>,
         frustum: Option<&spark_math::Frustum>,
     ) {
         if let Some(node) = self.nodes.get(node_key) {
@@ -144,10 +163,13 @@ impl Scene {
                 NodeData::Camera { .. } => {
                     *view_matrix = node.global_transform.inverse();
                 }
+                NodeData::Light { light_type, color, intensity, range } => {
+                    lights.push((node.global_transform, *light_type, *color, *intensity, *range));
+                }
                 _ => {}
             }
             for child in &node.children {
-                self.collect_data_recursive(*child, renderables, instanced, view_matrix, frustum);
+                self.collect_data_recursive(*child, renderables, instanced, view_matrix, lights, frustum);
             }
         }
     }

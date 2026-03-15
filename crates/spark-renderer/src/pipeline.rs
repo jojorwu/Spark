@@ -101,9 +101,9 @@ impl Pipeline {
             .blend_constants([0.0, 0.0, 0.0, 0.0]);
 
         let push_constant_ranges = [vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size((std::mem::size_of::<spark_math::Mat4>() * 2) as u32)];
+            .size(160)]; // 2xMat4 + 2xVec4
 
         let descriptor_set_layout_bindings = [
             vk::DescriptorSetLayoutBinding::default()

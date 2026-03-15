@@ -15,6 +15,7 @@ use crate::plugin::PluginManager;
 use crate::resource::ResourceManager;
 use crate::event::EventQueue;
 use spark_renderer::Renderer;
+use spark_math::Vec4Swizzles;
 
 pub struct Engine {
     pub window: winit::window::Window,
@@ -120,11 +121,11 @@ impl Engine {
                     );
 
                     // First pass to find camera
-                    let (_, _, view_matrix) = self.scene.collect_render_data(None);
+                    let (_, _, view_matrix, _) = self.scene.collect_render_data(None);
                     let frustum = spark_math::Frustum::from_matrix(projection * view_matrix);
 
                     // Second pass for culled rendering
-                    let (renderables, instanced_raw, _) = self.scene.collect_render_data(Some(&frustum));
+                    let (renderables, instanced_raw, _, lights) = self.scene.collect_render_data(Some(&frustum));
 
                     // Prepare instance buffers
                     let mut instanced_renderables = Vec::new();
@@ -151,11 +152,20 @@ impl Engine {
                     let light_proj = spark_math::Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 0.1, 100.0);
                     let light_view_proj = light_proj * light_view;
 
+                    let main_light = lights.first().cloned().unwrap_or((
+                        spark_math::Mat4::IDENTITY,
+                        crate::scene::LightType::Directional,
+                        spark_math::Vec3::ONE,
+                        1.0,
+                        10.0
+                    ));
+
                     self.renderer.draw_frame(
                         &renderables,
                         &instanced_renderables,
                         view_proj,
                         light_view_proj,
+                        (main_light.0.w_axis.xyz(), main_light.2 * main_light.3),
                         &self.window,
                         egui_output
                     );
