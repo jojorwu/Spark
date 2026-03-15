@@ -7,6 +7,12 @@ pub struct Pipeline {
     pub descriptor_set_layout: vk::DescriptorSetLayout,
 }
 
+pub struct PostProcessPipeline {
+    pub layout: vk::PipelineLayout,
+    pub pipeline: vk::Pipeline,
+    pub descriptor_set_layout: vk::DescriptorSetLayout,
+}
+
 impl Pipeline {
     pub fn new(
         device: &Device,

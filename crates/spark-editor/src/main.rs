@@ -125,6 +125,105 @@ fn main() {
 
     engine.renderer.set_shadow_pipeline(shadow_pipeline);
 
+    let post_vert_code = fs::read_to_string("assets/shaders/fullscreen.vert").unwrap();
+    let post_frag_code = fs::read_to_string("assets/shaders/tonemap_bloom.frag").unwrap();
+    let post_vert_spirv = compiler.compile_into_spirv(&post_vert_code, shaderc::ShaderKind::Vertex, "fullscreen.vert", "main", None).unwrap();
+    let post_frag_spirv = compiler.compile_into_spirv(&post_frag_code, shaderc::ShaderKind::Fragment, "tonemap_bloom.frag", "main", None).unwrap();
+
+    let bloom_frag_code = fs::read_to_string("assets/shaders/bloom_filter.frag").unwrap();
+    let bloom_frag_spirv = compiler.compile_into_spirv(&bloom_frag_code, shaderc::ShaderKind::Fragment, "bloom_filter.frag", "main", None).unwrap();
+
+    let (post_pipeline, post_layout, post_ds_layout, bloom_pipeline) = {
+        let device = engine.renderer.get_device();
+        let render_pass = engine.renderer.post_process_render_pass;
+
+        let bindings = [
+            ash::vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(ash::vk::ShaderStageFlags::FRAGMENT),
+            ash::vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(ash::vk::ShaderStageFlags::FRAGMENT),
+        ];
+        let ds_layout_info = ash::vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+        let ds_layout = unsafe { device.create_descriptor_set_layout(&ds_layout_info, None).unwrap() };
+
+        let layout_info = ash::vk::PipelineLayoutCreateInfo::default().set_layouts(std::slice::from_ref(&ds_layout));
+        let layout = unsafe { device.create_pipeline_layout(&layout_info, None).unwrap() };
+
+        let vert_module = {
+            let info = ash::vk::ShaderModuleCreateInfo::default().code(post_vert_spirv.as_binary());
+            unsafe { device.create_shader_module(&info, None).unwrap() }
+        };
+        let frag_module = {
+            let info = ash::vk::ShaderModuleCreateInfo::default().code(post_frag_spirv.as_binary());
+            unsafe { device.create_shader_module(&info, None).unwrap() }
+        };
+        let entry_point = std::ffi::CString::new("main").unwrap();
+        let stages = [
+            ash::vk::PipelineShaderStageCreateInfo::default().stage(ash::vk::ShaderStageFlags::VERTEX).module(vert_module).name(&entry_point),
+            ash::vk::PipelineShaderStageCreateInfo::default().stage(ash::vk::ShaderStageFlags::FRAGMENT).module(frag_module).name(&entry_point),
+        ];
+
+        let vertex_input = ash::vk::PipelineVertexInputStateCreateInfo::default();
+        let input_assembly = ash::vk::PipelineInputAssemblyStateCreateInfo::default().topology(ash::vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport = ash::vk::Viewport::default().width(engine.renderer.get_extent().width as f32).height(engine.renderer.get_extent().height as f32).max_depth(1.0);
+        let scissor = ash::vk::Rect2D::default().extent(engine.renderer.get_extent());
+        let viewport_state = ash::vk::PipelineViewportStateCreateInfo::default().viewports(std::slice::from_ref(&viewport)).scissors(std::slice::from_ref(&scissor));
+        let rasterizer = ash::vk::PipelineRasterizationStateCreateInfo::default().cull_mode(ash::vk::CullModeFlags::BACK).front_face(ash::vk::FrontFace::CLOCKWISE).line_width(1.0);
+        let multisample = ash::vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(ash::vk::SampleCountFlags::TYPE_1);
+        let color_blend_attachment = ash::vk::PipelineColorBlendAttachmentState::default().color_write_mask(ash::vk::ColorComponentFlags::RGBA).blend_enable(false);
+        let color_blend = ash::vk::PipelineColorBlendStateCreateInfo::default().attachments(std::slice::from_ref(&color_blend_attachment));
+
+        let info = ash::vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisample)
+            .color_blend_state(&color_blend)
+            .layout(layout)
+            .render_pass(render_pass)
+            .subpass(0);
+
+        let p = unsafe { device.create_graphics_pipelines(ash::vk::PipelineCache::null(), &[info], None).unwrap()[0] };
+
+        let bloom_frag_module = {
+            let info = ash::vk::ShaderModuleCreateInfo::default().code(bloom_frag_spirv.as_binary());
+            unsafe { device.create_shader_module(&info, None).unwrap() }
+        };
+        let mut bloom_stages = stages.clone();
+        bloom_stages[1] = ash::vk::PipelineShaderStageCreateInfo::default().stage(ash::vk::ShaderStageFlags::FRAGMENT).module(bloom_frag_module).name(&entry_point);
+
+        let bloom_info = ash::vk::GraphicsPipelineCreateInfo::default()
+            .stages(&bloom_stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisample)
+            .color_blend_state(&color_blend)
+            .layout(layout)
+            .render_pass(render_pass)
+            .subpass(0);
+
+        let bp = unsafe { device.create_graphics_pipelines(ash::vk::PipelineCache::null(), &[bloom_info], None).unwrap()[0] };
+
+        unsafe {
+            device.destroy_shader_module(vert_module, None);
+            device.destroy_shader_module(frag_module, None);
+            device.destroy_shader_module(bloom_frag_module, None);
+        }
+        (p, layout, ds_layout, bp)
+    };
+
+    engine.renderer.set_post_process_pipeline(post_pipeline, post_layout, post_ds_layout, bloom_pipeline);
+
     let pipeline = Pipeline::new(
         engine.renderer.get_device(),
         engine.renderer.render_pass,
