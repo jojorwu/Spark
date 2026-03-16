@@ -5,7 +5,7 @@ layout(location = 1) in vec2 inTexCoord;
 layout(location = 2) in vec3 inWorldPos;
 layout(location = 3) in vec3 inColor;
 
-layout(binding = 0) uniform sampler2D texSampler;
+layout(set = 1, binding = 0) uniform sampler2D texSampler;
 
 layout(location = 0) out vec4 outAlbedo;
 layout(location = 1) out vec4 outNormal;
@@ -18,6 +18,8 @@ layout(push_constant) uniform PushConstants {
     uint lightCount;
     float metallic;
     float roughness;
+    float width;
+    float height;
 } push;
 
 void main() {

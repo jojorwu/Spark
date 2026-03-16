@@ -4,12 +4,20 @@ layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec3 inColor;
 layout(location = 3) in vec2 inTexCoord;
-layout(location = 4) in mat4 inModel;
+layout(location = 4) in mat4 inModel; // Locations 4, 5, 6, 7
 
-layout(push_constant) uniform PushConstants {
+layout (set = 0, binding = 0) uniform GlobalUBO {
     mat4 viewProj;
     mat4 lightViewProj;
+    mat4 invViewProj;
+} global;
+
+layout(push_constant) uniform PushConstants {
     uint lightCount;
+    float metallic;
+    float roughness;
+    float width;
+    float height;
 } push;
 
 layout(location = 0) out vec3 outNormal;
@@ -23,5 +31,5 @@ void main() {
     outNormal = mat3(inModel) * inNormal;
     outTexCoord = inTexCoord;
     outColor = inColor;
-    gl_Position = push.viewProj * worldPos;
+    gl_Position = global.viewProj * worldPos;
 }
