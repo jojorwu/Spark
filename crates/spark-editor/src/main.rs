@@ -266,7 +266,7 @@ fn main() {
         def_frag_spirv.as_binary(),
         engine.renderer.get_msaa_samples(),
         true, // Deferred lighting
-        4,    // 4 input attachments (Albedo, Normal, Position, Depth)
+        5,    // 5 input attachments (Albedo, Normal, Position, PBR, Depth)
     );
 
     engine.renderer.set_deferred_pipeline(deferred_pipeline.graphics_pipeline, deferred_pipeline.layout, deferred_pipeline.descriptor_set_layout);

@@ -41,6 +41,9 @@ pub struct Renderer {
     pub gbuffer_position_images: Vec<vk::Image>,
     pub gbuffer_position_memories: Vec<vk::DeviceMemory>,
     pub gbuffer_position_views: Vec<vk::ImageView>,
+    pub gbuffer_pbr_images: Vec<vk::Image>,
+    pub gbuffer_pbr_memories: Vec<vk::DeviceMemory>,
+    pub gbuffer_pbr_views: Vec<vk::ImageView>,
     pub depth_images: Vec<vk::Image>,
     pub depth_memories: Vec<vk::DeviceMemory>,
     pub depth_views: Vec<vk::ImageView>,
@@ -147,6 +150,9 @@ impl Renderer {
         let mut g_pos_i = Vec::new();
         let mut g_pos_m = Vec::new();
         let mut g_pos_v = Vec::new();
+        let mut g_pbr_i = Vec::new();
+        let mut g_pbr_m = Vec::new();
+        let mut g_pbr_v = Vec::new();
         let mut depth_i = Vec::new();
         let mut depth_m = Vec::new();
         let mut depth_v = Vec::new();
@@ -202,6 +208,19 @@ impl Renderer {
             g_pos_m.push(m);
             g_pos_v.push(v);
 
+            let (i, m, v) = Self::create_image_resource_impl(
+                &device.device,
+                device.pdevice,
+                &context.instance,
+                swapchain.extent,
+                vk::Format::R8G8B8A8_UNORM,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
+                device.msaa_samples,
+            );
+            g_pbr_i.push(i);
+            g_pbr_m.push(m);
+            g_pbr_v.push(v);
+
             let (i, m, v) = Self::create_depth_resources_impl(
                 &device.device,
                 device.pdevice,
@@ -229,6 +248,7 @@ impl Renderer {
             &g_alb_v,
             &g_norm_v,
             &g_pos_v,
+            &g_pbr_v,
             &depth_v,
             swapchain.extent,
         );
@@ -290,6 +310,9 @@ impl Renderer {
             gbuffer_position_images: g_pos_i,
             gbuffer_position_memories: g_pos_m,
             gbuffer_position_views: g_pos_v,
+            gbuffer_pbr_images: g_pbr_i,
+            gbuffer_pbr_memories: g_pbr_m,
+            gbuffer_pbr_views: g_pbr_v,
             depth_images: depth_i,
             depth_memories: depth_m,
             depth_views: depth_v,
@@ -373,6 +396,10 @@ impl Renderer {
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image_view(self.gbuffer_position_views[i])
                 .sampler(vk::Sampler::null())];
+            let pbr_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(self.gbuffer_pbr_views[i])
+                .sampler(vk::Sampler::null())];
             let depth_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image_view(self.depth_views[i])
@@ -403,10 +430,15 @@ impl Renderer {
                     .dst_set(self.deferred_descriptor_sets[i])
                     .dst_binding(3)
                     .descriptor_type(vk::DescriptorType::INPUT_ATTACHMENT)
-                    .image_info(&depth_info),
+                    .image_info(&pbr_info),
                 vk::WriteDescriptorSet::default()
                     .dst_set(self.deferred_descriptor_sets[i])
                     .dst_binding(4)
+                    .descriptor_type(vk::DescriptorType::INPUT_ATTACHMENT)
+                    .image_info(&depth_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.deferred_descriptor_sets[i])
+                    .dst_binding(5)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&shadow_info),
             ];
@@ -422,7 +454,7 @@ impl Renderer {
                 writes.push(
                     vk::WriteDescriptorSet::default()
                         .dst_set(self.deferred_descriptor_sets[i])
-                        .dst_binding(5)
+                        .dst_binding(6)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(&buf_info),
                 );
@@ -900,6 +932,11 @@ impl Renderer {
                 },
                 vk::ClearValue {
                     color: vk::ClearColorValue {
+                        float32: [0.0, 0.0, 0.0, 1.0], // PBR
+                    },
+                },
+                vk::ClearValue {
+                    color: vk::ClearColorValue {
                         float32: [0.1, 0.1, 0.1, 1.0],
                     },
                 },
@@ -923,17 +960,22 @@ impl Renderer {
                 vk::SubpassContents::INLINE,
             );
             #[repr(C)]
+            #[repr(C)]
             struct PC {
                 vp: spark_math::Mat4,
                 lvp: spark_math::Mat4,
                 count: u32,
-                pad: [u32; 3],
+                metallic: f32,
+                roughness: f32,
+                pad: u32,
             }
             let pc = PC {
                 vp: view_proj,
                 lvp: light_view_proj,
                 count: self.light_count,
-                pad: [0; 3],
+                metallic: 0.5, // Default for now
+                roughness: 0.5, // Default for now
+                pad: 0,
             };
             let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, 144);
             if let Some(pipeline) = &self.pipeline {
@@ -1294,6 +1336,7 @@ impl Renderer {
                 &self.gbuffer_albedo_views,
                 &self.gbuffer_normal_views,
                 &self.gbuffer_position_views,
+                &self.gbuffer_pbr_views,
                 &self.depth_views,
                 self.swapchain.extent,
             );
@@ -1350,6 +1393,15 @@ impl Renderer {
                 self.device.device.destroy_image(i, None);
             }
             for &m in &self.gbuffer_position_memories {
+                self.device.device.free_memory(m, None);
+            }
+            for &v in &self.gbuffer_pbr_views {
+                self.device.device.destroy_image_view(v, None);
+            }
+            for &i in &self.gbuffer_pbr_images {
+                self.device.device.destroy_image(i, None);
+            }
+            for &m in &self.gbuffer_pbr_memories {
                 self.device.device.free_memory(m, None);
             }
             for &v in &self.depth_views {
@@ -2065,6 +2117,13 @@ impl Renderer {
             .store_op(vk::AttachmentStoreOp::STORE)
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let pbr_att = vk::AttachmentDescription::default()
+            .format(vk::Format::R8G8B8A8_UNORM)
+            .samples(msaa_samples)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
         let hdr_att = vk::AttachmentDescription::default()
             .format(vk::Format::R16G16B16A16_SFLOAT)
             .samples(vk::SampleCountFlags::TYPE_1)
@@ -2089,14 +2148,17 @@ impl Renderer {
         let position_ref = vk::AttachmentReference::default()
             .attachment(2)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        let hdr_ref = vk::AttachmentReference::default()
+        let pbr_ref = vk::AttachmentReference::default()
             .attachment(3)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        let depth_ref = vk::AttachmentReference::default()
+        let hdr_ref = vk::AttachmentReference::default()
             .attachment(4)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let depth_ref = vk::AttachmentReference::default()
+            .attachment(5)
             .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
-        let subpass0_color_attachments = [albedo_ref, normal_ref, position_ref];
+        let subpass0_color_attachments = [albedo_ref, normal_ref, position_ref, pbr_ref];
         let subpass0 = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&subpass0_color_attachments)
@@ -2113,7 +2175,10 @@ impl Renderer {
                 .attachment(2)
                 .layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
             vk::AttachmentReference::default()
-                .attachment(4)
+                .attachment(3)
+                .layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+            vk::AttachmentReference::default()
+                .attachment(5)
                 .layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
         ];
         let subpass1 = vk::SubpassDescription::default()
@@ -2144,7 +2209,7 @@ impl Renderer {
                 .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
                 .dst_access_mask(vk::AccessFlags::SHADER_READ),
         ];
-        let attachments = [albedo_att, normal_att, position_att, hdr_att, depth_att];
+        let attachments = [albedo_att, normal_att, position_att, pbr_att, hdr_att, depth_att];
         let subpasses = [subpass0, subpass1];
         unsafe {
             device
@@ -2165,6 +2230,7 @@ impl Renderer {
         albedo_views: &[vk::ImageView],
         normal_views: &[vk::ImageView],
         position_views: &[vk::ImageView],
+        pbr_views: &[vk::ImageView],
         depth_views: &[vk::ImageView],
         extent: vk::Extent2D,
     ) -> Vec<vk::Framebuffer> {
@@ -2174,6 +2240,7 @@ impl Renderer {
                     albedo_views[i],
                     normal_views[i],
                     position_views[i],
+                    pbr_views[i],
                     hdr_views[i],
                     depth_views[i],
                 ];
@@ -2442,6 +2509,15 @@ impl Drop for Renderer {
             self.device
                 .device
                 .destroy_descriptor_pool(self.post_process_descriptor_pool, None);
+            for &v in &self.gbuffer_pbr_views {
+                self.device.device.destroy_image_view(v, None);
+            }
+            for &i in &self.gbuffer_pbr_images {
+                self.device.device.destroy_image(i, None);
+            }
+            for &m in &self.gbuffer_pbr_memories {
+                self.device.device.free_memory(m, None);
+            }
             for (img, (mem, view)) in self.bloom_images.drain(..).zip(
                 self.bloom_memories
                     .drain(..)

@@ -103,7 +103,7 @@ impl Pipeline {
             .blend_enable(false)];
         if !is_deferred_lighting {
             for _ in 0..3 {
-                // Albedo, Normal, Position
+                // Albedo, Normal, Position, PBR
                 color_blend_attachments.push(
                     vk::PipelineColorBlendAttachmentState::default()
                         .color_write_mask(vk::ColorComponentFlags::RGBA)
