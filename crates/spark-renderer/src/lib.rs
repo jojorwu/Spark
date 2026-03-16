@@ -2352,6 +2352,33 @@ impl Renderer {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_buffer_struct() {
+        let buffer = Buffer {
+            handle: vk::Buffer::null(),
+            memory: vk::DeviceMemory::null(),
+            size: 1024,
+        };
+        assert_eq!(buffer.size, 1024);
+        assert_eq!(buffer.handle, vk::Buffer::null());
+    }
+
+    #[test]
+    fn test_light_data_layout() {
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct LD {
+            pos: [f32; 4],
+            col: [f32; 4],
+        }
+        assert_eq!(std::mem::size_of::<LD>(), 32);
+    }
+}
+
 impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
