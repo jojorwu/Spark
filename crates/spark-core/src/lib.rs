@@ -125,11 +125,17 @@ impl Engine {
                     let frustum = spark_math::Frustum::from_matrix(projection * view_matrix);
 
                     // Second pass for culled rendering
-                    let (renderables, instanced_raw, _, lights) = self.scene.collect_render_data(Some(&frustum));
+                    let (renderables_raw, instanced_raw, _, lights) = self.scene.collect_render_data(Some(&frustum));
+
+                    // Map texture IDs to ImageViews
+                    let renderables: Vec<(spark_math::Mat4, u32, Option<spark_renderer::ash::vk::ImageView>, Option<u32>)> = renderables_raw.iter().map(|(model, v_count, tex_id, vb_id)| {
+                        let view = tex_id.and_then(|id| self.resource_manager.gpu_textures.get(id as usize)).map(|t| t.view);
+                        (*model, *v_count, view, *vb_id)
+                    }).collect();
 
                     // Prepare instance buffers
                     let mut instanced_renderables = Vec::new();
-                    for (vb_id, transforms) in instanced_raw {
+                    for (vb_id, tex_id, transforms) in instanced_raw {
                         let instance_buffer = self.renderer.create_buffer(
                             (std::mem::size_of::<spark_math::Mat4>() * transforms.len()) as u64,
                             spark_renderer::ash::vk::BufferUsageFlags::VERTEX_BUFFER,
@@ -137,7 +143,8 @@ impl Engine {
                         );
                         self.renderer.upload_to_buffer(&instance_buffer, &transforms);
                         let ib_id = self.renderer.add_instance_buffer(instance_buffer);
-                        instanced_renderables.push((vb_id, ib_id, transforms.len() as u32));
+                        let view = tex_id.and_then(|id| self.resource_manager.gpu_textures.get(id as usize)).map(|t| t.view);
+                        instanced_renderables.push((vb_id, ib_id, transforms.len() as u32, view));
                     }
 
                     let view_proj = projection * view_matrix;

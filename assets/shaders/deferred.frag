@@ -16,12 +16,14 @@ layout (input_attachment_index = 2, binding = 2) uniform subpassInput inputPosit
 layout (input_attachment_index = 3, binding = 3) uniform subpassInput inputDepth;
 #endif
 
+layout (binding = 4) uniform sampler2D shadowMap;
+
 struct Light {
     vec4 pos;
     vec4 color;
 };
 
-layout (std430, binding = 4) buffer LightBuffer {
+layout (std430, binding = 5) buffer LightBuffer {
     Light lights[];
 };
 
@@ -33,14 +35,28 @@ layout(push_constant) uniform PushConstants {
 
 layout (location = 0) out vec4 outColor;
 
+float calculateShadow(vec3 worldPos) {
+    vec4 shadowCoord = push.lightViewProj * vec4(worldPos, 1.0);
+    shadowCoord.xyz /= shadowCoord.w;
+    shadowCoord.xy = shadowCoord.xy * 0.5 + 0.5;
+
+    // Simple shadow mapping
+    float closestDepth = texture(shadowMap, shadowCoord.xy).r;
+    float currentDepth = shadowCoord.z;
+    float bias = 0.005;
+    return currentDepth - bias > closestDepth ? 0.5 : 1.0;
+}
+
 vec3 calculateLighting(vec3 albedo, vec3 normal, vec3 position) {
     vec3 lighting = albedo * 0.1; // Ambient
+    float shadow = calculateShadow(position);
+
     for (int i = 0; i < push.lightCount; i++) {
         vec3 L = normalize(lights[i].pos.xyz - position);
         float dist = length(lights[i].pos.xyz - position);
         float attenuation = lights[i].color.a / (dist * dist);
         float diffuse = max(dot(normal, L), 0.0);
-        lighting += albedo * lights[i].color.rgb * diffuse * attenuation;
+        lighting += albedo * lights[i].color.rgb * diffuse * attenuation * shadow;
     }
     return lighting;
 }

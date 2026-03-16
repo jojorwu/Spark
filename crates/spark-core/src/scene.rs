@@ -7,7 +7,7 @@ pub enum NodeData {
     None,
     Mesh {
         vertex_count: u32,
-        texture_id: Option<String>,
+        texture_id: Option<u32>,
         vertex_buffer_id: Option<u32>,
         bounding_radius: f32,
     },
@@ -108,8 +108,8 @@ impl Scene {
         &self,
         frustum: Option<&spark_math::Frustum>,
     ) -> (
-        Vec<(Mat4, u32, Option<String>, Option<u32>)>,
-        Vec<(u32, Vec<Mat4>)>,
+        Vec<(Mat4, u32, Option<u32>, Option<u32>)>,
+        Vec<(u32, Option<u32>, Vec<Mat4>)>,
         Mat4,
         Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>
     ) {
@@ -119,7 +119,7 @@ impl Scene {
         let mut lights = Vec::new();
         self.collect_data_recursive(self.root, &mut renderables, &mut instanced, &mut view_matrix, &mut lights, frustum);
 
-        let instanced_data = instanced.into_iter().map(|(vb_id, transforms)| (vb_id, transforms)).collect();
+        let instanced_data = instanced.into_iter().map(|((vb_id, tex_id), transforms)| (vb_id, tex_id, transforms)).collect();
 
         (renderables, instanced_data, view_matrix, lights)
     }
@@ -127,8 +127,8 @@ impl Scene {
     fn collect_data_recursive(
         &self,
         node_key: NodeKey,
-        renderables: &mut Vec<(Mat4, u32, Option<String>, Option<u32>)>,
-        instanced: &mut std::collections::HashMap<u32, Vec<Mat4>>,
+        renderables: &mut Vec<(Mat4, u32, Option<u32>, Option<u32>)>,
+        instanced: &mut std::collections::HashMap<(u32, Option<u32>), Vec<Mat4>>,
         view_matrix: &mut Mat4,
         lights: &mut Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>,
         frustum: Option<&spark_math::Frustum>,
@@ -149,12 +149,12 @@ impl Scene {
                     };
                     if visible {
                         if let Some(vb_id) = vertex_buffer_id {
-                            instanced.entry(*vb_id).or_insert_with(Vec::new).push(node.global_transform);
+                            instanced.entry((*vb_id, *texture_id)).or_insert_with(Vec::new).push(node.global_transform);
                         } else {
                             renderables.push((
                                 node.global_transform,
                                 *vertex_count,
-                                texture_id.clone(),
+                                *texture_id,
                                 *vertex_buffer_id,
                             ));
                         }

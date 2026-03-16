@@ -142,9 +142,18 @@ impl Pipeline {
                         .stage_flags(vk::ShaderStageFlags::FRAGMENT),
                 );
             }
+            // Binding for Shadow Map
             descriptor_set_layout_bindings.push(
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(input_attachments_count)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            );
+            // Binding for Light Buffer
+            descriptor_set_layout_bindings.push(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(input_attachments_count + 1)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::FRAGMENT),
