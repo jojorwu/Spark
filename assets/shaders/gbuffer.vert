@@ -10,6 +10,7 @@ layout (set = 0, binding = 0) uniform GlobalUBO {
     mat4 viewProj;
     mat4 lightViewProj;
     mat4 invViewProj;
+    vec4 cameraPos;
 } global;
 
 layout(push_constant) uniform PushConstants {

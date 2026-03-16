@@ -173,6 +173,7 @@ impl Engine {
                     }).collect();
                     self.renderer.update_lights(&renderer_lights);
 
+                    self.renderer.scene_view_matrix_for_pos = view_matrix;
                     self.renderer.draw_frame(
                         &renderables,
                         &instanced_renderables,

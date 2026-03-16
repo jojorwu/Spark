@@ -24,29 +24,34 @@ pub struct Buffer {
     pub size: vk::DeviceSize,
 }
 
+pub struct Attachment {
+    pub image: vk::Image,
+    pub memory: vk::DeviceMemory,
+    pub view: vk::ImageView,
+}
+
+impl Attachment {
+    pub fn destroy(&self, device: &ash::Device) {
+        unsafe {
+            device.destroy_image_view(self.view, None);
+            device.destroy_image(self.image, None);
+            device.free_memory(self.memory, None);
+        }
+    }
+}
+
 pub struct Renderer {
     context: VulkanContext,
     pub device: VulkanDevice,
     swapchain: VulkanSwapchain,
     pub render_pass: vk::RenderPass,
-    pub hdr_images: Vec<vk::Image>,
-    pub hdr_memories: Vec<vk::DeviceMemory>,
-    pub hdr_views: Vec<vk::ImageView>,
-    pub gbuffer_albedo_images: Vec<vk::Image>,
-    pub gbuffer_albedo_memories: Vec<vk::DeviceMemory>,
-    pub gbuffer_albedo_views: Vec<vk::ImageView>,
-    pub gbuffer_normal_images: Vec<vk::Image>,
-    pub gbuffer_normal_memories: Vec<vk::DeviceMemory>,
-    pub gbuffer_normal_views: Vec<vk::ImageView>,
-    pub gbuffer_position_images: Vec<vk::Image>,
-    pub gbuffer_position_memories: Vec<vk::DeviceMemory>,
-    pub gbuffer_position_views: Vec<vk::ImageView>,
-    pub gbuffer_pbr_images: Vec<vk::Image>,
-    pub gbuffer_pbr_memories: Vec<vk::DeviceMemory>,
-    pub gbuffer_pbr_views: Vec<vk::ImageView>,
-    pub depth_images: Vec<vk::Image>,
-    pub depth_memories: Vec<vk::DeviceMemory>,
-    pub depth_views: Vec<vk::ImageView>,
+    pub hdr_attachments: Vec<Attachment>,
+    pub albedo_attachments: Vec<Attachment>,
+    pub normal_attachments: Vec<Attachment>,
+    pub pbr_attachments: Vec<Attachment>,
+    pub depth_attachments: Vec<Attachment>,
+    pub global_buffers: Vec<Buffer>,
+    pub global_descriptor_set_layout: vk::DescriptorSetLayout,
     pub light_buffers: Vec<Buffer>,
     pub light_count: u32,
     pub shadow_image: vk::Image,
@@ -73,18 +78,21 @@ pub struct Renderer {
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
+    pub pipeline_cache: vk::PipelineCache,
     current_frame: usize,
     pub pipeline: Option<Pipeline>,
     pub deferred_pipeline: Option<vk::Pipeline>,
     pub deferred_layout: vk::PipelineLayout,
     pub deferred_descriptor_sets: Vec<vk::DescriptorSet>,
     pub vertex_buffers: Vec<Buffer>,
-    pub instance_buffers: Vec<Buffer>,
+    pub instance_buffers: Vec<Vec<Buffer>>, // Per frame
     pub index_buffer: Option<Buffer>,
     pub descriptor_pool: vk::DescriptorPool,
     pub texture_descriptor_sets: std::collections::HashMap<vk::ImageView, vk::DescriptorSet>,
+    pub global_descriptor_sets: Vec<vk::DescriptorSet>,
     pub default_texture: Option<Texture>,
     pub default_descriptor_set: vk::DescriptorSet,
+    pub scene_view_matrix_for_pos: spark_math::Mat4,
     egui_renderer: Option<EguiRenderer>,
 }
 
@@ -138,24 +146,11 @@ impl Renderer {
                 .unwrap()
         };
 
-        let mut hdr_i = Vec::new();
-        let mut hdr_m = Vec::new();
-        let mut hdr_v = Vec::new();
-        let mut g_alb_i = Vec::new();
-        let mut g_alb_m = Vec::new();
-        let mut g_alb_v = Vec::new();
-        let mut g_norm_i = Vec::new();
-        let mut g_norm_m = Vec::new();
-        let mut g_norm_v = Vec::new();
-        let mut g_pos_i = Vec::new();
-        let mut g_pos_m = Vec::new();
-        let mut g_pos_v = Vec::new();
-        let mut g_pbr_i = Vec::new();
-        let mut g_pbr_m = Vec::new();
-        let mut g_pbr_v = Vec::new();
-        let mut depth_i = Vec::new();
-        let mut depth_m = Vec::new();
-        let mut depth_v = Vec::new();
+        let mut hdr_attachments = Vec::new();
+        let mut albedo_attachments = Vec::new();
+        let mut normal_attachments = Vec::new();
+        let mut pbr_attachments = Vec::new();
+        let mut depth_attachments = Vec::new();
 
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             let (i, m, v) = Self::create_hdr_resources_impl(
@@ -165,9 +160,7 @@ impl Renderer {
                 swapchain.extent,
                 vk::SampleCountFlags::TYPE_1,
             );
-            hdr_i.push(i);
-            hdr_m.push(m);
-            hdr_v.push(v);
+            hdr_attachments.push(Attachment { image: i, memory: m, view: v });
 
             let (i, m, v) = Self::create_image_resource_impl(
                 &device.device,
@@ -178,35 +171,18 @@ impl Renderer {
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
                 device.msaa_samples,
             );
-            g_alb_i.push(i);
-            g_alb_m.push(m);
-            g_alb_v.push(v);
+            albedo_attachments.push(Attachment { image: i, memory: m, view: v });
 
             let (i, m, v) = Self::create_image_resource_impl(
                 &device.device,
                 device.pdevice,
                 &context.instance,
                 swapchain.extent,
-                vk::Format::R16G16B16A16_SFLOAT,
+                vk::Format::A2B10G10R10_UNORM_PACK32,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
                 device.msaa_samples,
             );
-            g_norm_i.push(i);
-            g_norm_m.push(m);
-            g_norm_v.push(v);
-
-            let (i, m, v) = Self::create_image_resource_impl(
-                &device.device,
-                device.pdevice,
-                &context.instance,
-                swapchain.extent,
-                vk::Format::R16G16B16A16_SFLOAT,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
-                device.msaa_samples,
-            );
-            g_pos_i.push(i);
-            g_pos_m.push(m);
-            g_pos_v.push(v);
+            normal_attachments.push(Attachment { image: i, memory: m, view: v });
 
             let (i, m, v) = Self::create_image_resource_impl(
                 &device.device,
@@ -217,9 +193,7 @@ impl Renderer {
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
                 device.msaa_samples,
             );
-            g_pbr_i.push(i);
-            g_pbr_m.push(m);
-            g_pbr_v.push(v);
+            pbr_attachments.push(Attachment { image: i, memory: m, view: v });
 
             let (i, m, v) = Self::create_depth_resources_impl(
                 &device.device,
@@ -229,10 +203,7 @@ impl Renderer {
                 device.msaa_samples,
                 device.depth_format,
             );
-            depth_i.push(i);
-            depth_m.push(m);
-            depth_v.push(v);
-
+            depth_attachments.push(Attachment { image: i, memory: m, view: v });
         }
 
         let render_pass = Self::create_render_pass_impl(
@@ -244,12 +215,11 @@ impl Renderer {
         let framebuffers = Self::create_framebuffers_impl(
             &device.device,
             render_pass,
-            &hdr_v,
-            &g_alb_v,
-            &g_norm_v,
-            &g_pos_v,
-            &g_pbr_v,
-            &depth_v,
+            &hdr_attachments,
+            &albedo_attachments,
+            &normal_attachments,
+            &pbr_attachments,
+            &depth_attachments,
             swapchain.extent,
         );
         let post_process_render_pass =
@@ -263,6 +233,21 @@ impl Renderer {
         let command_pool = Self::create_command_pool_impl(&device.device, device.graphics_family);
         let command_buffers = Self::create_command_buffers_impl(&device.device, command_pool);
         let (av, fi, in_f) = Self::create_sync_objects_impl(&device.device);
+        let pipeline_cache = unsafe {
+            device.device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None).unwrap()
+        };
+        let global_descriptor_set_layout = unsafe {
+            device.device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+                ]),
+                None,
+            ).unwrap()
+        };
         let descriptor_pool = Self::create_descriptor_pool_impl(&device.device);
         let post_process_descriptor_pool = Self::create_descriptor_pool_impl(&device.device);
         let mut bloom_images = Vec::new();
@@ -298,24 +283,13 @@ impl Renderer {
             device,
             swapchain,
             render_pass,
-            hdr_images: hdr_i,
-            hdr_memories: hdr_m,
-            hdr_views: hdr_v,
-            gbuffer_albedo_images: g_alb_i,
-            gbuffer_albedo_memories: g_alb_m,
-            gbuffer_albedo_views: g_alb_v,
-            gbuffer_normal_images: g_norm_i,
-            gbuffer_normal_memories: g_norm_m,
-            gbuffer_normal_views: g_norm_v,
-            gbuffer_position_images: g_pos_i,
-            gbuffer_position_memories: g_pos_m,
-            gbuffer_position_views: g_pos_v,
-            gbuffer_pbr_images: g_pbr_i,
-            gbuffer_pbr_memories: g_pbr_m,
-            gbuffer_pbr_views: g_pbr_v,
-            depth_images: depth_i,
-            depth_memories: depth_m,
-            depth_views: depth_v,
+            hdr_attachments,
+            albedo_attachments,
+            normal_attachments,
+            pbr_attachments,
+            depth_attachments,
+            global_buffers: Vec::new(),
+            global_descriptor_set_layout,
             light_buffers: Vec::new(),
             light_count: 0,
             shadow_image: sh_i,
@@ -342,18 +316,21 @@ impl Renderer {
             image_available_semaphores: av,
             render_finished_semaphores: fi,
             in_flight_fences: in_f,
+            pipeline_cache,
             current_frame: 0,
             pipeline: None,
             deferred_pipeline: None,
             deferred_layout: vk::PipelineLayout::null(),
             deferred_descriptor_sets: Vec::new(),
             vertex_buffers: Vec::new(),
-            instance_buffers: Vec::new(),
+            instance_buffers: vec![Vec::new(); MAX_FRAMES_IN_FLIGHT],
             index_buffer: None,
             descriptor_pool,
             texture_descriptor_sets: std::collections::HashMap::new(),
+            global_descriptor_sets: Vec::new(),
             default_texture: None,
             default_descriptor_set: vk::DescriptorSet::null(),
+            scene_view_matrix_for_pos: spark_math::Mat4::IDENTITY,
             egui_renderer,
         })
     }
@@ -386,23 +363,19 @@ impl Renderer {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let alb_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(self.gbuffer_albedo_views[i])
+                .image_view(self.albedo_attachments[i].view)
                 .sampler(vk::Sampler::null())];
             let norm_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(self.gbuffer_normal_views[i])
-                .sampler(vk::Sampler::null())];
-            let pos_info = [vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(self.gbuffer_position_views[i])
+                .image_view(self.normal_attachments[i].view)
                 .sampler(vk::Sampler::null())];
             let pbr_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(self.gbuffer_pbr_views[i])
+                .image_view(self.pbr_attachments[i].view)
                 .sampler(vk::Sampler::null())];
             let depth_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(self.depth_views[i])
+                .image_view(self.depth_attachments[i].view)
                 .sampler(vk::Sampler::null())];
 
             let shadow_info = [vk::DescriptorImageInfo::default()
@@ -425,20 +398,15 @@ impl Renderer {
                     .dst_set(self.deferred_descriptor_sets[i])
                     .dst_binding(2)
                     .descriptor_type(vk::DescriptorType::INPUT_ATTACHMENT)
-                    .image_info(&pos_info),
+                    .image_info(&pbr_info),
                 vk::WriteDescriptorSet::default()
                     .dst_set(self.deferred_descriptor_sets[i])
                     .dst_binding(3)
                     .descriptor_type(vk::DescriptorType::INPUT_ATTACHMENT)
-                    .image_info(&pbr_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.deferred_descriptor_sets[i])
-                    .dst_binding(4)
-                    .descriptor_type(vk::DescriptorType::INPUT_ATTACHMENT)
                     .image_info(&depth_info),
                 vk::WriteDescriptorSet::default()
                     .dst_set(self.deferred_descriptor_sets[i])
-                    .dst_binding(5)
+                    .dst_binding(4)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&shadow_info),
             ];
@@ -454,7 +422,7 @@ impl Renderer {
                 writes.push(
                     vk::WriteDescriptorSet::default()
                         .dst_set(self.deferred_descriptor_sets[i])
-                        .dst_binding(6)
+                        .dst_binding(5)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(&buf_info),
                 );
@@ -467,12 +435,12 @@ impl Renderer {
     }
 
     pub fn set_pipeline(&mut self, pipeline: Pipeline) {
-        if self.pipeline.is_some() {
-            // New pipeline might have a different descriptor set layout.
-            // Since we don't support individual descriptor set freeing,
-            // we clear the cache and will re-allocate from the pool.
-            // Ideally we should reset the pool here if we change pipelines often.
-            self.texture_descriptor_sets.clear();
+        if let Some(old) = &self.pipeline {
+            if old.descriptor_set_layout != pipeline.descriptor_set_layout {
+                // New pipeline has a different descriptor set layout.
+                // We clear the cache and will re-allocate from the pool.
+                self.texture_descriptor_sets.clear();
+            }
         }
         self.pipeline = Some(pipeline);
         self.init_default_resources();
@@ -559,7 +527,7 @@ impl Renderer {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let img_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(self.hdr_views[i])
+                .image_view(self.hdr_attachments[i].view)
                 .sampler(self.shadow_sampler)];
             let blm_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -579,6 +547,33 @@ impl Renderer {
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&blm_info),
             ];
+            unsafe {
+                self.device.device.update_descriptor_sets(&writes, &[]);
+            }
+        }
+    }
+    pub fn ensure_global_descriptor_set(&mut self) {
+        if self.global_descriptor_sets.is_empty() {
+            let layouts = [self.global_descriptor_set_layout, self.global_descriptor_set_layout];
+            let alloc_info = vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(self.descriptor_pool)
+                .set_layouts(&layouts);
+            self.global_descriptor_sets = unsafe {
+                self.device.device.allocate_descriptor_sets(&alloc_info).unwrap()
+            };
+        }
+
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            let ds = self.global_descriptor_sets[i];
+            let buf_info = [vk::DescriptorBufferInfo::default()
+                .buffer(self.global_buffers[i].handle)
+                .offset(0)
+                .range(self.global_buffers[i].size)];
+            let writes = [vk::WriteDescriptorSet::default()
+                .dst_set(ds)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(&buf_info)];
             unsafe {
                 self.device.device.update_descriptor_sets(&writes, &[]);
             }
@@ -679,8 +674,8 @@ impl Renderer {
     }
 
     pub fn add_instance_buffer(&mut self, buffer: Buffer) -> u32 {
-        self.instance_buffers.push(buffer);
-        (self.instance_buffers.len() - 1) as u32
+        self.instance_buffers[self.current_frame].push(buffer);
+        (self.instance_buffers[self.current_frame].len() - 1) as u32
     }
 
     pub fn draw_frame(
@@ -960,24 +955,48 @@ impl Renderer {
                 vk::SubpassContents::INLINE,
             );
             #[repr(C)]
-            #[repr(C)]
-            struct PC {
+            #[derive(Copy, Clone)]
+            struct GlobalUBO {
                 vp: spark_math::Mat4,
                 lvp: spark_math::Mat4,
+                inv_vp: spark_math::Mat4,
+                camera_pos: [f32; 4],
+            }
+            let inv_v = self.scene_view_matrix_for_pos.inverse();
+            let camera_pos = [inv_v.w_axis.x, inv_v.w_axis.y, inv_v.w_axis.z, 1.0];
+            let ubo = GlobalUBO {
+                vp: view_proj,
+                lvp: light_view_proj,
+                inv_vp: view_proj.inverse(),
+                camera_pos,
+            };
+            if self.global_buffers.is_empty() {
+                for _ in 0..MAX_FRAMES_IN_FLIGHT {
+                    self.global_buffers.push(self.create_buffer(
+                        std::mem::size_of::<GlobalUBO>() as u64,
+                        vk::BufferUsageFlags::UNIFORM_BUFFER,
+                        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                    ));
+                }
+                self.ensure_global_descriptor_set();
+            }
+            self.upload_to_buffer(&self.global_buffers[self.current_frame], &[ubo]);
+            #[repr(C)]
+            struct PC {
                 count: u32,
                 metallic: f32,
                 roughness: f32,
-                pad: u32,
+                width: f32,
+                height: f32,
             }
             let pc = PC {
-                vp: view_proj,
-                lvp: light_view_proj,
                 count: self.light_count,
-                metallic: 0.5, // Default for now
-                roughness: 0.5, // Default for now
-                pad: 0,
+                metallic: 0.5,
+                roughness: 0.5,
+                width: self.swapchain.extent.width as f32,
+                height: self.swapchain.extent.height as f32,
             };
-            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, 144);
+            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
             if let Some(pipeline) = &self.pipeline {
                 self.device.device.cmd_bind_pipeline(
                     command_buffer,
@@ -1009,12 +1028,14 @@ impl Renderer {
                         let ds = tex_view.and_then(|v| self.texture_descriptor_sets.get(&v))
                             .unwrap_or(&self.default_descriptor_set);
 
+                        let global_ds = self.global_descriptor_sets[self.current_frame];
+
                         self.device.device.cmd_bind_descriptor_sets(
                             command_buffer,
                             vk::PipelineBindPoint::GRAPHICS,
                             pipeline.layout,
                             0,
-                            &[*ds],
+                            &[global_ds, *ds],
                             &[],
                         );
 
@@ -1055,12 +1076,14 @@ impl Renderer {
                         let ds = tex_view.and_then(|v| self.texture_descriptor_sets.get(&v))
                             .unwrap_or(&self.default_descriptor_set);
 
+                        let global_ds = self.global_descriptor_sets[self.current_frame];
+
                         self.device.device.cmd_bind_descriptor_sets(
                             command_buffer,
                             vk::PipelineBindPoint::GRAPHICS,
                             pipeline.layout,
                             0,
-                            &[*ds],
+                            &[global_ds, *ds],
                             &[],
                         );
 
@@ -1112,6 +1135,15 @@ impl Renderer {
                     vk::PipelineBindPoint::GRAPHICS,
                     deferred_pipe,
                 );
+                let global_ds = self.global_descriptor_sets[self.current_frame];
+                self.device.device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.deferred_layout,
+                    0,
+                    &[global_ds],
+                    &[],
+                );
                 let viewport = vk::Viewport::default()
                     .x(0.0)
                     .y(0.0)
@@ -1127,7 +1159,7 @@ impl Renderer {
                         command_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
                         self.deferred_layout,
-                        0,
+                        1,
                         &[self.deferred_descriptor_sets[self.current_frame]],
                         &[],
                     );
@@ -1240,21 +1272,11 @@ impl Renderer {
                 window.inner_size().width,
                 window.inner_size().height,
             );
-            let mut hdr_i = Vec::new();
-            let mut hdr_m = Vec::new();
-            let mut hdr_v = Vec::new();
-            let mut g_alb_i = Vec::new();
-            let mut g_alb_m = Vec::new();
-            let mut g_alb_v = Vec::new();
-            let mut g_norm_i = Vec::new();
-            let mut g_norm_m = Vec::new();
-            let mut g_norm_v = Vec::new();
-            let mut g_pos_i = Vec::new();
-            let mut g_pos_m = Vec::new();
-            let mut g_pos_v = Vec::new();
-            let mut depth_i = Vec::new();
-            let mut depth_m = Vec::new();
-            let mut depth_v = Vec::new();
+            let mut hdr_attachments = Vec::new();
+            let mut albedo_attachments = Vec::new();
+            let mut normal_attachments = Vec::new();
+            let mut pbr_attachments = Vec::new();
+            let mut depth_attachments = Vec::new();
             for _ in 0..MAX_FRAMES_IN_FLIGHT {
                 let (i, m, v) = Self::create_hdr_resources_impl(
                     &self.device.device,
@@ -1263,9 +1285,7 @@ impl Renderer {
                     self.swapchain.extent,
                     vk::SampleCountFlags::TYPE_1,
                 );
-                hdr_i.push(i);
-                hdr_m.push(m);
-                hdr_v.push(v);
+                hdr_attachments.push(Attachment { image: i, memory: m, view: v });
                 let (i, m, v) = Self::create_image_resource_impl(
                     &self.device.device,
                     self.device.pdevice,
@@ -1275,33 +1295,27 @@ impl Renderer {
                     vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
                     self.device.msaa_samples,
                 );
-                g_alb_i.push(i);
-                g_alb_m.push(m);
-                g_alb_v.push(v);
+                albedo_attachments.push(Attachment { image: i, memory: m, view: v });
                 let (i, m, v) = Self::create_image_resource_impl(
                     &self.device.device,
                     self.device.pdevice,
                     &self.context.instance,
                     self.swapchain.extent,
-                    vk::Format::R16G16B16A16_SFLOAT,
+                    vk::Format::A2B10G10R10_UNORM_PACK32,
                     vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
                     self.device.msaa_samples,
                 );
-                g_norm_i.push(i);
-                g_norm_m.push(m);
-                g_norm_v.push(v);
+                normal_attachments.push(Attachment { image: i, memory: m, view: v });
                 let (i, m, v) = Self::create_image_resource_impl(
                     &self.device.device,
                     self.device.pdevice,
                     &self.context.instance,
                     self.swapchain.extent,
-                    vk::Format::R16G16B16A16_SFLOAT,
+                    vk::Format::R8G8B8A8_UNORM,
                     vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
                     self.device.msaa_samples,
                 );
-                g_pos_i.push(i);
-                g_pos_m.push(m);
-                g_pos_v.push(v);
+                pbr_attachments.push(Attachment { image: i, memory: m, view: v });
                 let (i, m, v) = Self::create_depth_resources_impl(
                     &self.device.device,
                     self.device.pdevice,
@@ -1310,34 +1324,21 @@ impl Renderer {
                     self.device.msaa_samples,
                     self.device.depth_format,
                 );
-                depth_i.push(i);
-                depth_m.push(m);
-                depth_v.push(v);
+                depth_attachments.push(Attachment { image: i, memory: m, view: v });
             }
-            self.hdr_images = hdr_i;
-            self.hdr_memories = hdr_m;
-            self.hdr_views = hdr_v;
-            self.gbuffer_albedo_images = g_alb_i;
-            self.gbuffer_albedo_memories = g_alb_m;
-            self.gbuffer_albedo_views = g_alb_v;
-            self.gbuffer_normal_images = g_norm_i;
-            self.gbuffer_normal_memories = g_norm_m;
-            self.gbuffer_normal_views = g_norm_v;
-            self.gbuffer_position_images = g_pos_i;
-            self.gbuffer_position_memories = g_pos_m;
-            self.gbuffer_position_views = g_pos_v;
-            self.depth_images = depth_i;
-            self.depth_memories = depth_m;
-            self.depth_views = depth_v;
+            self.hdr_attachments = hdr_attachments;
+            self.albedo_attachments = albedo_attachments;
+            self.normal_attachments = normal_attachments;
+            self.pbr_attachments = pbr_attachments;
+            self.depth_attachments = depth_attachments;
             self.framebuffers = Self::create_framebuffers_impl(
                 &self.device.device,
                 self.render_pass,
-                &self.hdr_views,
-                &self.gbuffer_albedo_views,
-                &self.gbuffer_normal_views,
-                &self.gbuffer_position_views,
-                &self.gbuffer_pbr_views,
-                &self.depth_views,
+                &self.hdr_attachments,
+                &self.albedo_attachments,
+                &self.normal_attachments,
+                &self.pbr_attachments,
+                &self.depth_attachments,
                 self.swapchain.extent,
             );
             self.post_process_framebuffers = Self::create_post_process_framebuffers_impl(
@@ -1359,60 +1360,11 @@ impl Renderer {
             for &f in &self.post_process_framebuffers {
                 self.device.device.destroy_framebuffer(f, None);
             }
-            for &v in &self.hdr_views {
-                self.device.device.destroy_image_view(v, None);
-            }
-            for &i in &self.hdr_images {
-                self.device.device.destroy_image(i, None);
-            }
-            for &m in &self.hdr_memories {
-                self.device.device.free_memory(m, None);
-            }
-            for &v in &self.gbuffer_albedo_views {
-                self.device.device.destroy_image_view(v, None);
-            }
-            for &i in &self.gbuffer_albedo_images {
-                self.device.device.destroy_image(i, None);
-            }
-            for &m in &self.gbuffer_albedo_memories {
-                self.device.device.free_memory(m, None);
-            }
-            for &v in &self.gbuffer_normal_views {
-                self.device.device.destroy_image_view(v, None);
-            }
-            for &i in &self.gbuffer_normal_images {
-                self.device.device.destroy_image(i, None);
-            }
-            for &m in &self.gbuffer_normal_memories {
-                self.device.device.free_memory(m, None);
-            }
-            for &v in &self.gbuffer_position_views {
-                self.device.device.destroy_image_view(v, None);
-            }
-            for &i in &self.gbuffer_position_images {
-                self.device.device.destroy_image(i, None);
-            }
-            for &m in &self.gbuffer_position_memories {
-                self.device.device.free_memory(m, None);
-            }
-            for &v in &self.gbuffer_pbr_views {
-                self.device.device.destroy_image_view(v, None);
-            }
-            for &i in &self.gbuffer_pbr_images {
-                self.device.device.destroy_image(i, None);
-            }
-            for &m in &self.gbuffer_pbr_memories {
-                self.device.device.free_memory(m, None);
-            }
-            for &v in &self.depth_views {
-                self.device.device.destroy_image_view(v, None);
-            }
-            for &i in &self.depth_images {
-                self.device.device.destroy_image(i, None);
-            }
-            for &m in &self.depth_memories {
-                self.device.device.free_memory(m, None);
-            }
+            for a in self.hdr_attachments.drain(..) { a.destroy(&self.device.device); }
+            for a in self.albedo_attachments.drain(..) { a.destroy(&self.device.device); }
+            for a in self.normal_attachments.drain(..) { a.destroy(&self.device.device); }
+            for a in self.pbr_attachments.drain(..) { a.destroy(&self.device.device); }
+            for a in self.depth_attachments.drain(..) { a.destroy(&self.device.device); }
             self.swapchain
                 .loader
                 .destroy_swapchain(self.swapchain.handle, None);
@@ -1710,17 +1662,15 @@ impl Renderer {
         self.vertex_buffers.get(id as usize)
     }
     pub fn get_instance_buffer(&self, id: u32) -> Option<&Buffer> {
-        self.instance_buffers.get(id as usize)
+        self.instance_buffers[self.current_frame].get(id as usize)
     }
     pub fn clear_instance_buffers(&mut self) {
-        // In a better implementation, we would keep these buffers for a few frames
-        // using a ring buffer or similar, to avoid wait_idle.
-        // For now, we'll keep the wait_idle to ensure safety, but we can potentially
-        // optimize this by not clearing every frame if we manage lifecycles better.
-        unsafe {
-            self.device.device.device_wait_idle().ok();
-            let buffers = std::mem::take(&mut self.instance_buffers);
-            for b in buffers {
+        // We only clear buffers for the frame we are about to start recording.
+        // Since we wait for the fence of the current_frame at the start of draw_frame,
+        // it is safe to destroy these buffers now without device_wait_idle.
+        let buffers = std::mem::take(&mut self.instance_buffers[self.current_frame]);
+        for b in buffers {
+            unsafe {
                 self.device.device.destroy_buffer(b.handle, None);
                 self.device.device.free_memory(b.memory, None);
             }
@@ -2104,14 +2054,7 @@ impl Renderer {
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
         let normal_att = vk::AttachmentDescription::default()
-            .format(vk::Format::R16G16B16A16_SFLOAT)
-            .samples(msaa_samples)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        let position_att = vk::AttachmentDescription::default()
-            .format(vk::Format::R16G16B16A16_SFLOAT)
+            .format(vk::Format::A2B10G10R10_UNORM_PACK32)
             .samples(msaa_samples)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
@@ -2145,20 +2088,17 @@ impl Renderer {
         let normal_ref = vk::AttachmentReference::default()
             .attachment(1)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        let position_ref = vk::AttachmentReference::default()
+        let pbr_ref = vk::AttachmentReference::default()
             .attachment(2)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        let pbr_ref = vk::AttachmentReference::default()
+        let hdr_ref = vk::AttachmentReference::default()
             .attachment(3)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        let hdr_ref = vk::AttachmentReference::default()
-            .attachment(4)
-            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
         let depth_ref = vk::AttachmentReference::default()
-            .attachment(5)
+            .attachment(4)
             .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
-        let subpass0_color_attachments = [albedo_ref, normal_ref, position_ref, pbr_ref];
+        let subpass0_color_attachments = [albedo_ref, normal_ref, pbr_ref];
         let subpass0 = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&subpass0_color_attachments)
@@ -2175,10 +2115,7 @@ impl Renderer {
                 .attachment(2)
                 .layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
             vk::AttachmentReference::default()
-                .attachment(3)
-                .layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-            vk::AttachmentReference::default()
-                .attachment(5)
+                .attachment(4)
                 .layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
         ];
         let subpass1 = vk::SubpassDescription::default()
@@ -2209,7 +2146,7 @@ impl Renderer {
                 .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
                 .dst_access_mask(vk::AccessFlags::SHADER_READ),
         ];
-        let attachments = [albedo_att, normal_att, position_att, pbr_att, hdr_att, depth_att];
+        let attachments = [albedo_att, normal_att, pbr_att, hdr_att, depth_att];
         let subpasses = [subpass0, subpass1];
         unsafe {
             device
@@ -2226,23 +2163,21 @@ impl Renderer {
     fn create_framebuffers_impl(
         device: &ash::Device,
         render_pass: vk::RenderPass,
-        hdr_views: &[vk::ImageView],
-        albedo_views: &[vk::ImageView],
-        normal_views: &[vk::ImageView],
-        position_views: &[vk::ImageView],
-        pbr_views: &[vk::ImageView],
-        depth_views: &[vk::ImageView],
+        hdr: &[Attachment],
+        albedo: &[Attachment],
+        normal: &[Attachment],
+        pbr: &[Attachment],
+        depth: &[Attachment],
         extent: vk::Extent2D,
     ) -> Vec<vk::Framebuffer> {
         (0..MAX_FRAMES_IN_FLIGHT)
             .map(|i| {
                 let attachments = [
-                    albedo_views[i],
-                    normal_views[i],
-                    position_views[i],
-                    pbr_views[i],
-                    hdr_views[i],
-                    depth_views[i],
+                    albedo[i].view,
+                    normal[i].view,
+                    pbr[i].view,
+                    hdr[i].view,
+                    depth[i].view,
                 ];
                 unsafe {
                     device
@@ -2452,6 +2387,10 @@ impl Drop for Renderer {
                 self.device.device.destroy_buffer(lb.handle, None);
                 self.device.device.free_memory(lb.memory, None);
             }
+            for b in self.global_buffers.drain(..) {
+                self.device.device.destroy_buffer(b.handle, None);
+                self.device.device.free_memory(b.memory, None);
+            }
             self.device
                 .device
                 .destroy_sampler(self.shadow_sampler, None);
@@ -2505,19 +2444,14 @@ impl Drop for Renderer {
                 .destroy_pipeline_layout(self.deferred_layout, None);
             self.device
                 .device
+                .destroy_descriptor_set_layout(self.global_descriptor_set_layout, None);
+            self.device
+                .device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
             self.device
                 .device
                 .destroy_descriptor_pool(self.post_process_descriptor_pool, None);
-            for &v in &self.gbuffer_pbr_views {
-                self.device.device.destroy_image_view(v, None);
-            }
-            for &i in &self.gbuffer_pbr_images {
-                self.device.device.destroy_image(i, None);
-            }
-            for &m in &self.gbuffer_pbr_memories {
-                self.device.device.free_memory(m, None);
-            }
+            for a in self.pbr_attachments.drain(..) { a.destroy(&self.device.device); }
             for (img, (mem, view)) in self.bloom_images.drain(..).zip(
                 self.bloom_memories
                     .drain(..)
@@ -2538,10 +2472,12 @@ impl Drop for Renderer {
                 self.device.device.destroy_buffer(vb.handle, None);
                 self.device.device.free_memory(vb.memory, None);
             }
-            let ibs = std::mem::take(&mut self.instance_buffers);
-            for ib in ibs {
-                self.device.device.destroy_buffer(ib.handle, None);
-                self.device.device.free_memory(ib.memory, None);
+            let ibs_per_frame = std::mem::take(&mut self.instance_buffers);
+            for ibs in ibs_per_frame {
+                for ib in ibs {
+                    self.device.device.destroy_buffer(ib.handle, None);
+                    self.device.device.free_memory(ib.memory, None);
+                }
             }
             if let Some(ib) = self.index_buffer.take() {
                 self.device.device.destroy_buffer(ib.handle, None);

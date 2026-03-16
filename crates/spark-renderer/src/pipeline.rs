@@ -24,6 +24,7 @@ impl Pipeline {
         msaa_samples: vk::SampleCountFlags,
         is_deferred_lighting: bool,
         input_attachments_count: u32,
+        pipeline_cache: vk::PipelineCache,
     ) -> Self {
         let vert_shader_module = Self::create_shader_module(device, vert_shader_code);
         let frag_shader_module = Self::create_shader_module(device, frag_shader_code);
@@ -121,7 +122,7 @@ impl Pipeline {
         let push_constant_ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(160)];
+            .size(64)];
 
         let mut descriptor_set_layout_bindings = Vec::new();
         if is_deferred_lighting {
@@ -170,7 +171,22 @@ impl Pipeline {
                 .expect("Failed to create descriptor set layout")
         };
 
-        let set_layouts = [descriptor_set_layout];
+        let global_ds_layout = unsafe {
+            device
+                .create_descriptor_set_layout(
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[
+                        vk::DescriptorSetLayoutBinding::default()
+                            .binding(0)
+                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                            .descriptor_count(1)
+                            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+                    ]),
+                    None,
+                )
+                .unwrap()
+        };
+
+        let set_layouts = [global_ds_layout, descriptor_set_layout];
 
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
             .push_constant_ranges(&push_constant_ranges)
@@ -197,7 +213,7 @@ impl Pipeline {
 
         let graphics_pipelines = unsafe {
             device
-                .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+                .create_graphics_pipelines(pipeline_cache, &[pipeline_info], None)
                 .expect("Failed to create graphics pipeline")
         };
 

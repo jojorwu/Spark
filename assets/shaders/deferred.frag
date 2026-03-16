@@ -4,37 +4,42 @@
 #define MSAA_SAMPLES 1
 #endif
 
+layout (set = 0, binding = 0) uniform GlobalUBO {
+    mat4 viewProj;
+    mat4 lightViewProj;
+    mat4 invViewProj;
+    vec4 cameraPos;
+} global;
+
 #if MSAA_SAMPLES > 1
-layout (input_attachment_index = 0, binding = 0) uniform subpassInputMS inputAlbedo;
-layout (input_attachment_index = 1, binding = 1) uniform subpassInputMS inputNormal;
-layout (input_attachment_index = 2, binding = 2) uniform subpassInputMS inputPosition;
-layout (input_attachment_index = 3, binding = 3) uniform subpassInputMS inputPBR;
-layout (input_attachment_index = 4, binding = 4) uniform subpassInputMS inputDepth;
+layout (set = 1, input_attachment_index = 0, binding = 0) uniform subpassInputMS inputAlbedo;
+layout (set = 1, input_attachment_index = 1, binding = 1) uniform subpassInputMS inputNormal;
+layout (set = 1, input_attachment_index = 2, binding = 2) uniform subpassInputMS inputPBR;
+layout (set = 1, input_attachment_index = 3, binding = 3) uniform subpassInputMS inputDepth;
 #else
-layout (input_attachment_index = 0, binding = 0) uniform subpassInput inputAlbedo;
-layout (input_attachment_index = 1, binding = 1) uniform subpassInput inputNormal;
-layout (input_attachment_index = 2, binding = 2) uniform subpassInput inputPosition;
-layout (input_attachment_index = 3, binding = 3) uniform subpassInput inputPBR;
-layout (input_attachment_index = 4, binding = 4) uniform subpassInput inputDepth;
+layout (set = 1, input_attachment_index = 0, binding = 0) uniform subpassInput inputAlbedo;
+layout (set = 1, input_attachment_index = 1, binding = 1) uniform subpassInput inputNormal;
+layout (set = 1, input_attachment_index = 2, binding = 2) uniform subpassInput inputPBR;
+layout (set = 1, input_attachment_index = 3, binding = 3) uniform subpassInput inputDepth;
 #endif
 
-layout (binding = 5) uniform sampler2D shadowMap;
+layout (set = 1, binding = 4) uniform sampler2D shadowMap;
 
 struct Light {
     vec4 pos;
     vec4 color;
 };
 
-layout (std430, binding = 6) buffer LightBuffer {
+layout (set = 1, std430, binding = 5) buffer LightBuffer {
     Light lights[];
 };
 
 layout(push_constant) uniform PushConstants {
-    mat4 viewProj;
-    mat4 lightViewProj;
     uint lightCount;
     float metallic;
     float roughness;
+    float width;
+    float height;
 } push;
 
 layout (location = 0) out vec4 outColor;
@@ -72,15 +77,21 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+/**
+ * Percentage-Closer Filtering (PCF) for soft shadows.
+ */
 float calculateShadow(vec3 worldPos) {
-    vec4 shadowCoord = push.lightViewProj * vec4(worldPos, 1.0);
+    vec4 shadowCoord = global.lightViewProj * vec4(worldPos, 1.0);
     shadowCoord.xyz /= shadowCoord.w;
+
+    // Convert to [0, 1] range
     shadowCoord.xy = shadowCoord.xy * 0.5 + 0.5;
 
     float shadow = 0.0;
     vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
     float bias = 0.005;
 
+    // 3x3 PCF Kernel
     for(int x = -1; x <= 1; ++x) {
         for(int y = -1; y <= 1; ++y) {
             float pcfDepth = texture(shadowMap, shadowCoord.xy + vec2(x, y) * texelSize).r;
@@ -90,6 +101,9 @@ float calculateShadow(vec3 worldPos) {
     return shadow / 9.0;
 }
 
+/**
+ * Physically Based Rendering (PBR) lighting using Cook-Torrance BRDF.
+ */
 vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metallic, float roughness, vec3 viewPos) {
     vec3 N = normalize(normal);
     vec3 V = normalize(viewPos - worldPos);
@@ -127,27 +141,34 @@ vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metalli
     return color;
 }
 
+vec3 worldPosFromDepth(float depth, vec2 texCoord) {
+    vec4 clipSpacePos = vec4(texCoord * 2.0 - 1.0, depth, 1.0);
+    vec4 worldSpacePos = global.invViewProj * clipSpacePos;
+    return worldSpacePos.xyz / worldSpacePos.w;
+}
+
 void main()
 {
-    // Extract camera position from ViewProj (simplified for demo)
-    mat4 invVP = inverse(push.viewProj);
-    vec4 camPosWorld = invVP * vec4(0,0,0,1);
-    vec3 viewPos = camPosWorld.xyz / camPosWorld.w;
+    vec2 texCoord = gl_FragCoord.xy / vec2(push.width, push.height);
+
+    vec3 viewPos = global.cameraPos.xyz;
 
 #if MSAA_SAMPLES > 1
     vec3 color = vec3(0.0);
     for (int i = 0; i < MSAA_SAMPLES; i++) {
         vec3 albedo = subpassLoad(inputAlbedo, i).rgb;
-        vec3 normal = subpassLoad(inputNormal, i).rgb;
-        vec3 position = subpassLoad(inputPosition, i).rgb;
+        vec3 normal = subpassLoad(inputNormal, i).rgb * 2.0 - 1.0;
+        float depth = subpassLoad(inputDepth, i).r;
+        vec3 position = worldPosFromDepth(depth, texCoord);
         vec2 pbr = subpassLoad(inputPBR, i).rg;
         color += calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos);
     }
     outColor = vec4(color / float(MSAA_SAMPLES), 1.0);
 #else
     vec3 albedo = subpassLoad(inputAlbedo).rgb;
-    vec3 normal = subpassLoad(inputNormal).rgb;
-    vec3 position = subpassLoad(inputPosition).rgb;
+    vec3 normal = subpassLoad(inputNormal).rgb * 2.0 - 1.0;
+    float depth = subpassLoad(inputDepth).r;
+    vec3 position = worldPosFromDepth(depth, texCoord);
     vec2 pbr = subpassLoad(inputPBR).rg;
     outColor = vec4(calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos), 1.0);
 #endif

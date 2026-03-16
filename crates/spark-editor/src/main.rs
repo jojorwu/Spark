@@ -113,7 +113,7 @@ fn main() {
 
         let p = unsafe {
             device
-                .create_graphics_pipelines(ash::vk::PipelineCache::null(), &[info], None)
+                .create_graphics_pipelines(engine.renderer.pipeline_cache, &[info], None)
                 .unwrap()[0]
         };
         unsafe {
@@ -191,7 +191,7 @@ fn main() {
             .render_pass(render_pass)
             .subpass(0);
 
-        let p = unsafe { device.create_graphics_pipelines(ash::vk::PipelineCache::null(), &[info], None).unwrap()[0] };
+        let p = unsafe { device.create_graphics_pipelines(engine.renderer.pipeline_cache, &[info], None).unwrap()[0] };
 
         let bloom_frag_module = {
             let info = ash::vk::ShaderModuleCreateInfo::default().code(bloom_frag_spirv.as_binary());
@@ -212,7 +212,7 @@ fn main() {
             .render_pass(render_pass)
             .subpass(0);
 
-        let bp = unsafe { device.create_graphics_pipelines(ash::vk::PipelineCache::null(), &[bloom_info], None).unwrap()[0] };
+        let bp = unsafe { device.create_graphics_pipelines(engine.renderer.pipeline_cache, &[bloom_info], None).unwrap()[0] };
 
         unsafe {
             device.destroy_shader_module(vert_module, None);
@@ -234,6 +234,7 @@ fn main() {
         engine.renderer.get_msaa_samples(),
         false, // Not deferred lighting
         0,
+        engine.renderer.pipeline_cache,
     );
 
     engine.renderer.set_pipeline(pipeline);
@@ -266,7 +267,8 @@ fn main() {
         def_frag_spirv.as_binary(),
         engine.renderer.get_msaa_samples(),
         true, // Deferred lighting
-        5,    // 5 input attachments (Albedo, Normal, Position, PBR, Depth)
+        4,    // 4 input attachments (Albedo, Normal, PBR, Depth)
+        engine.renderer.pipeline_cache,
     );
 
     engine.renderer.set_deferred_pipeline(deferred_pipeline.graphics_pipeline, deferred_pipeline.layout, deferred_pipeline.descriptor_set_layout);
