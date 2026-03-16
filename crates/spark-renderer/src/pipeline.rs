@@ -18,7 +18,7 @@ impl Pipeline {
         device: &Device,
         render_pass: vk::RenderPass,
         subpass: u32,
-        extent: vk::Extent2D,
+        _extent: vk::Extent2D,
         vert_shader_code: &[u32],
         frag_shader_code: &[u32],
         msaa_samples: vk::SampleCountFlags,
@@ -62,21 +62,9 @@ impl Pipeline {
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
 
-        let viewports = [vk::Viewport::default()
-            .x(0.0)
-            .y(extent.height as f32)
-            .width(extent.width as f32)
-            .height(-(extent.height as f32))
-            .min_depth(0.0)
-            .max_depth(1.0)];
-
-        let scissors = [vk::Rect2D::default()
-            .offset(vk::Offset2D { x: 0, y: 0 })
-            .extent(extent)];
-
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-            .viewports(&viewports)
-            .scissors(&scissors);
+            .viewport_count(1)
+            .scissor_count(1);
 
         let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
             .depth_clamp_enable(false)
@@ -105,6 +93,10 @@ impl Pipeline {
             .depth_compare_op(vk::CompareOp::LESS)
             .depth_bounds_test_enable(false)
             .stencil_test_enable(false);
+
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::default()
+            .dynamic_states(&dynamic_states);
 
         let mut color_blend_attachments = vec![vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
@@ -159,16 +151,10 @@ impl Pipeline {
                     .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             );
         } else {
+            // Binding for Albedo Map
             descriptor_set_layout_bindings.push(
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            );
-            descriptor_set_layout_bindings.push(
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(1)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -204,6 +190,7 @@ impl Pipeline {
             .multisample_state(&multisampling)
             .depth_stencil_state(&depth_stencil)
             .color_blend_state(&color_blending)
+            .dynamic_state(&dynamic_state_info)
             .layout(pipeline_layout)
             .render_pass(render_pass)
             .subpass(subpass);

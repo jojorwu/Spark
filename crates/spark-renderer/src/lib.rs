@@ -44,12 +44,6 @@ pub struct Renderer {
     pub depth_images: Vec<vk::Image>,
     pub depth_memories: Vec<vk::DeviceMemory>,
     pub depth_views: Vec<vk::ImageView>,
-    pub msaa_color_images: Vec<vk::Image>,
-    pub msaa_color_memories: Vec<vk::DeviceMemory>,
-    pub msaa_color_views: Vec<vk::ImageView>,
-    pub msaa_depth_images: Vec<vk::Image>,
-    pub msaa_depth_memories: Vec<vk::DeviceMemory>,
-    pub msaa_depth_views: Vec<vk::ImageView>,
     pub light_buffers: Vec<Buffer>,
     pub light_count: u32,
     pub shadow_image: vk::Image,
@@ -85,8 +79,9 @@ pub struct Renderer {
     pub instance_buffers: Vec<Buffer>,
     pub index_buffer: Option<Buffer>,
     pub descriptor_pool: vk::DescriptorPool,
-    pub descriptor_sets: Vec<vk::DescriptorSet>,
     pub texture_descriptor_sets: std::collections::HashMap<vk::ImageView, vk::DescriptorSet>,
+    pub default_texture: Option<Texture>,
+    pub default_descriptor_set: vk::DescriptorSet,
     egui_renderer: Option<EguiRenderer>,
 }
 
@@ -155,12 +150,6 @@ impl Renderer {
         let mut depth_i = Vec::new();
         let mut depth_m = Vec::new();
         let mut depth_v = Vec::new();
-        let mut m_c_i = Vec::new();
-        let mut m_c_m = Vec::new();
-        let mut m_c_v = Vec::new();
-        let mut m_d_i = Vec::new();
-        let mut m_d_m = Vec::new();
-        let mut m_d_v = Vec::new();
 
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             let (i, m, v) = Self::create_hdr_resources_impl(
@@ -181,7 +170,7 @@ impl Renderer {
                 swapchain.extent,
                 vk::Format::R8G8B8A8_UNORM,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
-                vk::SampleCountFlags::TYPE_1,
+                device.msaa_samples,
             );
             g_alb_i.push(i);
             g_alb_m.push(m);
@@ -194,7 +183,7 @@ impl Renderer {
                 swapchain.extent,
                 vk::Format::R16G16B16A16_SFLOAT,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
-                vk::SampleCountFlags::TYPE_1,
+                device.msaa_samples,
             );
             g_norm_i.push(i);
             g_norm_m.push(m);
@@ -207,7 +196,7 @@ impl Renderer {
                 swapchain.extent,
                 vk::Format::R16G16B16A16_SFLOAT,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
-                vk::SampleCountFlags::TYPE_1,
+                device.msaa_samples,
             );
             g_pos_i.push(i);
             g_pos_m.push(m);
@@ -218,35 +207,13 @@ impl Renderer {
                 device.pdevice,
                 &context.instance,
                 swapchain.extent,
-                vk::SampleCountFlags::TYPE_1,
+                device.msaa_samples,
                 device.depth_format,
             );
             depth_i.push(i);
             depth_m.push(m);
             depth_v.push(v);
 
-            let (i, m, v) = Self::create_hdr_resources_impl(
-                &device.device,
-                device.pdevice,
-                &context.instance,
-                swapchain.extent,
-                device.msaa_samples,
-            );
-            m_c_i.push(i);
-            m_c_m.push(m);
-            m_c_v.push(v);
-
-            let (i, m, v) = Self::create_depth_resources_impl(
-                &device.device,
-                device.pdevice,
-                &context.instance,
-                swapchain.extent,
-                device.msaa_samples,
-                device.depth_format,
-            );
-            m_d_i.push(i);
-            m_d_m.push(m);
-            m_d_v.push(v);
         }
 
         let render_pass = Self::create_render_pass_impl(
@@ -277,6 +244,7 @@ impl Renderer {
         let command_buffers = Self::create_command_buffers_impl(&device.device, command_pool);
         let (av, fi, in_f) = Self::create_sync_objects_impl(&device.device);
         let descriptor_pool = Self::create_descriptor_pool_impl(&device.device);
+        let post_process_descriptor_pool = Self::create_descriptor_pool_impl(&device.device);
         let mut bloom_images = Vec::new();
         let mut bloom_memories = Vec::new();
         let mut bloom_views = Vec::new();
@@ -325,12 +293,6 @@ impl Renderer {
             depth_images: depth_i,
             depth_memories: depth_m,
             depth_views: depth_v,
-            msaa_color_images: m_c_i,
-            msaa_color_memories: m_c_m,
-            msaa_color_views: m_c_v,
-            msaa_depth_images: m_d_i,
-            msaa_depth_memories: m_d_m,
-            msaa_depth_views: m_d_v,
             light_buffers: Vec::new(),
             light_count: 0,
             shadow_image: sh_i,
@@ -349,7 +311,7 @@ impl Renderer {
             bloom_images,
             bloom_memories,
             bloom_views,
-            post_process_descriptor_pool: descriptor_pool,
+            post_process_descriptor_pool,
             post_process_descriptor_sets: Vec::new(),
             framebuffers,
             command_pool,
@@ -366,8 +328,9 @@ impl Renderer {
             instance_buffers: Vec::new(),
             index_buffer: None,
             descriptor_pool,
-            descriptor_sets: Vec::new(),
             texture_descriptor_sets: std::collections::HashMap::new(),
+            default_texture: None,
+            default_descriptor_set: vk::DescriptorSet::null(),
             egui_renderer,
         })
     }
@@ -472,7 +435,65 @@ impl Renderer {
     }
 
     pub fn set_pipeline(&mut self, pipeline: Pipeline) {
+        if self.pipeline.is_some() {
+            // New pipeline might have a different descriptor set layout.
+            // Since we don't support individual descriptor set freeing,
+            // we clear the cache and will re-allocate from the pool.
+            // Ideally we should reset the pool here if we change pipelines often.
+            self.texture_descriptor_sets.clear();
+        }
         self.pipeline = Some(pipeline);
+        self.init_default_resources();
+    }
+
+    fn init_default_resources(&mut self) {
+        if self.default_texture.is_none() {
+            let white_pixel = [255u8, 255, 255, 255];
+            let img = image::DynamicImage::ImageRgba8(
+                image::RgbaImage::from_raw(1, 1, white_pixel.to_vec()).unwrap(),
+            );
+            let tex = self.create_texture_from_image(&img);
+            self.default_texture = Some(tex);
+        }
+
+        let view = self.default_texture.as_ref().unwrap().view;
+        let sampler = self.default_texture.as_ref().unwrap().sampler;
+
+        let pipeline_layout = if let Some(pipeline) = &self.pipeline {
+            pipeline.descriptor_set_layout
+        } else {
+            return;
+        };
+
+        let device = &self.device.device;
+        let ds = *self
+            .texture_descriptor_sets
+            .entry(view)
+            .or_insert_with(|| unsafe {
+                device
+                    .allocate_descriptor_sets(
+                        &vk::DescriptorSetAllocateInfo::default()
+                            .descriptor_pool(self.descriptor_pool)
+                            .set_layouts(&[pipeline_layout]),
+                    )
+                    .expect("Failed to allocate texture descriptor set")[0]
+            });
+
+        let img_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(view)
+            .sampler(sampler)];
+        let writes = [vk::WriteDescriptorSet::default()
+            .dst_set(ds)
+            .dst_binding(0)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&img_info)];
+        unsafe {
+            device.update_descriptor_sets(&writes, &[]);
+        }
+
+        self.default_descriptor_set = ds;
     }
     pub fn set_shadow_pipeline(&mut self, pipeline: vk::Pipeline) {
         self.shadow_pipeline = Some(pipeline);
@@ -496,6 +517,13 @@ impl Renderer {
                 )
                 .unwrap()
         };
+        self.update_post_process_descriptor_sets();
+    }
+
+    fn update_post_process_descriptor_sets(&self) {
+        if self.post_process_descriptor_sets.is_empty() {
+            return;
+        }
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let img_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -524,48 +552,39 @@ impl Renderer {
             }
         }
     }
-    pub fn set_texture(&mut self, texture: &Texture) {
-        if let Some(pipeline) = &self.pipeline {
-            let device = &self.device.device;
-            let ds = *self
-                .texture_descriptor_sets
-                .entry(texture.view)
-                .or_insert_with(|| unsafe {
-                    device
-                        .allocate_descriptor_sets(
-                            &vk::DescriptorSetAllocateInfo::default()
-                                .descriptor_pool(self.descriptor_pool)
-                                .set_layouts(&[pipeline.descriptor_set_layout]),
-                        )
-                        .expect("Failed to allocate texture descriptor set")[0]
-                });
+    pub fn ensure_texture_descriptor(&mut self, texture: &Texture) {
+        let pipeline_layout = if let Some(pipeline) = &self.pipeline {
+            pipeline.descriptor_set_layout
+        } else {
+            return;
+        };
 
-            let img_info = [vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(texture.view)
-                .sampler(texture.sampler)];
-            let shd_info = [vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(self.shadow_view)
-                .sampler(self.shadow_sampler)];
-            let writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(ds)
-                    .dst_binding(0)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&img_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(ds)
-                    .dst_binding(1)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&shd_info),
-            ];
-            unsafe {
-                device.update_descriptor_sets(&writes, &[]);
-            }
-            self.descriptor_sets = vec![ds];
+        let device = &self.device.device;
+        let ds = *self
+            .texture_descriptor_sets
+            .entry(texture.view)
+            .or_insert_with(|| unsafe {
+                device
+                    .allocate_descriptor_sets(
+                        &vk::DescriptorSetAllocateInfo::default()
+                            .descriptor_pool(self.descriptor_pool)
+                            .set_layouts(&[pipeline_layout]),
+                    )
+                    .expect("Failed to allocate texture descriptor set")[0]
+            });
+
+        let img_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(texture.view)
+            .sampler(texture.sampler)];
+        let writes = [vk::WriteDescriptorSet::default()
+            .dst_set(ds)
+            .dst_binding(0)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&img_info)];
+        unsafe {
+            device.update_descriptor_sets(&writes, &[]);
         }
     }
     pub fn update_lights(&mut self, lights: &[(spark_math::Vec3, spark_math::Vec3, f32)]) {
@@ -604,6 +623,7 @@ impl Renderer {
             if self.light_buffers[i].size < sz {
                 let old = self.light_buffers[i];
                 unsafe {
+                    self.device.device.device_wait_idle().ok();
                     self.device.device.destroy_buffer(old.handle, None);
                     self.device.device.free_memory(old.memory, None);
                 }
@@ -754,6 +774,19 @@ impl Renderer {
                     vk::PipelineBindPoint::GRAPHICS,
                     shadow_pipeline,
                 );
+                let shadow_viewport = vk::Viewport::default()
+                    .x(0.0)
+                    .y(0.0)
+                    .width(Self::SHADOW_MAP_CASCADE_SIZE as f32)
+                    .height(Self::SHADOW_MAP_CASCADE_SIZE as f32)
+                    .min_depth(0.0)
+                    .max_depth(1.0);
+                let shadow_scissor = vk::Rect2D::default().extent(vk::Extent2D {
+                    width: Self::SHADOW_MAP_CASCADE_SIZE,
+                    height: Self::SHADOW_MAP_CASCADE_SIZE,
+                });
+                self.device.device.cmd_set_viewport(command_buffer, 0, &[shadow_viewport]);
+                self.device.device.cmd_set_scissor(command_buffer, 0, &[shadow_scissor]);
                 let lvp_bytes =
                     std::slice::from_raw_parts(&light_view_proj as *const _ as *const u8, 64);
                 for (vb_id, ib_id, count, _) in instanced_renderables {
@@ -909,6 +942,17 @@ impl Renderer {
                     vk::PipelineBindPoint::GRAPHICS,
                     pipeline.graphics_pipeline,
                 );
+                let viewport = vk::Viewport::default()
+                    .x(0.0)
+                    .y(self.swapchain.extent.height as f32)
+                    .width(self.swapchain.extent.width as f32)
+                    .height(-(self.swapchain.extent.height as f32))
+                    .min_depth(0.0)
+                    .max_depth(1.0);
+                let scissor = vk::Rect2D::default().extent(self.swapchain.extent);
+                self.device.device.cmd_set_viewport(command_buffer, 0, &[viewport]);
+                self.device.device.cmd_set_scissor(command_buffer, 0, &[scissor]);
+
                 self.device.device.cmd_push_constants(
                     command_buffer,
                     pipeline.layout,
@@ -920,18 +964,17 @@ impl Renderer {
                     if let (Some(vb), Some(ib)) =
                         (self.get_buffer(*vb_id), self.get_instance_buffer(*ib_id))
                     {
-                        if let Some(view) = tex_view {
-                            if let Some(ds) = self.texture_descriptor_sets.get(view) {
-                                self.device.device.cmd_bind_descriptor_sets(
-                                    command_buffer,
-                                    vk::PipelineBindPoint::GRAPHICS,
-                                    pipeline.layout,
-                                    0,
-                                    &[*ds],
-                                    &[],
-                                );
-                            }
-                        }
+                        let ds = tex_view.and_then(|v| self.texture_descriptor_sets.get(&v))
+                            .unwrap_or(&self.default_descriptor_set);
+
+                        self.device.device.cmd_bind_descriptor_sets(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            pipeline.layout,
+                            0,
+                            &[*ds],
+                            &[],
+                        );
 
                         self.device.device.cmd_bind_vertex_buffers(
                             command_buffer,
@@ -967,18 +1010,17 @@ impl Renderer {
                 }
                 for (_model, vb_id, tex_view, _) in renderables {
                     if let Some(vb) = self.get_buffer(*vb_id) {
-                        if let Some(view) = tex_view {
-                            if let Some(ds) = self.texture_descriptor_sets.get(view) {
-                                self.device.device.cmd_bind_descriptor_sets(
-                                    command_buffer,
-                                    vk::PipelineBindPoint::GRAPHICS,
-                                    pipeline.layout,
-                                    0,
-                                    &[*ds],
-                                    &[],
-                                );
-                            }
-                        }
+                        let ds = tex_view.and_then(|v| self.texture_descriptor_sets.get(&v))
+                            .unwrap_or(&self.default_descriptor_set);
+
+                        self.device.device.cmd_bind_descriptor_sets(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            pipeline.layout,
+                            0,
+                            &[*ds],
+                            &[],
+                        );
 
                         // For non-instanced, we'd need to send the model matrix via push constants.
                         // Currently our push constant struct in lib.rs only has vp and lvp.
@@ -1028,6 +1070,16 @@ impl Renderer {
                     vk::PipelineBindPoint::GRAPHICS,
                     deferred_pipe,
                 );
+                let viewport = vk::Viewport::default()
+                    .x(0.0)
+                    .y(0.0)
+                    .width(self.swapchain.extent.width as f32)
+                    .height(self.swapchain.extent.height as f32)
+                    .min_depth(0.0)
+                    .max_depth(1.0);
+                let scissor = vk::Rect2D::default().extent(self.swapchain.extent);
+                self.device.device.cmd_set_viewport(command_buffer, 0, &[viewport]);
+                self.device.device.cmd_set_scissor(command_buffer, 0, &[scissor]);
                 if !self.deferred_descriptor_sets.is_empty() {
                     self.device.device.cmd_bind_descriptor_sets(
                         command_buffer,
@@ -1103,6 +1155,16 @@ impl Renderer {
                     vk::PipelineBindPoint::GRAPHICS,
                     post_pipeline,
                 );
+                let viewport = vk::Viewport::default()
+                    .x(0.0)
+                    .y(0.0)
+                    .width(self.swapchain.extent.width as f32)
+                    .height(self.swapchain.extent.height as f32)
+                    .min_depth(0.0)
+                    .max_depth(1.0);
+                let scissor = vk::Rect2D::default().extent(self.swapchain.extent);
+                self.device.device.cmd_set_viewport(command_buffer, 0, &[viewport]);
+                self.device.device.cmd_set_scissor(command_buffer, 0, &[scissor]);
                 if !self.post_process_descriptor_sets.is_empty() {
                     self.device.device.cmd_bind_descriptor_sets(
                         command_buffer,
@@ -1151,12 +1213,6 @@ impl Renderer {
             let mut depth_i = Vec::new();
             let mut depth_m = Vec::new();
             let mut depth_v = Vec::new();
-            let mut m_c_i = Vec::new();
-            let mut m_c_m = Vec::new();
-            let mut m_c_v = Vec::new();
-            let mut m_d_i = Vec::new();
-            let mut m_d_m = Vec::new();
-            let mut m_d_v = Vec::new();
             for _ in 0..MAX_FRAMES_IN_FLIGHT {
                 let (i, m, v) = Self::create_hdr_resources_impl(
                     &self.device.device,
@@ -1175,7 +1231,7 @@ impl Renderer {
                     self.swapchain.extent,
                     vk::Format::R8G8B8A8_UNORM,
                     vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
-                    vk::SampleCountFlags::TYPE_1,
+                    self.device.msaa_samples,
                 );
                 g_alb_i.push(i);
                 g_alb_m.push(m);
@@ -1187,7 +1243,7 @@ impl Renderer {
                     self.swapchain.extent,
                     vk::Format::R16G16B16A16_SFLOAT,
                     vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
-                    vk::SampleCountFlags::TYPE_1,
+                    self.device.msaa_samples,
                 );
                 g_norm_i.push(i);
                 g_norm_m.push(m);
@@ -1199,7 +1255,7 @@ impl Renderer {
                     self.swapchain.extent,
                     vk::Format::R16G16B16A16_SFLOAT,
                     vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT,
-                    vk::SampleCountFlags::TYPE_1,
+                    self.device.msaa_samples,
                 );
                 g_pos_i.push(i);
                 g_pos_m.push(m);
@@ -1209,33 +1265,12 @@ impl Renderer {
                     self.device.pdevice,
                     &self.context.instance,
                     self.swapchain.extent,
-                    vk::SampleCountFlags::TYPE_1,
+                    self.device.msaa_samples,
                     self.device.depth_format,
                 );
                 depth_i.push(i);
                 depth_m.push(m);
                 depth_v.push(v);
-                let (i, m, v) = Self::create_hdr_resources_impl(
-                    &self.device.device,
-                    self.device.pdevice,
-                    &self.context.instance,
-                    self.swapchain.extent,
-                    self.device.msaa_samples,
-                );
-                m_c_i.push(i);
-                m_c_m.push(m);
-                m_c_v.push(v);
-                let (i, m, v) = Self::create_depth_resources_impl(
-                    &self.device.device,
-                    self.device.pdevice,
-                    &self.context.instance,
-                    self.swapchain.extent,
-                    self.device.msaa_samples,
-                    self.device.depth_format,
-                );
-                m_d_i.push(i);
-                m_d_m.push(m);
-                m_d_v.push(v);
             }
             self.hdr_images = hdr_i;
             self.hdr_memories = hdr_m;
@@ -1252,18 +1287,6 @@ impl Renderer {
             self.depth_images = depth_i;
             self.depth_memories = depth_m;
             self.depth_views = depth_v;
-            self.msaa_color_images = m_c_i;
-            self.msaa_color_memories = m_c_m;
-            self.msaa_color_views = m_c_v;
-            self.msaa_depth_images = m_d_i;
-            self.msaa_depth_memories = m_d_m;
-            self.msaa_depth_views = m_d_v;
-            self.render_pass = Self::create_render_pass_impl(
-                &self.device.device,
-                self.swapchain.format,
-                self.device.msaa_samples,
-                self.device.depth_format,
-            );
             self.framebuffers = Self::create_framebuffers_impl(
                 &self.device.device,
                 self.render_pass,
@@ -1274,10 +1297,6 @@ impl Renderer {
                 &self.depth_views,
                 self.swapchain.extent,
             );
-            self.post_process_render_pass = Self::create_post_process_render_pass_impl(
-                &self.device.device,
-                self.swapchain.format,
-            );
             self.post_process_framebuffers = Self::create_post_process_framebuffers_impl(
                 &self.device.device,
                 self.post_process_render_pass,
@@ -1285,6 +1304,7 @@ impl Renderer {
                 self.swapchain.extent,
             );
             self.update_deferred_descriptor_sets();
+            self.update_post_process_descriptor_sets();
         }
     }
 
@@ -1296,12 +1316,6 @@ impl Renderer {
             for &f in &self.post_process_framebuffers {
                 self.device.device.destroy_framebuffer(f, None);
             }
-            self.device
-                .device
-                .destroy_render_pass(self.render_pass, None);
-            self.device
-                .device
-                .destroy_render_pass(self.post_process_render_pass, None);
             for &v in &self.hdr_views {
                 self.device.device.destroy_image_view(v, None);
             }
@@ -1345,24 +1359,6 @@ impl Renderer {
                 self.device.device.destroy_image(i, None);
             }
             for &m in &self.depth_memories {
-                self.device.device.free_memory(m, None);
-            }
-            for &v in &self.msaa_color_views {
-                self.device.device.destroy_image_view(v, None);
-            }
-            for &i in &self.msaa_color_images {
-                self.device.device.destroy_image(i, None);
-            }
-            for &m in &self.msaa_color_memories {
-                self.device.device.free_memory(m, None);
-            }
-            for &v in &self.msaa_depth_views {
-                self.device.device.destroy_image_view(v, None);
-            }
-            for &i in &self.msaa_depth_images {
-                self.device.device.destroy_image(i, None);
-            }
-            for &m in &self.msaa_depth_memories {
                 self.device.device.free_memory(m, None);
             }
             self.swapchain
@@ -1438,7 +1434,8 @@ impl Renderer {
         }
     }
 
-    pub fn destroy_texture(&self, t: Texture) {
+    pub fn destroy_texture(&mut self, t: Texture) {
+        self.texture_descriptor_sets.remove(&t.view);
         unsafe {
             self.device.device.destroy_sampler(t.sampler, None);
             self.device.device.destroy_image_view(t.view, None);
@@ -2281,7 +2278,7 @@ impl Renderer {
         let sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(100),
+                .descriptor_count(1000),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::INPUT_ATTACHMENT)
                 .descriptor_count(100),
@@ -2294,7 +2291,7 @@ impl Renderer {
                 .create_descriptor_pool(
                     &vk::DescriptorPoolCreateInfo::default()
                         .pool_sizes(&sizes)
-                        .max_sets(100),
+                        .max_sets(1000),
                     None,
                 )
                 .expect("Failed to create descriptor pool")
@@ -2442,6 +2439,9 @@ impl Drop for Renderer {
             self.device
                 .device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
+            self.device
+                .device
+                .destroy_descriptor_pool(self.post_process_descriptor_pool, None);
             for (img, (mem, view)) in self.bloom_images.drain(..).zip(
                 self.bloom_memories
                     .drain(..)
@@ -2453,6 +2453,9 @@ impl Drop for Renderer {
             }
             if let Some(mut e) = self.egui_renderer.take() {
                 e.destroy(self);
+            }
+            if let Some(t) = self.default_texture.take() {
+                self.destroy_texture(t);
             }
             let vbs = std::mem::take(&mut self.vertex_buffers);
             for vb in vbs {

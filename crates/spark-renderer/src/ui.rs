@@ -56,10 +56,10 @@ impl EguiRenderer {
 
         let pool_sizes = [vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)];
+            .descriptor_count(100)];
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&pool_sizes)
-            .max_sets(1);
+            .max_sets(100);
         let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None).unwrap() };
 
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
@@ -126,6 +126,19 @@ impl EguiRenderer {
                             vk::PipelineBindPoint::GRAPHICS,
                             self.pipeline,
                         );
+                        let viewport = vk::Viewport::default()
+                            .x(0.0)
+                            .y(0.0)
+                            .width(screen_size[0])
+                            .height(screen_size[1])
+                            .min_depth(0.0)
+                            .max_depth(1.0);
+                        let scissor = vk::Rect2D::default().extent(vk::Extent2D {
+                            width: screen_size[0] as u32,
+                            height: screen_size[1] as u32,
+                        });
+                        device.cmd_set_viewport(command_buffer, 0, &[viewport]);
+                        device.cmd_set_scissor(command_buffer, 0, &[scissor]);
                         let texture_id = mesh.texture_id;
                         let ds = self
                             .texture_descriptor_sets
@@ -172,7 +185,7 @@ impl EguiRenderer {
         }
     }
 
-    fn update_buffers(&mut self, renderer: &crate::Renderer, vertex_count: u64, index_count: u64) {
+    fn update_buffers(&mut self, renderer: &mut crate::Renderer, vertex_count: u64, index_count: u64) {
         if self.vertex_buffer.is_none() || self.max_vertices < vertex_count {
             if let Some(vb) = self.vertex_buffer.take() {
                 renderer.destroy_buffer(vb);
@@ -204,7 +217,7 @@ impl EguiRenderer {
         layout: vk::PipelineLayout,
         vert_code: &[u32],
         frag_code: &[u32],
-        extent: vk::Extent2D,
+        _extent: vk::Extent2D,
         msaa_samples: vk::SampleCountFlags,
     ) -> vk::Pipeline {
         let vert_module = {
@@ -259,14 +272,9 @@ impl EguiRenderer {
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
 
-        let viewport = vk::Viewport::default()
-            .width(extent.width as f32)
-            .height(extent.height as f32)
-            .max_depth(1.0);
-        let scissor = vk::Rect2D::default().extent(extent);
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-            .viewports(std::slice::from_ref(&viewport))
-            .scissors(std::slice::from_ref(&scissor));
+            .viewport_count(1)
+            .scissor_count(1);
 
         let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
             .cull_mode(vk::CullModeFlags::NONE)
@@ -284,6 +292,10 @@ impl EguiRenderer {
         let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
             .attachments(std::slice::from_ref(&color_blend_attachment));
 
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::default()
+            .dynamic_states(&dynamic_states);
+
         let info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&stages)
             .vertex_input_state(&vertex_input)
@@ -292,6 +304,7 @@ impl EguiRenderer {
             .rasterization_state(&rasterizer)
             .multisample_state(&multisample)
             .color_blend_state(&color_blend)
+            .dynamic_state(&dynamic_state_info)
             .layout(layout)
             .render_pass(render_pass)
             .subpass(1);
@@ -310,13 +323,27 @@ impl EguiRenderer {
         pipeline
     }
 
-    fn update_textures(&mut self, renderer: &crate::Renderer, delta: &egui::TexturesDelta) {
+    fn update_textures(&mut self, renderer: &mut crate::Renderer, delta: &egui::TexturesDelta) {
         for (id, delta) in &delta.set {
-            // Simplify: handle only full updates for now
-            if let egui::ImageData::Color(image) = &delta.image {
-                let size = [image.size[0] as u32, image.size[1] as u32];
-                let pixels: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+            let (pixels, size) = match &delta.image {
+                egui::ImageData::Color(image) => {
+                    let pixels: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+                    (pixels, [image.size[0] as u32, image.size[1] as u32])
+                }
+                egui::ImageData::Font(image) => {
+                    let pixels: Vec<u8> = image
+                        .pixels
+                        .iter()
+                        .flat_map(|&p| {
+                            let v = (p * 255.0) as u8;
+                            [v, v, v, v]
+                        })
+                        .collect();
+                    (pixels, [image.size[0] as u32, image.size[1] as u32])
+                }
+            };
 
+            {
                 let staging = renderer.create_buffer(
                     pixels.len() as u64,
                     vk::BufferUsageFlags::TRANSFER_SRC,
@@ -400,13 +427,13 @@ impl EguiRenderer {
         }
     }
 
-    pub fn destroy(&mut self, renderer: &crate::Renderer) {
-        let device = renderer.get_device();
+    pub fn destroy(&mut self, renderer: &mut crate::Renderer) {
         unsafe {
             let textures = std::mem::take(&mut self.textures);
             for (_, tex) in textures {
                 renderer.destroy_texture(tex);
             }
+            let device = renderer.get_device();
             device.destroy_descriptor_pool(self.descriptor_pool, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             device.destroy_pipeline_layout(self.pipeline_layout, None);

@@ -22,11 +22,11 @@ fn main() {
         Some((ui_vert_spirv.as_binary(), ui_frag_spirv.as_binary()))
     ).expect("Failed to initialize engine");
 
-    let vert_code = fs::read_to_string("assets/shaders/triangle.vert").expect("Failed to read vertex shader");
-    let frag_code = fs::read_to_string("assets/shaders/triangle.frag").expect("Failed to read fragment shader");
+    let vert_code = fs::read_to_string("assets/shaders/gbuffer.vert").expect("Failed to read vertex shader");
+    let frag_code = fs::read_to_string("assets/shaders/gbuffer.frag").expect("Failed to read fragment shader");
 
-    let vert_spirv = compiler.compile_into_spirv(&vert_code, shaderc::ShaderKind::Vertex, "triangle.vert", "main", None).unwrap();
-    let frag_spirv = compiler.compile_into_spirv(&frag_code, shaderc::ShaderKind::Fragment, "triangle.frag", "main", None).unwrap();
+    let vert_spirv = compiler.compile_into_spirv(&vert_code, shaderc::ShaderKind::Vertex, "gbuffer.vert", "main", None).unwrap();
+    let frag_spirv = compiler.compile_into_spirv(&frag_code, shaderc::ShaderKind::Fragment, "gbuffer.frag", "main", None).unwrap();
 
     let shadow_vert_code = fs::read_to_string("assets/shaders/shadow.vert").expect("Failed to read shadow vertex shader");
     let shadow_frag_code = fs::read_to_string("assets/shaders/shadow.frag").expect("Failed to read shadow fragment shader");

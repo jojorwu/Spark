@@ -40,11 +40,18 @@ float calculateShadow(vec3 worldPos) {
     shadowCoord.xyz /= shadowCoord.w;
     shadowCoord.xy = shadowCoord.xy * 0.5 + 0.5;
 
-    // Simple shadow mapping
-    float closestDepth = texture(shadowMap, shadowCoord.xy).r;
-    float currentDepth = shadowCoord.z;
+    // Soft shadows with PCF
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
     float bias = 0.005;
-    return currentDepth - bias > closestDepth ? 0.5 : 1.0;
+
+    for(int x = -1; x <= 1; ++x) {
+        for(int y = -1; y <= 1; ++y) {
+            float pcfDepth = texture(shadowMap, shadowCoord.xy + vec2(x, y) * texelSize).r;
+            shadow += shadowCoord.z - bias > pcfDepth ? 0.5 : 1.0;
+        }
+    }
+    return shadow / 9.0;
 }
 
 vec3 calculateLighting(vec3 albedo, vec3 normal, vec3 position) {
