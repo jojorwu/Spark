@@ -229,7 +229,7 @@ impl Pipeline {
         }
     }
 
-    fn create_shader_module(device: &Device, code: &[u32]) -> vk::ShaderModule {
+    pub fn create_shader_module(device: &Device, code: &[u32]) -> vk::ShaderModule {
         let create_info = vk::ShaderModuleCreateInfo::default().code(code);
         unsafe {
             device
