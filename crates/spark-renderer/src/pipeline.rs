@@ -99,18 +99,23 @@ impl Pipeline {
         let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::default()
             .dynamic_states(&dynamic_states);
 
-        let mut color_blend_attachments = vec![vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(vk::ColorComponentFlags::RGBA)
-            .blend_enable(false)];
+        let mut color_blend_attachments = Vec::new();
         if !is_deferred_lighting {
             for _ in 0..3 {
-                // Albedo, Normal, Position, PBR
+                // Albedo, Normal, PBR
                 color_blend_attachments.push(
                     vk::PipelineColorBlendAttachmentState::default()
                         .color_write_mask(vk::ColorComponentFlags::RGBA)
                         .blend_enable(false),
                 );
             }
+        } else {
+            // Lighting pass output (HDR)
+            color_blend_attachments.push(
+                vk::PipelineColorBlendAttachmentState::default()
+                    .color_write_mask(vk::ColorComponentFlags::RGBA)
+                    .blend_enable(false),
+            );
         }
 
         let color_blending = vk::PipelineColorBlendStateCreateInfo::default()

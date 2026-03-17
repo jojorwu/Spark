@@ -101,7 +101,7 @@ fn main() {
         engine.renderer.pipeline_cache,
     );
 
-    engine.renderer.set_deferred_pipeline(deferred_pipeline.graphics_pipeline, deferred_pipeline.layout, deferred_pipeline.descriptor_set_layout);
+    engine.renderer.set_deferred_pipeline(deferred_pipeline.graphics_pipeline);
 
     use spark_renderer::vertex::Vertex;
     use spark_math::{Vec2, Vec3, Mat4};
