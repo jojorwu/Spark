@@ -35,6 +35,7 @@ fn main() {
     let compiler = ShaderCompiler::new();
 
     let culling_spirv = compiler.compile("assets/shaders/culling.comp", shaderc::ShaderKind::Compute);
+    let hiz_spirv = compiler.compile("assets/shaders/hiz.comp", shaderc::ShaderKind::Compute);
 
     let ui_vert_spirv = compiler.compile("assets/shaders/ui.vert", shaderc::ShaderKind::Vertex);
     let ui_frag_spirv = compiler.compile("assets/shaders/ui.frag", shaderc::ShaderKind::Fragment);
@@ -52,6 +53,7 @@ fn main() {
 
     engine.renderer.create_shadow_pipeline(&shadow_vert_spirv, &shadow_frag_spirv);
     engine.renderer.create_culling_pipeline(&culling_spirv);
+    engine.renderer.create_hiz_pipeline(&hiz_spirv);
 
     let post_vert_spirv = compiler.compile("assets/shaders/fullscreen.vert", shaderc::ShaderKind::Vertex);
     let post_frag_spirv = compiler.compile("assets/shaders/tonemap_bloom.frag", shaderc::ShaderKind::Fragment);

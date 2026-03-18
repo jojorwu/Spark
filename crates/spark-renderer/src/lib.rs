@@ -11,6 +11,7 @@ use crate::passes::deferred::DeferredPass;
 use crate::passes::post_process::PostProcessPass;
 use crate::passes::shadow::ShadowPass;
 use crate::passes::culling::CullingPass;
+use crate::passes::hiz::HiZPass;
 use crate::pipeline::Pipeline;
 pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT, ObjectDataSSBO};
 use crate::ui::EguiRenderer;
@@ -35,6 +36,7 @@ pub struct Renderer {
     pub deferred_pass: DeferredPass,
     pub post_process_pass: PostProcessPass,
     pub culling_pass: Option<CullingPass>,
+    pub hiz_pass: Option<HiZPass>,
     pub frames: [RenderFrame; MAX_FRAMES_IN_FLIGHT],
     pub pipeline_cache: vk::PipelineCache,
     current_frame: usize,
@@ -123,6 +125,11 @@ impl Renderer {
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .descriptor_count(1)
                         .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(4)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::COMPUTE),
                 ]),
                 None,
             )?
@@ -215,6 +222,7 @@ impl Renderer {
             deferred_pass,
             post_process_pass,
             culling_pass: None,
+            hiz_pass: None,
             frames,
             pipeline_cache,
             current_frame: 0,
@@ -339,6 +347,16 @@ impl Renderer {
         ));
     }
 
+    pub fn create_hiz_pipeline(&mut self, shader_code: &[u32]) {
+        self.hiz_pass = Some(HiZPass::new(
+            &self.device,
+            self.descriptor_pool,
+            shader_code,
+            self.swapchain.extent.width,
+            self.swapchain.extent.height,
+        ));
+    }
+
     pub fn create_post_process_pipeline(&mut self, vert_spirv: &[u32], frag_spirv: &[u32], bloom_frag_spirv: &[u32]) {
         self.post_process_pass.create_pipelines(
             &self.device.device,
@@ -360,6 +378,8 @@ impl Renderer {
     }
 
     pub fn ensure_global_descriptor_set(&mut self) {
+        let hiz_view = self.hiz_pass.as_ref().map(|h| h.pyramid_view).unwrap_or(self.shadow_pass.view); // Placeholder if no hiz
+
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let frame = &self.frames[i];
             if let (Some(global_buffer), Some(obj_buf), Some(ind_buf), Some(cnt_buf)) =
@@ -370,11 +390,17 @@ impl Renderer {
                 let ind_info = [vk::DescriptorBufferInfo::default().buffer(ind_buf.handle).range(ind_buf.size)];
                 let cnt_info = [vk::DescriptorBufferInfo::default().buffer(cnt_buf.handle).range(cnt_buf.size)];
 
+                let hiz_info = [vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(hiz_view)
+                    .sampler(self.shadow_pass.sampler)];
+
                 let writes = [
                     vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(0).descriptor_type(vk::DescriptorType::UNIFORM_BUFFER).buffer_info(&buf_info),
                     vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&obj_info),
                     vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&ind_info),
                     vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&cnt_info),
+                    vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(4).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&hiz_info),
                 ];
                 unsafe {
                     self.device.device.update_descriptor_sets(&writes, &[]);
@@ -665,7 +691,17 @@ impl Renderer {
                 .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
                 .unwrap();
 
-            // 0. Culling Pass (GPU-Driven)
+            // 0a. Hi-Z Pyramid Generation (Using previous frame depth)
+            if let Some(hiz) = &self.hiz_pass {
+                hiz.record_commands(
+                    &self.device.device,
+                    command_buffer,
+                    self.gbuffer.depth[self.current_frame].view,
+                    self.shadow_pass.sampler,
+                );
+            }
+
+            // 0b. Culling Pass (GPU-Driven)
             if let Some(culling) = &self.culling_pass {
                 let frame = &self.frames[self.current_frame];
                 if let (Some(obj_buf), Some(ind_buf)) = (frame.object_data_buffer, frame.indirect_commands_buffer) {
