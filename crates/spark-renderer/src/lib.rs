@@ -185,6 +185,7 @@ impl Renderer {
                     indirect_commands_buffer: None,
                     object_data_buffer: None,
                     draw_count_buffer: None,
+                    secondary_command_buffers: Vec::new(),
                 }
             })
             .collect::<Vec<_>>()
@@ -512,7 +513,7 @@ impl Renderer {
             }
             obj_buffer = Some(self.create_buffer(
                 obj_sz.max(1024),
-                vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             ));
             self.frames[frame_idx].object_data_buffer = obj_buffer;
@@ -560,8 +561,6 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     pub fn draw_frame(
         &mut self,
-        renderables: &[(spark_math::Mat4, u32, Option<vk::ImageView>, Option<u32>)],
-        instanced_renderables: &[(u32, u32, u32, Option<vk::ImageView>)],
         view_proj: spark_math::Mat4,
         light_view_proj: spark_math::Mat4,
         window: &Window,
@@ -603,10 +602,14 @@ impl Renderer {
                     vk::CommandBufferResetFlags::empty(),
                 )
                 .expect("Failed to reset command buffer");
+
+            // Clean up secondary command buffers from previous frame
+            let thread_pools = self.device.thread_command_pools.clone();
+            for pool in thread_pools {
+                self.device.device.reset_command_pool(pool, vk::CommandPoolResetFlags::empty()).unwrap();
+            }
             self.record_command_buffer(
                 image_index,
-                renderables,
-                instanced_renderables,
                 view_proj,
                 light_view_proj,
                 egui_output,
@@ -650,8 +653,6 @@ impl Renderer {
     fn record_command_buffer(
         &mut self,
         image_index: u32,
-        renderables: &[(spark_math::Mat4, u32, Option<vk::ImageView>, Option<u32>)],
-        instanced_renderables: &[(u32, u32, u32, Option<vk::ImageView>)],
         view_proj: spark_math::Mat4,
         light_view_proj: spark_math::Mat4,
         egui_output: Option<(egui::FullOutput, egui::Context)>,
@@ -669,8 +670,6 @@ impl Renderer {
             if let Some(culling) = &self.culling_pass {
                 let frame = &self.frames[self.current_frame];
                 if let (Some(obj_buf), Some(ind_buf)) = (frame.object_data_buffer, frame.indirect_commands_buffer) {
-                    // We need a small buffer to store the count (reset and atomicAdd)
-                    // For now reuse indirect buffer tail or create one
                     culling.record_commands(
                         &self.device.device,
                         command_buffer,
@@ -683,17 +682,53 @@ impl Renderer {
                 }
             }
 
-            // 1. Shadow Pass
-            self.shadow_pass.record_commands(
-                &self.device.device,
-                command_buffer,
-                light_view_proj,
-                renderables,
-                instanced_renderables,
-                self,
-            );
+            // 1. Parallel Record Shadow, G-Buffer and Lighting Passes
+            let current_frame_idx = self.current_frame;
 
-            // 2. Main Pass (Geometry + Lighting)
+            let mut scb_shadow = vk::CommandBuffer::null();
+            let mut scb_gbuffer = vk::CommandBuffer::null();
+            let mut scb_lighting = vk::CommandBuffer::null();
+
+            #[repr(C)]
+            struct PC {
+                count: u32,
+                metallic: f32,
+                roughness: f32,
+                width: f32,
+                height: f32,
+                padding: u32,
+                object_buffer_address: u64,
+            }
+            let pc = PC {
+                count: self.light_count,
+                metallic: 0.5,
+                roughness: 0.5,
+                width: self.swapchain.extent.width as f32,
+                height: self.swapchain.extent.height as f32,
+                padding: 0,
+                object_buffer_address: self.frames[self.current_frame].object_data_buffer.map_or(0, |b| b.address),
+            };
+            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+
+            rayon::scope(|s| {
+                s.spawn(|_| {
+                    let pool = self.get_thread_command_pool(0);
+                    scb_shadow = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
+                    self.shadow_pass.record_commands(&self.device.device, scb_shadow, light_view_proj, self, object_count, true);
+                });
+                s.spawn(|_| {
+                    let pool = self.get_thread_command_pool(1);
+                    scb_gbuffer = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
+                    self.deferred_pass.record_gbuffer_commands(self, scb_gbuffer, pc_bytes, current_frame_idx, object_count);
+                });
+                s.spawn(|_| {
+                    let pool = self.get_thread_command_pool(2);
+                    scb_lighting = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
+                    self.deferred_pass.record_lighting_commands(self, scb_lighting, pc_bytes, current_frame_idx);
+                });
+            });
+
+            // 2. Main Pass (Geometry + Lighting) Orchestration
 
             #[repr(C)]
             #[derive(Copy, Clone)]
@@ -730,32 +765,85 @@ impl Renderer {
                 self.upload_to_buffer(&gb, &[ubo]);
             }
 
-            #[repr(C)]
-            struct PC {
-                count: u32,
-                metallic: f32,
-                roughness: f32,
-                width: f32,
-                height: f32,
-            }
-            let pc = PC {
-                count: self.light_count,
-                metallic: 0.5,
-                roughness: 0.5,
-                width: self.swapchain.extent.width as f32,
-                height: self.swapchain.extent.height as f32,
-            };
-            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+            // 2a. Execute Shadow Pass
+            self.device.device.cmd_execute_commands(command_buffer, &[scb_shadow]);
 
-            self.deferred_pass.record_commands(
-                self,
+            // Barrier: Shadow Map to SHADER_READ_ONLY_OPTIMAL
+            let shadow_barrier = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image(self.shadow_pass.image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::DEPTH,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+            self.device.device.cmd_pipeline_barrier(
                 command_buffer,
-                renderables,
-                instanced_renderables,
-                pc_bytes,
-                self.current_frame,
-                0, // TODO: track actual indirect command count
+                vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[shadow_barrier],
             );
+
+            // 2b. Execute G-Buffer Pass
+            self.device.device.cmd_execute_commands(command_buffer, &[scb_gbuffer]);
+
+            // Barrier: G-Buffer to SHADER_READ_ONLY_OPTIMAL
+            let gbuffer_barriers = [
+                vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(self.gbuffer.albedo[self.current_frame].image)
+                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
+                vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(self.gbuffer.normal[self.current_frame].image)
+                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
+                vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(self.gbuffer.pbr[self.current_frame].image)
+                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
+                vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(self.gbuffer.depth[self.current_frame].image)
+                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::DEPTH, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
+            ];
+            self.device.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &gbuffer_barriers,
+            );
+
+            // 2c. Execute Lighting Pass
+            self.device.device.cmd_execute_commands(command_buffer, &[scb_lighting]);
+
+            // Barrier: HDR to SHADER_READ_ONLY_OPTIMAL (lighting pass recorded into secondary might not do this transition on primary)
+            let hdr_to_shader_barrier = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image(self.gbuffer.hdr[self.current_frame].image)
+                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
+            self.device.device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &[hdr_to_shader_barrier]);
+
+            // Barrier: HDR Image to COLOR_ATTACHMENT_OPTIMAL for Egui
+            let hdr_barrier = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .image(self.gbuffer.hdr[self.current_frame].image)
+                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
+            self.device.device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::DependencyFlags::empty(), &[], &[], &[hdr_barrier]);
 
             if let Some((output, ctx)) = egui_output {
                 let ext = self.swapchain.extent;
@@ -771,6 +859,27 @@ impl Renderer {
                 }
             }
 
+            // Transition HDR image for post processing (after Egui)
+            let hdr_barrier = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image(self.gbuffer.hdr[self.current_frame].image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1
+                });
+            self.device.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[hdr_barrier]
+            );
 
             self.post_process_pass.record_commands(
                 &self.device.device,
@@ -1101,6 +1210,10 @@ impl Renderer {
         &self.device.device
     }
 
+    pub fn get_thread_command_pool(&self, thread_idx: usize) -> vk::CommandPool {
+        self.device.thread_command_pools[thread_idx % self.device.thread_command_pools.len()]
+    }
+
     /// Uploads data to a GPU buffer.
     ///
     /// # Safety
@@ -1227,6 +1340,8 @@ mod tests {
             handle: vk::Buffer::null(),
             memory: vk::DeviceMemory::null(),
             size: 1024,
+            ptr: std::ptr::null_mut(),
+            address: 0,
         };
         assert_eq!(buffer.size, 1024);
         assert_eq!(buffer.handle, vk::Buffer::null());

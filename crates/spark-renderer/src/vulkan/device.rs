@@ -11,6 +11,7 @@ pub struct VulkanDevice {
     pub depth_format: vk::Format,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub command_pool: vk::CommandPool,
+    pub thread_command_pools: Vec<vk::CommandPool>,
 }
 
 impl VulkanDevice {
@@ -77,6 +78,20 @@ impl VulkanDevice {
             )?
         };
 
+        let mut thread_command_pools = Vec::new();
+        let thread_count = num_cpus::get();
+        for _ in 0..thread_count {
+            let pool = unsafe {
+                device.create_command_pool(
+                    &vk::CommandPoolCreateInfo::default()
+                        .queue_family_index(graphics_family)
+                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                    None,
+                )?
+            };
+            thread_command_pools.push(pool);
+        }
+
         Ok(Self {
             pdevice,
             device,
@@ -86,6 +101,7 @@ impl VulkanDevice {
             depth_format,
             memory_properties,
             command_pool,
+            thread_command_pools,
         })
     }
 
@@ -101,6 +117,12 @@ impl VulkanDevice {
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
         let handle = unsafe { self.device.create_buffer(&buffer_info, None).unwrap() };
+        let bda_info = vk::BufferDeviceAddressInfo::default().buffer(handle);
+        let address = if usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS) {
+             unsafe { self.device.get_buffer_device_address(&bda_info) }
+        } else {
+             0
+        };
         let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(handle) };
 
         let mut type_idx = 0;
@@ -114,19 +136,39 @@ impl VulkanDevice {
             }
         }
 
-        let alloc_info = vk::MemoryAllocateInfo::default()
-            .allocation_size(mem_reqs.size)
-            .memory_type_index(type_idx);
+        let mut alloc_flags = vk::MemoryAllocateFlagsInfo::default();
+        if usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS) {
+            alloc_flags.flags = vk::MemoryAllocateFlags::DEVICE_ADDRESS;
+        }
 
-        let memory = unsafe { self.device.allocate_memory(&alloc_info, None).unwrap() };
+        let memory = unsafe {
+            self.device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(mem_reqs.size)
+                    .memory_type_index(type_idx)
+                    .push_next(&mut alloc_flags),
+                None
+            ).unwrap()
+        };
+
         unsafe {
             self.device.bind_buffer_memory(handle, memory, 0).unwrap();
         }
+
+        let ptr = if properties.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
+            unsafe {
+                self.device.map_memory(memory, 0, mem_reqs.size, vk::MemoryMapFlags::empty()).unwrap()
+            }
+        } else {
+            std::ptr::null_mut()
+        };
 
         Buffer {
             handle,
             memory,
             size,
+            ptr,
+            address,
         }
     }
 
@@ -282,15 +324,22 @@ impl VulkanDevice {
     }
 
     pub fn upload_to_buffer<T: Copy>(&self, b: &Buffer, data: &[T]) {
-        unsafe {
-            let ptr = self
-                .device
-                .map_memory(b.memory, 0, b.size, vk::MemoryMapFlags::empty())
-                .unwrap();
-            let mut align = ash::util::Align::new(ptr, std::mem::align_of::<T>() as u64, b.size);
-            align.copy_from_slice(data);
-            self.device.unmap_memory(b.memory);
+        if b.ptr.is_null() {
+            panic!("Buffer is not host-visible for upload");
         }
+        unsafe {
+            let mut align = ash::util::Align::new(b.ptr, std::mem::align_of::<T>() as u64, b.size);
+            align.copy_from_slice(data);
+        }
+    }
+
+    pub fn create_command_buffer(&self, pool: vk::CommandPool, level: vk::CommandBufferLevel) -> vk::CommandBuffer {
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .level(level)
+            .command_pool(pool)
+            .command_buffer_count(1);
+
+        unsafe { self.device.allocate_command_buffers(&alloc_info).unwrap()[0] }
     }
 
     pub fn begin_single_time_commands(&self) -> vk::CommandBuffer {
@@ -424,6 +473,9 @@ impl VulkanDevice {
 impl Drop for VulkanDevice {
     fn drop(&mut self) {
         unsafe {
+            for pool in self.thread_command_pools.drain(..) {
+                self.device.destroy_command_pool(pool, None);
+            }
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
         }

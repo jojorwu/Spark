@@ -187,12 +187,10 @@ impl DeferredPass {
         }
     }
 
-    pub fn record_commands(
+    pub fn record_gbuffer_commands(
         &self,
         renderer: &Renderer,
         command_buffer: vk::CommandBuffer,
-        _renderables: &[(spark_math::Mat4, u32, Option<vk::ImageView>, Option<u32>)],
-        _instanced_renderables: &[(u32, u32, u32, Option<vk::ImageView>)],
         pc_bytes: &[u8],
         current_frame: usize,
         max_indirect_commands: u32,
@@ -202,13 +200,19 @@ impl DeferredPass {
         let global_ds = renderer.frames[current_frame].global_descriptor_set;
 
         unsafe {
-            // Subpass 0: G-Buffer Generation
+            let color_formats = [vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::R8G8B8A8_UNORM];
+            let mut inheritance_info = vk::CommandBufferInheritanceRenderingInfo::default()
+                .color_attachment_formats(&color_formats)
+                .depth_attachment_format(vk::Format::D32_SFLOAT);
+            let inherit = vk::CommandBufferInheritanceInfo::default().push_next(&mut inheritance_info);
+            let begin_info = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE | vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
+                .inheritance_info(&inherit);
+
+            device.begin_command_buffer(command_buffer, &begin_info).unwrap();
+
             if let Some(pipeline) = &renderer.pipeline {
-                device.cmd_bind_pipeline(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    pipeline.graphics_pipeline,
-                );
+                device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline.graphics_pipeline);
 
                 let viewport = vk::Viewport::default()
                     .x(0.0)
@@ -274,7 +278,6 @@ impl DeferredPass {
                         &[],
                     );
 
-                    // For indirect rendering, we assume a unified vertex/index buffer strategy
                     if let (Some(vb), Some(ib)) = (renderer.global_vertex_buffer, renderer.global_index_buffer) {
                         device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
                         device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
@@ -303,31 +306,31 @@ impl DeferredPass {
 
                 device.cmd_end_rendering(command_buffer);
             }
+            device.end_command_buffer(command_buffer).unwrap();
+        }
+    }
 
-            // Transition to Lighting resolve (manual pass transition with barriers)
-            let barriers = [
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(renderer.gbuffer.albedo[current_frame].image)
-                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(renderer.gbuffer.normal[current_frame].image)
-                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(renderer.gbuffer.pbr[current_frame].image)
-                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(renderer.gbuffer.depth[current_frame].image)
-                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::DEPTH, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-            ];
-            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &barriers);
+    pub fn record_lighting_commands(
+        &self,
+        renderer: &Renderer,
+        command_buffer: vk::CommandBuffer,
+        pc_bytes: &[u8],
+        current_frame: usize,
+    ) {
+        let device = &renderer.device.device;
+        let extent = renderer.get_extent();
+        let global_ds = renderer.frames[current_frame].global_descriptor_set;
+
+        unsafe {
+            let color_formats = [vk::Format::R16G16B16A16_SFLOAT];
+            let mut inheritance_info = vk::CommandBufferInheritanceRenderingInfo::default()
+                .color_attachment_formats(&color_formats);
+            let inherit = vk::CommandBufferInheritanceInfo::default().push_next(&mut inheritance_info);
+            let begin_info = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE | vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
+                .inheritance_info(&inherit);
+
+            device.begin_command_buffer(command_buffer, &begin_info).unwrap();
 
             if let Some(pipeline) = self.pipeline {
                 let color_attachment = vk::RenderingAttachmentInfo::default()
@@ -386,40 +389,8 @@ impl DeferredPass {
 
                 device.cmd_draw(command_buffer, 3, 1, 0, 0);
                 device.cmd_end_rendering(command_buffer);
-
-                // Transition HDR image for post processing
-                let hdr_barrier = vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(renderer.gbuffer.hdr[current_frame].image)
-                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-                device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &[hdr_barrier]);
-
-                // Transition images back for next frame
-                let back_barriers = [
-                    vk::ImageMemoryBarrier::default()
-                        .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                        .image(renderer.gbuffer.albedo[current_frame].image)
-                        .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-                    vk::ImageMemoryBarrier::default()
-                        .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                        .image(renderer.gbuffer.normal[current_frame].image)
-                        .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-                    vk::ImageMemoryBarrier::default()
-                        .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                        .image(renderer.gbuffer.pbr[current_frame].image)
-                        .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-                    vk::ImageMemoryBarrier::default()
-                        .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                        .image(renderer.gbuffer.depth[current_frame].image)
-                        .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::DEPTH, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-                ];
-                device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS, vk::DependencyFlags::empty(), &[], &[], &back_barriers);
             }
+            device.end_command_buffer(command_buffer).unwrap();
         }
     }
 

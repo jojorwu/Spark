@@ -13,6 +13,7 @@ pub struct PostProcessPass {
     pub bloom_images: Vec<vk::Image>,
     pub bloom_memories: Vec<vk::DeviceMemory>,
     pub bloom_views: Vec<vk::ImageView>,
+    pub swapchain_format: vk::Format,
 }
 
 impl PostProcessPass {
@@ -20,7 +21,7 @@ impl PostProcessPass {
         device: &ash::Device,
         pdevice: vk::PhysicalDevice,
         instance: &ash::Instance,
-        _format: vk::Format,
+        format: vk::Format,
         extent: vk::Extent2D,
     ) -> Result<Self, crate::error::RendererError> {
         let bindings = [
@@ -102,6 +103,7 @@ impl PostProcessPass {
             bloom_images,
             bloom_memories,
             bloom_views,
+            swapchain_format: format,
         })
     }
 
@@ -134,7 +136,7 @@ impl PostProcessPass {
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default().color_write_mask(vk::ColorComponentFlags::RGBA).blend_enable(false);
         let color_blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(std::slice::from_ref(&color_blend_attachment));
 
-        let color_formats = [vk::Format::R8G8B8A8_SRGB];
+        let color_formats = [self.swapchain_format];
         let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
             .color_attachment_formats(&color_formats);
 

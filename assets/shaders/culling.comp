@@ -11,6 +11,10 @@ struct DrawCommand {
 struct ObjectData {
     mat4 model;
     vec4 sphere; // xyz = center, w = radius
+    uint indexCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint textureIndex;
 };
 
 layout(set = 0, binding = 0) uniform GlobalUBO {
@@ -54,10 +58,10 @@ void main() {
 
     if (sphereInFrustum(center, radius)) {
         uint cmdIdx = atomicAdd(drawCount, 1);
-        // Copy static mesh data to command
-        // We assume indirect buffer was pre-filled with static data (indexCount, firstIndex, vertexOffset)
-        // Or we could fill it here if we had access to that metadata buffer
+        commands[cmdIdx].indexCount = obj.indexCount;
         commands[cmdIdx].instanceCount = 1;
+        commands[cmdIdx].firstIndex = obj.firstIndex;
+        commands[cmdIdx].vertexOffset = obj.vertexOffset;
         commands[cmdIdx].firstInstance = idx; // used as object ID in vertex shader
     }
 }

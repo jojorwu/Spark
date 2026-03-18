@@ -92,11 +92,8 @@ impl ShadowPass {
 
         let binding_descriptions = [
             Vertex::get_binding_description(),
-            InstanceData::get_binding_description(),
         ];
-        let mut attribute_descriptions = Vec::new();
-        attribute_descriptions.extend_from_slice(&Vertex::get_attribute_descriptions());
-        attribute_descriptions.extend_from_slice(&InstanceData::get_attribute_descriptions());
+        let attribute_descriptions = Vertex::get_attribute_descriptions();
 
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_binding_descriptions(&binding_descriptions)
@@ -164,9 +161,9 @@ impl ShadowPass {
         device: &ash::Device,
         command_buffer: vk::CommandBuffer,
         light_view_proj: spark_math::Mat4,
-        renderables: &[(spark_math::Mat4, u32, Option<vk::ImageView>, Option<u32>)],
-        instanced_renderables: &[(u32, u32, u32, Option<vk::ImageView>)],
         renderer: &Renderer,
+        object_count: u32,
+        is_secondary: bool,
     ) {
         let pipeline = match self.pipeline {
             Some(p) => p,
@@ -181,6 +178,19 @@ impl ShadowPass {
         }];
 
         unsafe {
+            let mut inheritance_info = vk::CommandBufferInheritanceRenderingInfo::default()
+                .depth_attachment_format(vk::Format::D32_SFLOAT);
+            let inherit = vk::CommandBufferInheritanceInfo::default().push_next(&mut inheritance_info);
+            let begin_info = vk::CommandBufferBeginInfo::default()
+                .flags(if is_secondary {
+                    vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE | vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
+                } else {
+                    vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
+                })
+                .inheritance_info(&inherit);
+
+            device.begin_command_buffer(command_buffer, &begin_info).unwrap();
+
             let depth_attachment = vk::RenderingAttachmentInfo::default()
                 .image_view(self.view)
                 .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
@@ -215,65 +225,57 @@ impl ShadowPass {
             device.cmd_set_viewport(command_buffer, 0, &[shadow_viewport]);
             device.cmd_set_scissor(command_buffer, 0, &[shadow_scissor]);
 
-            let lvp_bytes = std::slice::from_raw_parts(&light_view_proj as *const _ as *const u8, 64);
-
-            for (vb_id, ib_id, count, _) in instanced_renderables {
-                if let (Some(vb), Some(ib)) =
-                    (renderer.get_buffer(*vb_id), renderer.get_instance_buffer(*ib_id))
-                {
-                    device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle, ib.handle], &[0, 0]);
-                    device.cmd_push_constants(
-                        command_buffer,
-                        self.layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        lvp_bytes,
-                    );
-                    if let Some(idx_b) = renderer.index_buffer {
-                        device.cmd_bind_index_buffer(command_buffer, idx_b.handle, 0, vk::IndexType::UINT32);
-                        device.cmd_draw_indexed(command_buffer, (idx_b.size / 4) as u32, *count, 0, 0, 0);
-                    } else {
-                        device.cmd_draw(
-                            command_buffer,
-                            (vb.size / std::mem::size_of::<crate::vertex::Vertex>() as u64) as u32,
-                            *count,
-                            0,
-                            0,
-                        );
-                    }
-                }
+            #[repr(C)]
+            struct PC {
+                lvp: spark_math::Mat4,
+                padding: u32,
+                address: u64,
             }
+            let frame = &renderer.frames[renderer.current_frame];
+            let pc = PC {
+                lvp: light_view_proj,
+                padding: 0,
+                address: frame.object_data_buffer.map_or(0, |b| b.address),
+            };
+            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
 
-            for (model, _, _, vb_id) in renderables {
-                if let Some(vb_id) = vb_id {
-                    if let Some(vb) = renderer.get_buffer(*vb_id) {
-                        device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle, vb.handle], &[0, 0]);
-                        let mvp = light_view_proj * (*model);
-                        let mvp_bytes = std::slice::from_raw_parts(&mvp as *const _ as *const u8, 64);
-                        device.cmd_push_constants(
+            device.cmd_push_constants(
+                command_buffer,
+                self.layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                pc_bytes,
+            );
+
+            if let Some(indirect_buffer) = frame.indirect_commands_buffer {
+                if let (Some(vb), Some(ib)) = (renderer.global_vertex_buffer, renderer.global_index_buffer) {
+                    device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
+                    device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
+
+                    if let Some(count_buffer) = frame.draw_count_buffer {
+                        device.cmd_draw_indexed_indirect_count(
                             command_buffer,
-                            self.layout,
-                            vk::ShaderStageFlags::VERTEX,
+                            indirect_buffer.handle,
                             0,
-                            mvp_bytes,
+                            count_buffer.handle,
+                            0,
+                            object_count,
+                            std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
                         );
-                        if let Some(idx_b) = renderer.index_buffer {
-                            device.cmd_bind_index_buffer(command_buffer, idx_b.handle, 0, vk::IndexType::UINT32);
-                            device.cmd_draw_indexed(command_buffer, (idx_b.size / 4) as u32, 1, 0, 0, 0);
-                        } else {
-                            device.cmd_draw(
-                                command_buffer,
-                                (vb.size / std::mem::size_of::<crate::vertex::Vertex>() as u64) as u32,
-                                1,
-                                0,
-                                0,
-                            );
-                        }
+                    } else {
+                        device.cmd_draw_indexed_indirect(
+                            command_buffer,
+                            indirect_buffer.handle,
+                            0,
+                            object_count,
+                            std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                        );
                     }
                 }
             }
 
             device.cmd_end_rendering(command_buffer);
+            device.end_command_buffer(command_buffer).unwrap();
         }
     }
 

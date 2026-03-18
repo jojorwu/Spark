@@ -10,6 +10,7 @@ pub struct ResourceManager {
     pub meshes: Vec<spark_renderer::Buffer>,
     pub all_vertices: Vec<spark_renderer::vertex::Vertex>,
     pub all_indices: Vec<u32>,
+    pub needs_upload: bool,
 }
 
 impl ResourceManager {
@@ -21,12 +22,21 @@ impl ResourceManager {
             meshes: Vec::new(),
             all_vertices: Vec::new(),
             all_indices: Vec::new(),
+            needs_upload: false,
         }
     }
 
     pub fn upload_global_buffers(&mut self, renderer: &mut spark_renderer::Renderer) {
         use spark_renderer::ash::vk;
-        if self.all_vertices.is_empty() { return; }
+        if self.all_vertices.is_empty() || !self.needs_upload { return; }
+        self.needs_upload = false;
+
+        if let Some(vb) = renderer.global_vertex_buffer.take() {
+            renderer.destroy_buffer(vb);
+        }
+        if let Some(ib) = renderer.global_index_buffer.take() {
+            renderer.destroy_buffer(ib);
+        }
 
         let v_sz = (self.all_vertices.len() * std::mem::size_of::<spark_renderer::vertex::Vertex>()) as u64;
         let vb = renderer.create_buffer(
@@ -82,6 +92,8 @@ impl ResourceManager {
         scene_tree: &mut crate::scene::Scene,
         renderer: &spark_renderer::Renderer,
     ) {
+        self.all_vertices.clear();
+        self.all_indices.clear();
         log::info!("Loading glTF scene: {:?}", path);
         let (doc, buffers, _) = gltf::import(path).expect("Failed to load glTF");
 
@@ -113,10 +125,6 @@ impl ResourceManager {
         let mut data = NodeData::None;
 
         if let Some(mesh) = node.mesh() {
-            let mut mesh_id = None;
-            let mut vertex_count = 0;
-            let mut bounding_radius = 0.0f32;
-
             for primitive in mesh.primitives() {
                 use spark_renderer::vertex::Vertex;
                 use spark_math::Vec2;
@@ -150,26 +158,27 @@ impl ResourceManager {
                     });
                 }
 
-                if let Some(indices) = reader.read_indices() {
+                let index_count = if let Some(indices) = reader.read_indices() {
                     let idxs: Vec<u32> = indices.into_u32().collect();
-                    vertex_count = idxs.len() as u32;
+                    let count = idxs.len() as u32;
                     self.all_indices.extend(idxs);
+                    count
                 } else {
-                    vertex_count = positions.len() as u32;
-                }
+                    positions.len() as u32
+                };
 
-                bounding_radius = max_dist_sq.sqrt();
+                let bounding_radius = max_dist_sq.sqrt();
 
-                mesh_id = Some(0); // placeholder
                 data = NodeData::Mesh {
-                    vertex_count,
-                    index_count: vertex_count,
+                    vertex_count: positions.len() as u32,
+                    index_count,
                     first_index: i_start,
                     vertex_offset: v_offset,
                     texture_id: None,
-                    vertex_buffer_id: mesh_id,
+                    vertex_buffer_id: None,
                     bounding_radius
                 };
+                self.needs_upload = true;
                 break;
             }
         }

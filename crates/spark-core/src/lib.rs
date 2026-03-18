@@ -121,21 +121,20 @@ impl Engine {
                         100.0,
                     );
 
-                    // Use the cached view matrix for frustum calculation
+                    // Use the cached view matrix
                     let view_matrix = self.scene.last_view_matrix;
-                    let frustum = spark_math::Frustum::from_matrix(projection * view_matrix);
 
-                    // Single pass for culled rendering
-                    let (renderables_raw, instanced_raw, _, lights) = self.scene.collect_render_data(Some(&frustum));
+                    // Single pass for rendering data collection (no CPU culling)
+                    let (renderables_raw, instanced_raw, _, lights) = self.scene.collect_render_data(None);
 
                     // Prepare GPU Indirect and Object buffers
                     let mut indirect_commands = Vec::new();
                     let mut object_ssbos = Vec::new();
 
-                    for (model, _vc, ic, fi, vo, tex_id, _vb_id) in &renderables_raw {
+                    for (model, _vc, ic, fi, vo, tex_id, _vb_id, br) in &renderables_raw {
                          object_ssbos.push(spark_renderer::ObjectDataSSBO {
                             model: *model,
-                            sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, 1.0), // Placeholder
+                            sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, *br),
                             index_count: *ic,
                             first_index: *fi,
                             vertex_offset: *vo,
@@ -150,11 +149,11 @@ impl Engine {
                         });
                     }
 
-                    for (ic, fi, vo, tex_id, _vb_id, transforms) in &instanced_raw {
+                    for (ic, fi, vo, tex_id, _vb_id, br, transforms) in &instanced_raw {
                         for transform in transforms {
                              object_ssbos.push(spark_renderer::ObjectDataSSBO {
                                 model: *transform,
-                                sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, 1.0),
+                                sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, *br),
                                 index_count: *ic,
                                 first_index: *fi,
                                 vertex_offset: *vo,
@@ -201,8 +200,6 @@ impl Engine {
                     self.renderer.scene_view_matrix_for_pos = view_matrix;
 
                     self.renderer.draw_frame(
-                        &[],
-                        &[],
                         view_proj,
                         light_view_proj,
                         &self.window,

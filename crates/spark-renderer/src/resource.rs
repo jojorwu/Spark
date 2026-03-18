@@ -8,7 +8,12 @@ pub struct Buffer {
     pub handle: vk::Buffer,
     pub memory: vk::DeviceMemory,
     pub size: vk::DeviceSize,
+    pub ptr: *mut std::ffi::c_void,
+    pub address: u64,
 }
+
+unsafe impl Send for Buffer {}
+unsafe impl Sync for Buffer {}
 
 /// Represents a framebuffer attachment (Image, Memory, View).
 pub struct Attachment {
@@ -32,6 +37,7 @@ pub struct RenderFrame {
     pub indirect_commands_buffer: Option<Buffer>,
     pub object_data_buffer: Option<Buffer>,
     pub draw_count_buffer: Option<Buffer>,
+    pub secondary_command_buffers: Vec<vk::CommandBuffer>,
 }
 
 #[repr(C)]
