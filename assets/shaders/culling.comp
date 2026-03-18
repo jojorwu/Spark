@@ -6,7 +6,6 @@ struct DrawCommand {
     uint firstIndex;
     int  vertexOffset;
     uint firstInstance;
-    uint objectId; // custom data
 };
 
 struct ObjectData {
@@ -55,6 +54,9 @@ void main() {
 
     if (sphereInFrustum(center, radius)) {
         uint cmdIdx = atomicAdd(drawCount, 1);
+        // Copy static mesh data to command
+        // We assume indirect buffer was pre-filled with static data (indexCount, firstIndex, vertexOffset)
+        // Or we could fill it here if we had access to that metadata buffer
         commands[cmdIdx].instanceCount = 1;
         commands[cmdIdx].firstInstance = idx; // used as object ID in vertex shader
     }

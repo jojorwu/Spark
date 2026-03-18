@@ -67,7 +67,7 @@ impl DeferredPass {
                     .push_constant_ranges(&[vk::PushConstantRange::default()
                         .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                         .offset(0)
-                        .size(32)]),
+                        .size(128)]),
                 None,
             )?
         };
@@ -274,8 +274,12 @@ impl DeferredPass {
                         &[],
                     );
 
-                    // For indirect rendering, we assume a unified vertex/index buffer strategy or bind per-draw if needed.
-                    // Here we assume vertices/indices are already bound by the caller or global.
+                    // For indirect rendering, we assume a unified vertex/index buffer strategy
+                    if let (Some(vb), Some(ib)) = (renderer.global_vertex_buffer, renderer.global_index_buffer) {
+                        device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
+                        device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
+                    }
+
                     if let Some(count_buffer) = renderer.frames[current_frame].draw_count_buffer {
                          device.cmd_draw_indexed_indirect_count(
                             command_buffer,
@@ -382,6 +386,39 @@ impl DeferredPass {
 
                 device.cmd_draw(command_buffer, 3, 1, 0, 0);
                 device.cmd_end_rendering(command_buffer);
+
+                // Transition HDR image for post processing
+                let hdr_barrier = vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(renderer.gbuffer.hdr[current_frame].image)
+                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
+                device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &[hdr_barrier]);
+
+                // Transition images back for next frame
+                let back_barriers = [
+                    vk::ImageMemoryBarrier::default()
+                        .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .image(renderer.gbuffer.albedo[current_frame].image)
+                        .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
+                    vk::ImageMemoryBarrier::default()
+                        .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .image(renderer.gbuffer.normal[current_frame].image)
+                        .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
+                    vk::ImageMemoryBarrier::default()
+                        .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .image(renderer.gbuffer.pbr[current_frame].image)
+                        .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
+                    vk::ImageMemoryBarrier::default()
+                        .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                        .image(renderer.gbuffer.depth[current_frame].image)
+                        .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::DEPTH, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
+                ];
+                device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS, vk::DependencyFlags::empty(), &[], &[], &back_barriers);
             }
         }
     }

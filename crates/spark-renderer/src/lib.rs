@@ -41,6 +41,8 @@ pub struct Renderer {
     pub pipeline: Option<Pipeline>,
     pub vertex_buffers: Vec<Buffer>,
     pub index_buffer: Option<Buffer>,
+    pub global_vertex_buffer: Option<Buffer>,
+    pub global_index_buffer: Option<Buffer>,
     pub descriptor_pool: vk::DescriptorPool,
     pub texture_descriptor_sets: std::collections::HashMap<vk::ImageView, vk::DescriptorSet>,
     pub default_texture: Option<Texture>,
@@ -219,6 +221,8 @@ impl Renderer {
             pipeline: None,
             vertex_buffers: Vec::new(),
             index_buffer: None,
+            global_vertex_buffer: None,
+            global_index_buffer: None,
             descriptor_pool,
             texture_descriptor_sets: std::collections::HashMap::new(),
             default_texture: None,
@@ -229,6 +233,11 @@ impl Renderer {
             bindless_descriptor_set,
             next_bindless_index: std::sync::atomic::AtomicU32::new(0),
         })
+    }
+
+    pub fn set_global_buffers(&mut self, vertex: Buffer, index: Buffer) {
+        self.global_vertex_buffer = Some(vertex);
+        self.global_index_buffer = Some(index);
     }
 
     pub fn set_deferred_pipeline(&mut self, pipeline: vk::Pipeline) {
@@ -1256,6 +1265,9 @@ impl Drop for Renderer {
                 }
                 if let Some(ob) = frame.object_data_buffer.take() {
                     self.device.destroy_buffer(ob);
+                }
+                if let Some(dc) = frame.draw_count_buffer.take() {
+                    self.device.destroy_buffer(dc);
                 }
                 self.device.device.destroy_semaphore(frame.image_available, None);
                 self.device.device.destroy_semaphore(frame.render_finished, None);

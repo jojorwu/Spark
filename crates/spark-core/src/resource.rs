@@ -8,6 +8,8 @@ pub struct ResourceManager {
     pub gpu_textures: Vec<spark_renderer::vulkan::texture::Texture>,
     pub scenes: HashMap<PathBuf, gltf::Document>,
     pub meshes: Vec<spark_renderer::Buffer>,
+    pub all_vertices: Vec<spark_renderer::vertex::Vertex>,
+    pub all_indices: Vec<u32>,
 }
 
 impl ResourceManager {
@@ -17,7 +19,61 @@ impl ResourceManager {
             gpu_textures: Vec::new(),
             scenes: HashMap::new(),
             meshes: Vec::new(),
+            all_vertices: Vec::new(),
+            all_indices: Vec::new(),
         }
+    }
+
+    pub fn upload_global_buffers(&mut self, renderer: &mut spark_renderer::Renderer) {
+        use spark_renderer::ash::vk;
+        if self.all_vertices.is_empty() { return; }
+
+        let v_sz = (self.all_vertices.len() * std::mem::size_of::<spark_renderer::vertex::Vertex>()) as u64;
+        let vb = renderer.create_buffer(
+            v_sz,
+            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        );
+        // Stage and upload
+        let staging_v = renderer.create_buffer(
+            v_sz,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        );
+        renderer.upload_to_buffer(&staging_v, &self.all_vertices);
+        self.copy_buffer(renderer, staging_v, vb);
+        renderer.destroy_buffer(staging_v);
+
+        let i_sz = (self.all_indices.len() * 4) as u64;
+        let ib = renderer.create_buffer(
+            i_sz,
+            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        );
+        let staging_i = renderer.create_buffer(
+            i_sz,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        );
+        renderer.upload_to_buffer(&staging_i, &self.all_indices);
+        self.copy_buffer(renderer, staging_i, ib);
+        renderer.destroy_buffer(staging_i);
+
+        renderer.set_global_buffers(vb, ib);
+    }
+
+    fn copy_buffer(&self, renderer: &spark_renderer::Renderer, src: spark_renderer::Buffer, dst: spark_renderer::Buffer) {
+        use spark_renderer::ash::vk;
+        let cb = renderer.begin_single_time_commands();
+        unsafe {
+            renderer.get_device().cmd_copy_buffer(
+                cb,
+                src.handle,
+                dst.handle,
+                &[vk::BufferCopy { src_offset: 0, dst_offset: 0, size: src.size }],
+            );
+        }
+        renderer.end_single_time_commands(cb);
     }
 
     pub fn load_scene(
@@ -54,7 +110,9 @@ impl ResourceManager {
             Vec3::from_array(translation),
         );
 
-        let data = if let Some(mesh) = node.mesh() {
+        let mut data = NodeData::None;
+
+        if let Some(mesh) = node.mesh() {
             let mut mesh_id = None;
             let mut vertex_count = 0;
             let mut bounding_radius = 0.0f32;
@@ -65,8 +123,9 @@ impl ResourceManager {
                 let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
                 let positions = reader.read_positions().unwrap().collect::<Vec<_>>();
+                let v_offset = self.all_vertices.len() as i32;
+                let i_start = self.all_indices.len() as u32;
 
-                let mut vertices = Vec::new();
                 let mut max_dist_sq = 0.0f32;
                 let normals = reader.read_normals().map(|n| n.collect::<Vec<_>>());
 
@@ -83,7 +142,7 @@ impl ResourceManager {
                         spark_math::Vec3::Y
                     };
 
-                    vertices.push(Vertex {
+                    self.all_vertices.push(Vertex {
                         pos: spark_math::Vec3::from_array(p),
                         normal: n,
                         color: spark_math::Vec3::ONE,
@@ -91,29 +150,29 @@ impl ResourceManager {
                     });
                 }
 
-                vertex_count = vertices.len() as u32;
+                if let Some(indices) = reader.read_indices() {
+                    let idxs: Vec<u32> = indices.into_u32().collect();
+                    vertex_count = idxs.len() as u32;
+                    self.all_indices.extend(idxs);
+                } else {
+                    vertex_count = positions.len() as u32;
+                }
+
                 bounding_radius = max_dist_sq.sqrt();
-                let vb = renderer.create_buffer(
-                    (std::mem::size_of::<Vertex>() * vertices.len()) as u64,
-                    vk::BufferUsageFlags::VERTEX_BUFFER,
-                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                );
-                renderer.upload_to_buffer(&vb, &vertices);
-                self.meshes.push(vb);
-                mesh_id = Some((self.meshes.len() - 1) as u32);
+
+                mesh_id = Some(0); // placeholder
+                data = NodeData::Mesh {
+                    vertex_count,
+                    index_count: vertex_count,
+                    first_index: i_start,
+                    vertex_offset: v_offset,
+                    texture_id: None,
+                    vertex_buffer_id: mesh_id,
+                    bounding_radius
+                };
+                break;
             }
-            NodeData::Mesh {
-                vertex_count,
-                index_count: 0, // Not used in this basic loader yet
-                first_index: 0,
-                vertex_offset: 0,
-                texture_id: None,
-                vertex_buffer_id: mesh_id,
-                bounding_radius
-            }
-        } else {
-            NodeData::None
-        };
+        }
 
         let spark_node = Node {
             name: node.name().unwrap_or("Unnamed Node").to_string(),

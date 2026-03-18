@@ -111,6 +111,7 @@ impl Engine {
 
                     self.plugin_manager.update_plugins(&mut self.scene, delta);
                     self.scene.update_all_transforms();
+                    self.resource_manager.upload_global_buffers(&mut self.renderer);
 
                     let extent = self.renderer.get_extent();
                     let projection = spark_math::Mat4::perspective_rh(
