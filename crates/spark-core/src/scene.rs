@@ -1,5 +1,6 @@
 use slotmap::{SlotMap, new_key_type};
 use spark_math::{Mat4, Vec4Swizzles};
+use rayon::prelude::*;
 
 new_key_type! { pub struct NodeKey; }
 
@@ -42,6 +43,24 @@ pub struct Node {
 pub struct Scene {
     pub nodes: SlotMap<NodeKey, Node>,
     pub root: NodeKey,
+    pub last_view_matrix: Mat4,
+}
+
+struct SceneDataCollector {
+    renderables: Vec<(Mat4, u32, Option<u32>, Option<u32>)>,
+    instanced: std::collections::HashMap<(u32, Option<u32>), Vec<Mat4>>,
+    lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>,
+}
+
+impl SceneDataCollector {
+    fn merge(mut self, other: Self) -> Self {
+        self.renderables.extend(other.renderables);
+        for (key, transforms) in other.instanced {
+            self.instanced.entry(key).or_default().extend(transforms);
+        }
+        self.lights.extend(other.lights);
+        self
+    }
 }
 
 impl Scene {
@@ -56,7 +75,7 @@ impl Scene {
             data: NodeData::None,
         });
 
-        Self { nodes, root }
+        Self { nodes, root, last_view_matrix: Mat4::IDENTITY }
     }
 
     pub fn add_node(&mut self, parent: NodeKey, mut node: Node) -> NodeKey {
@@ -88,6 +107,10 @@ impl Scene {
             node.global_transform = parent_global * node.local_transform;
             let current_global = node.global_transform;
 
+            if let NodeData::Camera { .. } = node.data {
+                self.last_view_matrix = current_global.inverse();
+            }
+
             // To avoid cloning, we'd need an iterative approach with a stack or a more complex borrow
             // For now, cloning the keys (not the nodes) is relatively cheap.
             let children = node.children.clone();
@@ -97,6 +120,7 @@ impl Scene {
         }
     }
 
+    /// Updates global transforms for all nodes in the scene tree and caches the active camera's view matrix.
     pub fn update_all_transforms(&mut self) {
         // For simple parent-child propagation, sequential is usually fine.
         // But for true multi-threading with Rayon, we'd need a more decoupled approach.
@@ -104,6 +128,8 @@ impl Scene {
         self.update_transforms(self.root);
     }
 
+    /// Collects renderables, instanced meshes, and lights from the scene tree, performing frustum culling.
+    /// This method is parallelized using Rayon for high performance in large scenes.
     pub fn collect_render_data(
         &self,
         frustum: Option<&spark_math::Frustum>,
@@ -113,26 +139,26 @@ impl Scene {
         Mat4,
         Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>
     ) {
-        let mut renderables = Vec::new();
-        let mut instanced = std::collections::HashMap::new();
-        let mut view_matrix = Mat4::IDENTITY;
-        let mut lights = Vec::new();
-        self.collect_data_recursive(self.root, &mut renderables, &mut instanced, &mut view_matrix, &mut lights, frustum);
+        let data = self.collect_data_parallel(self.root, frustum);
 
-        let instanced_data = instanced.into_iter().map(|((vb_id, tex_id), transforms)| (vb_id, tex_id, transforms)).collect();
+        let instanced_data = data.instanced.into_iter()
+            .map(|((vb_id, tex_id), transforms)| (vb_id, tex_id, transforms))
+            .collect();
 
-        (renderables, instanced_data, view_matrix, lights)
+        (data.renderables, instanced_data, self.last_view_matrix, data.lights)
     }
 
-    fn collect_data_recursive(
+    fn collect_data_parallel(
         &self,
         node_key: NodeKey,
-        renderables: &mut Vec<(Mat4, u32, Option<u32>, Option<u32>)>,
-        instanced: &mut std::collections::HashMap<(u32, Option<u32>), Vec<Mat4>>,
-        view_matrix: &mut Mat4,
-        lights: &mut Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>,
         frustum: Option<&spark_math::Frustum>,
-    ) {
+    ) -> SceneDataCollector {
+        let mut data = SceneDataCollector {
+            renderables: Vec::new(),
+            instanced: std::collections::HashMap::new(),
+            lights: Vec::new(),
+        };
+
         if let Some(node) = self.nodes.get(node_key) {
             match &node.data {
                 NodeData::Mesh {
@@ -149,9 +175,9 @@ impl Scene {
                     };
                     if visible {
                         if let Some(vb_id) = vertex_buffer_id {
-                            instanced.entry((*vb_id, *texture_id)).or_insert_with(Vec::new).push(node.global_transform);
+                            data.instanced.entry((*vb_id, *texture_id)).or_default().push(node.global_transform);
                         } else {
-                            renderables.push((
+                            data.renderables.push((
                                 node.global_transform,
                                 *vertex_count,
                                 *texture_id,
@@ -160,17 +186,28 @@ impl Scene {
                         }
                     }
                 }
-                NodeData::Camera { .. } => {
-                    *view_matrix = node.global_transform.inverse();
-                }
                 NodeData::Light { light_type, color, intensity, range } => {
-                    lights.push((node.global_transform, *light_type, *color, *intensity, *range));
+                    data.lights.push((node.global_transform, *light_type, *color, *intensity, *range));
                 }
                 _ => {}
             }
-            for child in &node.children {
-                self.collect_data_recursive(*child, renderables, instanced, view_matrix, lights, frustum);
+
+            if !node.children.is_empty() {
+                let children_data: SceneDataCollector = node.children.par_iter()
+                    .map(|&child_key| self.collect_data_parallel(child_key, frustum))
+                    .reduce(|| SceneDataCollector {
+                        renderables: Vec::new(),
+                        instanced: std::collections::HashMap::new(),
+                        lights: Vec::new(),
+                    }, |a, b| a.merge(b));
+
+                data.renderables.extend(children_data.renderables);
+                for (key, transforms) in children_data.instanced {
+                    data.instanced.entry(key).or_default().extend(transforms);
+                }
+                data.lights.extend(children_data.lights);
             }
         }
+        data
     }
 }

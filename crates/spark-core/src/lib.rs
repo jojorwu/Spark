@@ -120,11 +120,11 @@ impl Engine {
                         100.0,
                     );
 
-                    // First pass to find camera
-                    let (_, _, view_matrix, _) = self.scene.collect_render_data(None);
+                    // Use the cached view matrix for frustum calculation
+                    let view_matrix = self.scene.last_view_matrix;
                     let frustum = spark_math::Frustum::from_matrix(projection * view_matrix);
 
-                    // Second pass for culled rendering
+                    // Single pass for culled rendering
                     let (renderables_raw, instanced_raw, _, lights) = self.scene.collect_render_data(Some(&frustum));
 
                     // Map texture IDs to ImageViews
@@ -133,16 +133,13 @@ impl Engine {
                         (*model, *v_count, view, *vb_id)
                     }).collect();
 
-                    // Prepare instance buffers
+                    // Prepare instance buffers using reuse mechanism
                     let mut instanced_renderables = Vec::new();
                     for (vb_id, tex_id, transforms) in instanced_raw {
-                        let instance_buffer = self.renderer.create_buffer(
-                            (std::mem::size_of::<spark_math::Mat4>() * transforms.len()) as u64,
-                            spark_renderer::ash::vk::BufferUsageFlags::VERTEX_BUFFER,
-                            spark_renderer::ash::vk::MemoryPropertyFlags::HOST_VISIBLE | spark_renderer::ash::vk::MemoryPropertyFlags::HOST_COHERENT,
-                        );
-                        self.renderer.upload_to_buffer(&instance_buffer, &transforms);
-                        let ib_id = self.renderer.add_instance_buffer(instance_buffer);
+                        let sz = (std::mem::size_of::<spark_math::Mat4>() * transforms.len()) as u64;
+                        let ib_id = self.renderer.get_or_create_instance_buffer(sz);
+                        let instance_buffer = self.renderer.get_instance_buffer(ib_id).unwrap();
+                        self.renderer.upload_to_buffer(instance_buffer, &transforms);
                         let view = tex_id.and_then(|id| self.resource_manager.gpu_textures.get(id as usize)).map(|t| t.view);
                         instanced_renderables.push((vb_id, ib_id, transforms.len() as u32, view));
                     }

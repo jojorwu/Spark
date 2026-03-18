@@ -27,7 +27,8 @@ pub struct RenderFrame {
     pub global_buffer: Option<Buffer>,
     pub light_buffer: Option<Buffer>,
     pub global_descriptor_set: vk::DescriptorSet,
-    pub instance_buffers: Vec<Buffer>,
+    pub instance_pool: Vec<Buffer>,
+    pub instance_index: usize,
 }
 
 impl Attachment {

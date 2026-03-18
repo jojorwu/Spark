@@ -133,7 +133,8 @@ impl Renderer {
                     global_buffer: None,
                     light_buffer: None,
                     global_descriptor_set: global_descriptor_sets[i],
-                    instance_buffers: Vec::new(),
+                    instance_pool: Vec::new(),
+                    instance_index: 0,
                 }
             })
             .collect::<Vec<_>>()
@@ -403,8 +404,37 @@ impl Renderer {
 
     pub fn add_instance_buffer(&mut self, buffer: Buffer) -> u32 {
         let frame = &mut self.frames[self.current_frame];
-        frame.instance_buffers.push(buffer);
-        (frame.instance_buffers.len() - 1) as u32
+        frame.instance_pool.push(buffer);
+        (frame.instance_pool.len() - 1) as u32
+    }
+
+    /// Gets a reusable instance buffer from the pool or creates a new one if necessary.
+    pub fn get_or_create_instance_buffer(&mut self, sz: vk::DeviceSize) -> u32 {
+        let frame_idx = self.current_frame;
+        let idx = self.frames[frame_idx].instance_index;
+        self.frames[frame_idx].instance_index += 1;
+
+        if idx < self.frames[frame_idx].instance_pool.len() {
+            if self.frames[frame_idx].instance_pool[idx].size >= sz {
+                return idx as u32;
+            }
+            let old = self.frames[frame_idx].instance_pool[idx];
+            self.device.destroy_buffer(old);
+        }
+
+        let new_buffer = self.device.create_buffer(
+            sz,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        );
+
+        let frame = &mut self.frames[frame_idx];
+        if idx < frame.instance_pool.len() {
+            frame.instance_pool[idx] = new_buffer;
+        } else {
+            frame.instance_pool.push(new_buffer);
+        }
+        idx as u32
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -917,14 +947,11 @@ impl Renderer {
         self.vertex_buffers.get(id as usize)
     }
     pub fn get_instance_buffer(&self, id: u32) -> Option<&Buffer> {
-        self.frames[self.current_frame].instance_buffers.get(id as usize)
+        self.frames[self.current_frame].instance_pool.get(id as usize)
     }
-    /// Clears instance buffers for the current frame to prevent leaks.
+    /// Resets the instance buffer index for the current frame to allow reuse in the next cycle.
     pub fn clear_instance_buffers(&mut self) {
-        let buffers = std::mem::take(&mut self.frames[self.current_frame].instance_buffers);
-        for b in buffers {
-            self.device.destroy_buffer(b);
-        }
+        self.frames[self.current_frame].instance_index = 0;
     }
     /// Returns the graphics queue handle.
     pub fn get_graphics_queue(&self) -> vk::Queue {
@@ -1098,7 +1125,7 @@ impl Drop for Renderer {
                 if let Some(gb) = frame.global_buffer.take() {
                     self.device.destroy_buffer(gb);
                 }
-                for ib in frame.instance_buffers.drain(..) {
+                for ib in frame.instance_pool.drain(..) {
                     self.device.destroy_buffer(ib);
                 }
                 self.device.device.destroy_semaphore(frame.image_available, None);
