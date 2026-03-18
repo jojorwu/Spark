@@ -29,7 +29,8 @@ use spark_script::ScriptHost;
 use crate::ui::EditorUI;
 
 fn main() {
-    env_logger::init();
+    let (logger, logs) = spark_core::logger::EditorLogger::new();
+    logger.init();
     log::info!("Spark Editor starting...");
 
     let compiler = ShaderCompiler::new();
@@ -54,6 +55,10 @@ fn main() {
     engine.renderer.create_shadow_pipeline(&shadow_vert_spirv, &shadow_frag_spirv);
     engine.renderer.create_culling_pipeline(&culling_spirv);
     engine.renderer.create_hiz_pipeline(&hiz_spirv);
+
+    let grid_vert_spirv = compiler.compile("assets/shaders/grid.vert", shaderc::ShaderKind::Vertex);
+    let grid_frag_spirv = compiler.compile("assets/shaders/grid.frag", shaderc::ShaderKind::Fragment);
+    engine.renderer.create_grid_pipeline(&grid_vert_spirv, &grid_frag_spirv);
 
     let post_vert_spirv = compiler.compile("assets/shaders/fullscreen.vert", shaderc::ShaderKind::Vertex);
     let post_frag_spirv = compiler.compile("assets/shaders/tonemap_bloom.frag", shaderc::ShaderKind::Fragment);
@@ -159,13 +164,13 @@ fn main() {
 
     let _script_host = ScriptHost::new();
 
-    let mut ui = EditorUI::new(&engine.window);
+    let mut ui = EditorUI::new(&engine.window, logs);
     engine.renderer.create_viewport_attachment(1280, 720);
     let viewport_view = engine.renderer.viewport_attachment.as_ref().unwrap().view;
     let viewport_sampler = engine.renderer.shadow_pass.sampler;
     ui.viewport_texture_id = Some(engine.renderer.register_egui_texture(viewport_view, viewport_sampler));
 
-    engine.run(move |window, event, scene, rm, renderer| {
+    engine.run(move |window, event, scene, rm, renderer, fps| {
         match event {
             winit::event::Event::WindowEvent { event, .. } => {
                 (ui.handle_event(window, event), None)
@@ -173,7 +178,7 @@ fn main() {
             winit::event::Event::AboutToWait => {
                 ui.begin_frame(window);
                 ui.draw_ui(scene, rm, renderer);
-                ui.draw_viewport(scene);
+                ui.draw_viewport(scene, fps);
                 let full_output = ui.end_frame(window);
                 (false, Some((full_output, ui.egui_ctx.clone())))
             }

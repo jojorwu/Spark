@@ -41,10 +41,11 @@ pub struct EditorUI {
     pub gizmo_mode: GizmoMode,
     pub camera_pos: spark_math::Vec3,
     pub camera_rot: spark_math::Vec2, // Yaw, Pitch
+    pub logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl EditorUI {
-    pub fn new(window: &Window) -> Self {
+    pub fn new(window: &Window, logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Self {
         let egui_ctx = Context::default();
         egui_ctx.set_visuals(Visuals::dark());
 
@@ -66,6 +67,7 @@ impl EditorUI {
             gizmo_mode: GizmoMode::Translate,
             camera_pos: spark_math::Vec3::new(0.0, 2.0, 10.0),
             camera_rot: spark_math::Vec2::new(-90.0f32.to_radians(), 0.0),
+            logs,
         }
     }
 
@@ -139,10 +141,19 @@ impl EditorUI {
             });
         });
 
-        egui::TopBottomPanel::bottom("assets").show(&self.egui_ctx, |ui| {
-            ui.heading("Asset Browser");
-            ui.label("assets/shaders/triangle.vert");
-            ui.label("assets/shaders/triangle.frag");
+        egui::TopBottomPanel::bottom("bottom_panel").show(&self.egui_ctx, |ui| {
+            ui.horizontal(|ui| {
+                let _ = ui.selectable_label(true, "Console");
+                let _ = ui.selectable_label(false, "Assets");
+            });
+            ui.separator();
+
+            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+                let logs = self.logs.lock().unwrap();
+                for log in logs.iter() {
+                    ui.label(log);
+                }
+            });
         });
 
         egui::SidePanel::left("hierarchy").show(&self.egui_ctx, |ui| {
@@ -274,7 +285,7 @@ impl EditorUI {
                     ui.separator();
                     ui.label("Node Data");
                     match &mut node.data {
-                        spark_core::scene::NodeData::Light { light_type, color, intensity, range } => {
+                        spark_core::scene::NodeData::Light { light_type: _, color, intensity, range } => {
                             ui.label("Type: Light");
                             ui.horizontal(|ui| {
                                 ui.label("Color:");
@@ -328,27 +339,77 @@ impl EditorUI {
         });
     }
 
-    fn draw_node_tree(ui: &mut egui::Ui, scene: &Scene, node_key: NodeKey, selected_node: &mut Option<NodeKey>) {
-        if let Some(node) = scene.nodes.get(node_key) {
-            let label = &node.name;
-            let is_selected = Some(node_key) == *selected_node;
+    fn draw_node_tree(ui: &mut egui::Ui, scene: &mut Scene, node_key: NodeKey, selected_node: &mut Option<NodeKey>) {
+        let (label, children) = if let Some(node) = scene.nodes.get(node_key) {
+            (node.name.clone(), node.children.clone())
+        } else {
+            return;
+        };
 
-            let response = ui.selectable_label(is_selected, label);
-            if response.clicked() {
-                *selected_node = Some(node_key);
-            }
+        let is_selected = Some(node_key) == *selected_node;
 
-            for &child_key in &node.children {
-                ui.indent(label, |ui| {
-                    Self::draw_node_tree(ui, scene, child_key, selected_node);
-                });
+        let response = ui.selectable_label(is_selected, &label);
+        response.context_menu(|ui| {
+                if ui.button("Rename").clicked() { ui.close_menu(); }
+                if ui.button("Delete").clicked() {
+                    ui.close_menu();
+                }
+            });
+
+        if response.clicked() {
+            *selected_node = Some(node_key);
+        }
+
+        // Drag and drop
+        if ui.memory(|m| m.is_being_dragged(ui.id())) {
+             // simplified: only visualize for now
+        }
+
+        response.dnd_set_drag_payload(node_key);
+        if let Some(payload) = response.dnd_hover_payload::<NodeKey>() {
+            let dragged_key = *payload;
+            if ui.input(|i| i.pointer.any_released()) && dragged_key != node_key {
+                // Reparenting logic
+                let mut can_reparent = true;
+                // Check for cycles
+                let mut current = Some(node_key);
+                while let Some(k) = current {
+                    if k == dragged_key { can_reparent = false; break; }
+                    current = scene.nodes.get(k).and_then(|n| n.parent);
+                }
+
+                if can_reparent {
+                    // Remove from old parent
+                    let old_parent = scene.nodes.get(dragged_key).and_then(|n| n.parent);
+                    if let Some(opk) = old_parent {
+                        if let Some(op) = scene.nodes.get_mut(opk) {
+                            op.children.retain(|&k| k != dragged_key);
+                        }
+                    }
+
+                    // Set new parent
+                    if let Some(n) = scene.nodes.get_mut(dragged_key) {
+                        n.parent = Some(node_key);
+                    }
+                    if let Some(p) = scene.nodes.get_mut(node_key) {
+                        p.children.push(dragged_key);
+                    }
+                    scene.update_transforms(dragged_key);
+                }
             }
+        }
+
+        for &child_key in &children {
+            ui.indent(&label, |ui| {
+                Self::draw_node_tree(ui, scene, child_key, selected_node);
+            });
         }
     }
 
-    pub fn draw_viewport(&mut self, scene: &mut Scene) {
+    pub fn draw_viewport(&mut self, scene: &mut Scene, fps: f32) {
         if let Some(texture_id) = self.viewport_texture_id {
             egui::Window::new("Viewport").show(&self.egui_ctx, |ui| {
+                ui.label(format!("FPS: {:.1}", fps));
                 // Keyboard shortcuts
                 if ui.input(|i| i.key_pressed(egui::Key::T)) { self.gizmo_mode = egui_gizmo::GizmoMode::Translate; }
                 if ui.input(|i| i.key_pressed(egui::Key::R)) { self.gizmo_mode = egui_gizmo::GizmoMode::Rotate; }

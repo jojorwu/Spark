@@ -3,6 +3,7 @@ pub mod task;
 pub mod plugin;
 pub mod resource;
 pub mod event;
+pub mod logger;
 
 use winit::{
     event::{Event, WindowEvent},
@@ -26,7 +27,8 @@ pub struct Engine {
     pub plugin_manager: PluginManager,
     pub resource_manager: ResourceManager,
     pub event_queue: EventQueue,
-    last_frame_time: instant::Instant,
+    pub last_frame_time: instant::Instant,
+    pub current_fps: f32,
 }
 
 impl Engine {
@@ -57,18 +59,19 @@ impl Engine {
             resource_manager,
             event_queue,
             last_frame_time: instant::Instant::now(),
+            current_fps: 0.0,
         })
     }
 
     pub fn run<F>(mut self, mut ui_callback: F)
     where
-        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
+        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
     {
         let event_loop = self.event_loop.take().unwrap();
         self.plugin_manager.init_plugins(&mut self.scene);
 
         event_loop.run(move |event, elwt| {
-            let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene, &mut self.resource_manager, &mut self.renderer);
+            let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene, &mut self.resource_manager, &mut self.renderer, self.current_fps);
             if ui_consumed {
                 // UI consumed the event
             }
@@ -108,6 +111,7 @@ impl Engine {
                     let now = instant::Instant::now();
                     let delta = now.duration_since(self.last_frame_time).as_secs_f32();
                     self.last_frame_time = now;
+                    self.current_fps = 0.9 * self.current_fps + 0.1 * (1.0 / delta.max(0.001));
 
                     self.plugin_manager.update_plugins(&mut self.scene, delta);
                     self.scene.update_all_transforms();

@@ -6,3 +6,4 @@ pub mod hiz;
 pub mod ssao;
 pub mod clustered;
 pub mod taa;
+pub mod grid;

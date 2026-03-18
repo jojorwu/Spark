@@ -15,6 +15,7 @@ use crate::passes::hiz::HiZPass;
 use crate::passes::ssao::SSAOPass;
 use crate::passes::clustered::ClusteredPass;
 use crate::passes::taa::TAAPass;
+use crate::passes::grid::GridPass;
 use crate::pipeline::Pipeline;
 pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT, ObjectDataSSBO, MaterialDataSSBO};
 use crate::ui::EguiRenderer;
@@ -43,6 +44,7 @@ pub struct Renderer {
     pub ssao_pass: Option<SSAOPass>,
     pub clustered_pass: Option<ClusteredPass>,
     pub taa_pass: Option<TAAPass>,
+    pub grid_pass: Option<GridPass>,
     pub frames: [RenderFrame; MAX_FRAMES_IN_FLIGHT],
     pub pipeline_cache: vk::PipelineCache,
     current_frame: usize,
@@ -263,6 +265,7 @@ impl Renderer {
             ssao_pass: None,
             clustered_pass: None,
             taa_pass: None,
+            grid_pass: None,
             frames,
             pipeline_cache,
             current_frame: 0,
@@ -431,6 +434,17 @@ impl Renderer {
         let pass = TAAPass::new(self, frag, vert).unwrap();
         pass.update_descriptor_sets(&self.device.device, &self.gbuffer.hdr, &self.gbuffer.velocity, &self.gbuffer.depth, self.shadow_pass.sampler);
         self.taa_pass = Some(pass);
+    }
+
+    pub fn create_grid_pipeline(&mut self, vert: &[u32], frag: &[u32]) {
+        self.grid_pass = Some(GridPass::new(
+            &self.device.device,
+            self.pipeline_cache,
+            vert,
+            frag,
+            self.global_descriptor_set_layout,
+            vk::Format::R16G16B16A16_SFLOAT,
+        ));
     }
 
     fn update_ssao_descriptor_sets(&self) {
@@ -800,8 +814,7 @@ impl Renderer {
         egui_output: Option<(egui::FullOutput, egui::Context)>,
         object_count: u32,
     ) {
-        let frame = &self.frames[self.current_frame];
-        let command_buffer = frame.command_buffer;
+        let command_buffer = self.frames[self.current_frame].command_buffer;
         unsafe {
             self.device
                 .device
@@ -842,16 +855,20 @@ impl Renderer {
 
             // 0c. Culling Pass (GPU-Driven)
             if let Some(culling) = &self.culling_pass {
-                let frame = &self.frames[self.current_frame];
-                if let (Some(obj_buf), Some(ind_buf)) = (frame.object_data_buffer, frame.indirect_commands_buffer) {
+                let global_ds = self.frames[self.current_frame].global_descriptor_set;
+                if let (Some(obj_buf), Some(ind_buf), Some(cnt_buf)) = (
+                    self.frames[self.current_frame].object_data_buffer,
+                    self.frames[self.current_frame].indirect_commands_buffer,
+                    self.frames[self.current_frame].draw_count_buffer
+                ) {
                     culling.record_commands(
                         &self.device.device,
                         command_buffer,
                         object_count,
-                        frame.global_descriptor_set,
+                        global_ds,
                         &obj_buf,
                         &ind_buf,
-                        &frame.draw_count_buffer.unwrap(),
+                        &cnt_buf,
                     );
                 }
             }
@@ -1102,6 +1119,18 @@ impl Renderer {
 
             if let Some(taa) = &self.taa_pass {
                 taa.record_commands(&self.device.device, command_buffer, self.swapchain.extent, self.current_frame);
+            }
+
+            if let Some(grid) = &self.grid_pass {
+                 let global_ds = self.frames[self.current_frame].global_descriptor_set;
+                 grid.record_commands(
+                    &self.device.device,
+                    command_buffer,
+                    self.swapchain.extent,
+                    global_ds,
+                    self.gbuffer.hdr[self.current_frame].view,
+                    self.gbuffer.depth[self.current_frame].view,
+                );
             }
 
             let target_view = self.viewport_attachment.as_ref().map(|a| a.view);
