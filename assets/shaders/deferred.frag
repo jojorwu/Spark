@@ -24,6 +24,9 @@ layout (set = 1, input_attachment_index = 3, binding = 3) uniform subpassInput i
 #endif
 
 layout (set = 1, binding = 4) uniform sampler2D shadowMap;
+layout (set = 1, binding = 7) uniform sampler2D ssaoTex;
+layout (set = 1, binding = 8) uniform samplerCube irradianceMap;
+layout (set = 1, binding = 9) uniform samplerCube specularMap;
 
 struct Light {
     vec4 pos;
@@ -104,7 +107,7 @@ float calculateShadow(vec3 worldPos) {
 /**
  * Physically Based Rendering (PBR) lighting using Cook-Torrance BRDF.
  */
-vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metallic, float roughness, vec3 viewPos) {
+vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metallic, float roughness, vec3 viewPos, float ssao, vec2 uv) {
     vec3 N = normalize(normal);
     vec3 V = normalize(viewPos - worldPos);
     vec3 F0 = vec3(0.04);
@@ -136,7 +139,20 @@ vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metalli
         Lo += (kD * albedo / PI + specular) * radiance * NdotL * shadow;
     }
 
-    vec3 ambient = vec3(0.03) * albedo;
+    vec3 R = reflect(-V, N);
+    vec3 F = fresnelSchlick(max(dot(N, V), 0.0), F0);
+    vec3 kS = F;
+    vec3 kD = 1.0 - kS;
+    kD *= 1.0 - metallic;
+
+    vec3 irradiance = texture(irradianceMap, N).rgb;
+    vec3 diffuse = irradiance * albedo;
+
+    // Specular IBL (simplified)
+    vec3 prefilteredColor = textureLod(specularMap, R, roughness * 5.0).rgb;
+    vec3 envSpecular = prefilteredColor * F;
+
+    vec3 ambient = (kD * diffuse + envSpecular) * ssao;
     vec3 color = ambient + Lo;
     return color;
 }
@@ -156,20 +172,23 @@ void main()
 #if MSAA_SAMPLES > 1
     vec3 color = vec3(0.0);
     for (int i = 0; i < MSAA_SAMPLES; i++) {
+    float ssao = texture(ssaoTex, texCoord).r;
+
         vec3 albedo = subpassLoad(inputAlbedo, i).rgb;
         vec3 normal = subpassLoad(inputNormal, i).rgb * 2.0 - 1.0;
         float depth = subpassLoad(inputDepth, i).r;
         vec3 position = worldPosFromDepth(depth, texCoord);
         vec2 pbr = subpassLoad(inputPBR, i).rg;
-        color += calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos);
+        color += calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, texCoord);
     }
     outColor = vec4(color / float(MSAA_SAMPLES), 1.0);
 #else
+    float ssao = texture(ssaoTex, texCoord).r;
     vec3 albedo = subpassLoad(inputAlbedo).rgb;
     vec3 normal = subpassLoad(inputNormal).rgb * 2.0 - 1.0;
     float depth = subpassLoad(inputDepth).r;
     vec3 position = worldPosFromDepth(depth, texCoord);
     vec2 pbr = subpassLoad(inputPBR).rg;
-    outColor = vec4(calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos), 1.0);
+    outColor = vec4(calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, texCoord), 1.0);
 #endif
 }

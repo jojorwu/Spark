@@ -51,6 +51,21 @@ impl DeferredPass {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(7)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(8)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(9)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
 
         let ds_layout = unsafe {
@@ -100,6 +115,9 @@ impl DeferredPass {
         shadow_sampler: vk::Sampler,
         light_buffers: &[Buffer],
         object_data_buffers: &[Option<Buffer>],
+        ssao_attachments: &[Attachment],
+        irradiance_view: vk::ImageView,
+        specular_view: vk::ImageView,
     ) {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let alb_info = [vk::DescriptorImageInfo::default()
@@ -180,6 +198,42 @@ impl DeferredPass {
                         .buffer_info(&obj_info),
                 );
             }
+
+            let ssao_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(ssao_attachments[i].view)
+                .sampler(shadow_sampler)];
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(7)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&ssao_info),
+            );
+
+            let irr_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(irradiance_view)
+                .sampler(shadow_sampler)];
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(8)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&irr_info),
+            );
+
+            let spec_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(specular_view)
+                .sampler(shadow_sampler)];
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(9)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&spec_info),
+            );
 
             unsafe {
                 device.update_descriptor_sets(&writes, &[]);

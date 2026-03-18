@@ -12,6 +12,7 @@ use crate::passes::post_process::PostProcessPass;
 use crate::passes::shadow::ShadowPass;
 use crate::passes::culling::CullingPass;
 use crate::passes::hiz::HiZPass;
+use crate::passes::ssao::SSAOPass;
 use crate::pipeline::Pipeline;
 pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT, ObjectDataSSBO, MaterialDataSSBO};
 use crate::ui::EguiRenderer;
@@ -37,6 +38,7 @@ pub struct Renderer {
     pub post_process_pass: PostProcessPass,
     pub culling_pass: Option<CullingPass>,
     pub hiz_pass: Option<HiZPass>,
+    pub ssao_pass: Option<SSAOPass>,
     pub frames: [RenderFrame; MAX_FRAMES_IN_FLIGHT],
     pub pipeline_cache: vk::PipelineCache,
     current_frame: usize,
@@ -229,6 +231,7 @@ impl Renderer {
             post_process_pass,
             culling_pass: None,
             hiz_pass: None,
+            ssao_pass: None,
             frames,
             pipeline_cache,
             current_frame: 0,
@@ -277,6 +280,9 @@ impl Renderer {
             self.shadow_pass.sampler,
             &light_buffers,
             &object_buffers,
+            &self.gbuffer.ssao_blur,
+            self.shadow_pass.view, // TODO: Irradiance Map
+            self.shadow_pass.view, // TODO: Specular Map
         );
     }
 
@@ -366,6 +372,25 @@ impl Renderer {
             self.swapchain.extent.width,
             self.swapchain.extent.height,
         ));
+    }
+
+    pub fn create_ssao_pipeline(&mut self, vert: &[u32], ssao: &[u32], blur: &[u32]) {
+        let mut pass = SSAOPass::new(self, self.descriptor_pool).unwrap();
+        pass.create_pipelines(&self.device.device, self.pipeline_cache, self.swapchain.extent, vert, ssao, blur);
+        self.ssao_pass = Some(pass);
+        self.update_ssao_descriptor_sets();
+    }
+
+    fn update_ssao_descriptor_sets(&self) {
+        if let Some(pass) = &self.ssao_pass {
+            pass.update_descriptor_sets(
+                &self.device.device,
+                &self.gbuffer.normal,
+                &self.gbuffer.depth,
+                &self.gbuffer.ssao,
+                self.shadow_pass.sampler,
+            );
+        }
     }
 
     pub fn create_post_process_pipeline(&mut self, vert_spirv: &[u32], frag_spirv: &[u32], bloom_frag_spirv: &[u32]) {
@@ -718,7 +743,12 @@ impl Renderer {
                 );
             }
 
-            // 0b. Culling Pass (GPU-Driven)
+            // 0b. SSAO Pass (Placeholder for future pre-pass if needed)
+            if self.ssao_pass.is_some() {
+                // Currently executed after G-Buffer pass for single-frame simplicity
+            }
+
+            // 0c. Culling Pass (GPU-Driven)
             if let Some(culling) = &self.culling_pass {
                 let frame = &self.frames[self.current_frame];
                 if let (Some(obj_buf), Some(ind_buf)) = (frame.object_data_buffer, frame.indirect_commands_buffer) {
@@ -879,7 +909,30 @@ impl Renderer {
                 &gbuffer_barriers,
             );
 
-            // 2c. Execute Lighting Pass
+            // 2c. Execute SSAO Pass
+            if let Some(ssao) = &self.ssao_pass {
+                let view = self.scene_view_matrix_for_pos;
+                let projection = spark_math::Mat4::perspective_rh(
+                    45.0f32.to_radians(),
+                    self.swapchain.extent.width as f32 / self.swapchain.extent.height as f32,
+                    0.1,
+                    100.0,
+                );
+                ssao.record_commands(
+                    self,
+                    command_buffer,
+                    self.swapchain.extent,
+                    self.current_frame,
+                    self.gbuffer.ssao[self.current_frame].view,
+                    self.gbuffer.ssao[self.current_frame].image,
+                    self.gbuffer.ssao_blur[self.current_frame].view,
+                    self.gbuffer.ssao_blur[self.current_frame].image,
+                    projection,
+                    view,
+                );
+            }
+
+            // 2d. Execute Lighting Pass
             self.device.device.cmd_execute_commands(command_buffer, &[scb_lighting]);
 
             // Barrier: HDR to SHADER_READ_ONLY_OPTIMAL (lighting pass recorded into secondary might not do this transition on primary)
@@ -973,6 +1026,7 @@ impl Renderer {
                 self.device.depth_format,
             );
             self.update_deferred_descriptor_sets();
+            self.update_ssao_descriptor_sets();
             self.update_post_process_descriptor_sets();
         }
         Ok(())
