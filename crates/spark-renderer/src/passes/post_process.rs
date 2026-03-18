@@ -228,6 +228,7 @@ impl PostProcessPass {
         swapchain_image_view: vk::ImageView,
         swapchain_image: vk::Image,
         extent: vk::Extent2D,
+        target_view: Option<vk::ImageView>,
     ) {
         let pipeline = match self.pipeline {
             Some(p) => p,
@@ -256,8 +257,9 @@ impl PostProcessPass {
                 &[barrier],
             );
 
+            let view = target_view.unwrap_or(swapchain_image_view);
             let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(swapchain_image_view)
+                .image_view(view)
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)

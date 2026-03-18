@@ -1,4 +1,5 @@
 use ash::vk;
+use ash::vk::Handle;
 
 pub struct EguiRenderer {
     pub pipeline: vk::Pipeline,
@@ -337,6 +338,36 @@ impl EguiRenderer {
         }
 
         pipeline
+    }
+
+    pub fn register_native_texture(&mut self, renderer: &mut crate::Renderer, view: vk::ImageView, sampler: vk::Sampler) -> egui::TextureId {
+        let layout = [self.descriptor_set_layout];
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(self.descriptor_pool)
+            .set_layouts(&layout);
+
+        let ds = unsafe {
+            renderer.get_device().allocate_descriptor_sets(&alloc_info).unwrap()[0]
+        };
+
+        let image_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(view)
+            .sampler(sampler)];
+
+        let write = [vk::WriteDescriptorSet::default()
+            .dst_set(ds)
+            .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&image_info)];
+
+        unsafe {
+            renderer.get_device().update_descriptor_sets(&write, &[]);
+        }
+
+        let id = egui::TextureId::User(ds.as_raw());
+        self.texture_descriptor_sets.insert(id, ds);
+        id
     }
 
     fn update_textures(&mut self, renderer: &mut crate::Renderer, delta: &egui::TexturesDelta) {

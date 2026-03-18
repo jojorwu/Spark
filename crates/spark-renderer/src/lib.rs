@@ -63,6 +63,7 @@ pub struct Renderer {
     pub bindless_descriptor_set_layout: vk::DescriptorSetLayout,
     pub bindless_descriptor_set: vk::DescriptorSet,
     pub next_bindless_index: std::sync::atomic::AtomicU32,
+    pub viewport_attachment: Option<Attachment>,
 }
 
 fn halton(index: u32, base: u32) -> f32 {
@@ -282,6 +283,7 @@ impl Renderer {
             bindless_descriptor_set_layout,
             bindless_descriptor_set,
             next_bindless_index: std::sync::atomic::AtomicU32::new(0),
+            viewport_attachment: None,
         })
     }
 
@@ -1102,6 +1104,7 @@ impl Renderer {
                 taa.record_commands(&self.device.device, command_buffer, self.swapchain.extent, self.current_frame);
             }
 
+            let target_view = self.viewport_attachment.as_ref().map(|a| a.view);
             self.post_process_pass.record_commands(
                 &self.device.device,
                 command_buffer,
@@ -1110,6 +1113,7 @@ impl Renderer {
                 self.swapchain.views[image_index as usize],
                 self.swapchain.images[image_index as usize],
                 self.swapchain.extent,
+                target_view,
             );
 
             self.device
@@ -1117,6 +1121,25 @@ impl Renderer {
                 .end_command_buffer(command_buffer)
                 .unwrap();
         }
+    }
+
+    pub fn create_viewport_attachment(&mut self, width: u32, height: u32) {
+        if let Some(old) = self.viewport_attachment.take() {
+            old.destroy(&self.device.device);
+        }
+
+        let format = vk::Format::R16G16B16A16_SFLOAT;
+        let attachment = Attachment::create_image_resource(
+            &self.device.device,
+            &self.device.memory_properties,
+            width,
+            height,
+            format,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC,
+            vk::SampleCountFlags::TYPE_1,
+        );
+
+        self.viewport_attachment = Some(attachment);
     }
 
     pub fn recreate_swapchain(&mut self, window: &Window) -> Result<(), RendererError> {
@@ -1426,6 +1449,13 @@ impl Renderer {
     /// Returns the current swapchain extent.
     pub fn get_extent(&self) -> vk::Extent2D {
         self.swapchain.extent
+    }
+
+    pub fn register_egui_texture(&mut self, view: vk::ImageView, sampler: vk::Sampler) -> egui::TextureId {
+        let mut egui_renderer = self.egui_renderer.take().expect("EguiRenderer not initialized");
+        let id = egui_renderer.register_native_texture(self, view, sampler);
+        self.egui_renderer = Some(egui_renderer);
+        id
     }
 
     pub fn get_jitter(&self) -> [f32; 2] {

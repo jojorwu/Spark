@@ -160,6 +160,10 @@ fn main() {
     let _script_host = ScriptHost::new();
 
     let mut ui = EditorUI::new(&engine.window);
+    engine.renderer.create_viewport_attachment(1280, 720);
+    let viewport_view = engine.renderer.viewport_attachment.as_ref().unwrap().view;
+    let viewport_sampler = engine.renderer.shadow_pass.sampler;
+    ui.viewport_texture_id = Some(engine.renderer.register_egui_texture(viewport_view, viewport_sampler));
 
     engine.run(move |window, event, scene| {
         match event {
@@ -169,6 +173,7 @@ fn main() {
             winit::event::Event::AboutToWait => {
                 ui.begin_frame(window);
                 ui.draw_ui(scene);
+                ui.draw_viewport();
                 let full_output = ui.end_frame(window);
                 (false, Some((full_output, ui.egui_ctx.clone())))
             }

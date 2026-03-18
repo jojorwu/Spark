@@ -5,3 +5,7 @@ edition.workspace = true
 
 [dependencies]
 glam.workspace = true
+serde = { workspace = true, optional = true }
+
+[features]
+serde = ["dep:serde", "glam/serde"]

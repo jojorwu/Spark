@@ -1,9 +1,13 @@
 use slotmap::{SlotMap, new_key_type};
 use spark_math::{Mat4, Vec4Swizzles};
 use rayon::prelude::*;
+use serde::{Serialize, Deserialize};
 
-new_key_type! { pub struct NodeKey; }
+new_key_type! {
+    pub struct NodeKey;
+}
 
+#[derive(Serialize, Deserialize)]
 pub enum NodeData {
     None,
     Mesh {
@@ -28,24 +32,28 @@ pub enum NodeData {
     },
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum LightType {
     Directional,
     Point,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Node {
     pub name: String,
     pub local_transform: Mat4,
+    #[serde(skip)]
     pub global_transform: Mat4,
     pub parent: Option<NodeKey>,
     pub children: Vec<NodeKey>,
     pub data: NodeData,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Scene {
     pub nodes: SlotMap<NodeKey, Node>,
     pub root: NodeKey,
+    #[serde(skip)]
     pub last_view_matrix: Mat4,
 }
 
@@ -129,6 +137,43 @@ impl Scene {
         // But for true multi-threading with Rayon, we'd need a more decoupled approach.
         // For now, we'll keep the recursive update but ensure we can scale.
         self.update_transforms(self.root);
+    }
+
+    pub fn save_to_file(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    pub fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = std::fs::read_to_string(path)?;
+        let mut scene: Scene = serde_json::from_str(&content)?;
+        scene.update_all_transforms();
+        Ok(scene)
+    }
+
+    pub fn pick_node(&self, ray: &spark_math::Ray) -> Option<(NodeKey, f32)> {
+        let mut closest_node = None;
+        let mut min_t = f32::MAX;
+
+        for (key, node) in &self.nodes {
+            let radius = match &node.data {
+                NodeData::Mesh { bounding_radius, .. } => *bounding_radius,
+                NodeData::Light { .. } => 0.5,
+                NodeData::Camera { .. } => 0.5,
+                _ => continue,
+            };
+
+            let center = node.global_transform.w_axis.xyz();
+            if let Some(t) = ray.intersect_sphere(center, radius) {
+                if t < min_t {
+                    min_t = t;
+                    closest_node = Some(key);
+                }
+            }
+        }
+
+        closest_node.map(|key| (key, min_t))
     }
 
     /// Collects renderables, instanced meshes, and lights from the scene tree, performing frustum culling.
