@@ -185,7 +185,6 @@ impl Renderer {
                     indirect_commands_buffer: None,
                     object_data_buffer: None,
                     draw_count_buffer: None,
-                    secondary_command_buffers: Vec::new(),
                 }
             })
             .collect::<Vec<_>>()
@@ -685,10 +684,6 @@ impl Renderer {
             // 1. Parallel Record Shadow, G-Buffer and Lighting Passes
             let current_frame_idx = self.current_frame;
 
-            let mut scb_shadow = vk::CommandBuffer::null();
-            let mut scb_gbuffer = vk::CommandBuffer::null();
-            let mut scb_lighting = vk::CommandBuffer::null();
-
             #[repr(C)]
             struct PC {
                 count: u32,
@@ -710,23 +705,28 @@ impl Renderer {
             };
             let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
 
-            rayon::scope(|s| {
-                s.spawn(|_| {
-                    let pool = self.get_thread_command_pool(0);
-                    scb_shadow = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
-                    self.shadow_pass.record_commands(&self.device.device, scb_shadow, light_view_proj, self, object_count, true);
-                });
-                s.spawn(|_| {
-                    let pool = self.get_thread_command_pool(1);
-                    scb_gbuffer = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
-                    self.deferred_pass.record_gbuffer_commands(self, scb_gbuffer, pc_bytes, current_frame_idx, object_count);
-                });
-                s.spawn(|_| {
+            let ((scb_shadow, scb_gbuffer), scb_lighting) = rayon::join(
+                || rayon::join(
+                    || {
+                        let pool = self.get_thread_command_pool(0);
+                        let scb = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
+                        self.shadow_pass.record_commands(&self.device.device, scb, light_view_proj, self, object_count, true);
+                        scb
+                    },
+                    || {
+                        let pool = self.get_thread_command_pool(1);
+                        let scb = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
+                        self.deferred_pass.record_gbuffer_commands(self, scb, pc_bytes, current_frame_idx, object_count);
+                        scb
+                    }
+                ),
+                || {
                     let pool = self.get_thread_command_pool(2);
-                    scb_lighting = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
-                    self.deferred_pass.record_lighting_commands(self, scb_lighting, pc_bytes, current_frame_idx);
-                });
-            });
+                    let scb = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
+                    self.deferred_pass.record_lighting_commands(self, scb, pc_bytes, current_frame_idx);
+                    scb
+                }
+            );
 
             // 2. Main Pass (Geometry + Lighting) Orchestration
 

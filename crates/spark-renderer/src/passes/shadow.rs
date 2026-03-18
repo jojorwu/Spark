@@ -1,7 +1,7 @@
 use ash::vk;
 use crate::resource::Attachment;
 use crate::Renderer;
-use crate::vertex::{Vertex, InstanceData};
+use crate::vertex::Vertex;
 use crate::pipeline::Pipeline;
 
 pub struct ShadowPass {

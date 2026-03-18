@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use image::DynamicImage;
-use spark_renderer::ash::vk;
 
 pub struct ResourceManager {
     pub textures: HashMap<PathBuf, DynamicImage>,
