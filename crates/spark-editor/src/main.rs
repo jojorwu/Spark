@@ -58,8 +58,6 @@ fn main() {
 
     let pipeline = Pipeline::new(
         engine.renderer.get_device(),
-        engine.renderer.gbuffer.render_pass,
-        0, // Subpass 0: Geometry
         engine.renderer.get_extent(),
         &vert_spirv,
         &frag_spirv,
@@ -90,8 +88,6 @@ fn main() {
 
     let deferred_pipeline = Pipeline::new(
         engine.renderer.get_device(),
-        engine.renderer.gbuffer.render_pass,
-        1, // Subpass 1: Lighting
         engine.renderer.get_extent(),
         &def_vert_spirv,
         &def_frag_spirv,

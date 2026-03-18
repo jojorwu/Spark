@@ -45,6 +45,9 @@ pub struct Renderer {
     pub default_descriptor_set: vk::DescriptorSet,
     pub scene_view_matrix_for_pos: spark_math::Mat4,
     egui_renderer: Option<EguiRenderer>,
+    pub bindless_descriptor_set_layout: vk::DescriptorSetLayout,
+    pub bindless_descriptor_set: vk::DescriptorSet,
+    pub next_bindless_index: std::sync::atomic::AtomicU32,
 }
 
 impl Renderer {
@@ -80,14 +83,13 @@ impl Renderer {
             device.depth_format,
         );
 
-        let mut post_process_pass = PostProcessPass::new(
+        let post_process_pass = PostProcessPass::new(
             &device.device,
             device.pdevice,
             &context.instance,
             swapchain.format,
             swapchain.extent,
         )?;
-        post_process_pass.create_framebuffers(&device.device, &swapchain.views, swapchain.extent);
 
         let (av, fi, in_f) = Self::create_sync_objects_impl(&device.device);
         let pipeline_cache = unsafe {
@@ -108,6 +110,32 @@ impl Renderer {
         };
 
         let descriptor_pool = Self::create_descriptor_pool_impl(&device.device);
+
+        let bindless_descriptor_set_layout = unsafe {
+            let bindings = [vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(10000)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+            let flags = [vk::DescriptorBindingFlags::PARTIALLY_BOUND | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND];
+            let mut binding_flags = vk::DescriptorSetLayoutBindingFlagsCreateInfo::default()
+                .binding_flags(&flags);
+            device.device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default()
+                    .bindings(&bindings)
+                    .flags(vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
+                    .push_next(&mut binding_flags),
+                None,
+            )?
+        };
+
+        let bindless_descriptor_set = unsafe {
+            device.device.allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(descriptor_pool)
+                    .set_layouts(&[bindless_descriptor_set_layout]),
+            )? [0]
+        };
 
         let global_descriptor_sets = unsafe {
             device.device.allocate_descriptor_sets(
@@ -147,7 +175,6 @@ impl Renderer {
         let egui_renderer = ui_shaders.map(|(v, f)| {
             EguiRenderer::new(
                 &device.device,
-                gbuffer.render_pass,
                 v,
                 f,
                 swapchain.extent,
@@ -177,6 +204,9 @@ impl Renderer {
             default_descriptor_set: vk::DescriptorSet::null(),
             scene_view_matrix_for_pos: spark_math::Mat4::IDENTITY,
             egui_renderer,
+            bindless_descriptor_set_layout,
+            bindless_descriptor_set,
+            next_bindless_index: std::sync::atomic::AtomicU32::new(0),
         })
     }
 
@@ -553,26 +583,6 @@ impl Renderer {
             );
 
             // 2. Main Pass (Geometry + Lighting)
-            let clear = [
-                vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } },
-                vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } },
-                vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } },
-                vk::ClearValue { color: vk::ClearColorValue { float32: [0.1, 0.1, 0.1, 1.0] } },
-                vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 } },
-            ];
-
-            self.device.device.cmd_begin_render_pass(
-                command_buffer,
-                &vk::RenderPassBeginInfo::default()
-                    .render_pass(self.gbuffer.render_pass)
-                    .framebuffer(self.gbuffer.framebuffers[self.current_frame])
-                    .render_area(vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: self.swapchain.extent,
-                    })
-                    .clear_values(&clear),
-                vk::SubpassContents::INLINE,
-            );
 
             #[repr(C)]
             #[derive(Copy, Clone)]
@@ -649,13 +659,13 @@ impl Renderer {
                 }
             }
 
-            self.device.device.cmd_end_render_pass(command_buffer);
 
             self.post_process_pass.record_commands(
                 &self.device.device,
                 command_buffer,
                 image_index,
                 self.current_frame,
+                self.swapchain.views[image_index as usize],
                 self.swapchain.images[image_index as usize],
                 self.swapchain.extent,
             );
@@ -688,11 +698,6 @@ impl Renderer {
                 self.device.msaa_samples,
                 self.device.depth_format,
             );
-            self.post_process_pass.create_framebuffers(
-                &self.device.device,
-                &self.swapchain.views,
-                self.swapchain.extent,
-            );
             self.update_deferred_descriptor_sets();
             self.update_post_process_descriptor_sets();
         }
@@ -702,9 +707,6 @@ impl Renderer {
     fn cleanup_swapchain(&mut self) {
         unsafe {
             self.gbuffer.destroy(&self.device.device);
-            for &f in &self.post_process_pass.framebuffers {
-                self.device.device.destroy_framebuffer(f, None);
-            }
             self.swapchain
                 .loader
                 .destroy_swapchain(self.swapchain.handle, None);
@@ -767,12 +769,29 @@ impl Renderer {
         let s = self.create_texture_sampler(mip);
         self.destroy_buffer(st);
 
+        let bindless_index = self.next_bindless_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let img_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(v)
+            .sampler(s)];
+        let writes = [vk::WriteDescriptorSet::default()
+            .dst_set(self.bindless_descriptor_set)
+            .dst_binding(0)
+            .dst_array_element(bindless_index)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&img_info)];
+        unsafe {
+            self.device.device.update_descriptor_sets(&writes, &[]);
+        }
+
         Texture {
             image: i,
             memory: m,
             view: v,
             sampler: s,
             mip_levels: mip,
+            bindless_index,
         }
     }
 
@@ -1043,7 +1062,7 @@ impl Renderer {
         let sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1000),
+                .descriptor_count(20000),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::INPUT_ATTACHMENT)
                 .descriptor_count(100),
@@ -1059,7 +1078,8 @@ impl Renderer {
                 .create_descriptor_pool(
                     &vk::DescriptorPoolCreateInfo::default()
                         .pool_sizes(&sizes)
-                        .max_sets(1000),
+                        .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
+                        .max_sets(2000),
                     None,
                 )
                 .expect("Failed to create descriptor pool")

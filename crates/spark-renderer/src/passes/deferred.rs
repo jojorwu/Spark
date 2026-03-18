@@ -205,6 +205,41 @@ impl DeferredPass {
                     pc_bytes,
                 );
 
+                let color_attachments = [
+                    vk::RenderingAttachmentInfo::default()
+                        .image_view(renderer.gbuffer.albedo[current_frame].view)
+                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                        .store_op(vk::AttachmentStoreOp::STORE)
+                        .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }),
+                    vk::RenderingAttachmentInfo::default()
+                        .image_view(renderer.gbuffer.normal[current_frame].view)
+                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                        .store_op(vk::AttachmentStoreOp::STORE)
+                        .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }),
+                    vk::RenderingAttachmentInfo::default()
+                        .image_view(renderer.gbuffer.pbr[current_frame].view)
+                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                        .store_op(vk::AttachmentStoreOp::STORE)
+                        .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }),
+                ];
+                let depth_attachment = vk::RenderingAttachmentInfo::default()
+                    .image_view(renderer.gbuffer.depth[current_frame].view)
+                    .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .clear_value(vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 } });
+
+                let rendering_info = vk::RenderingInfo::default()
+                    .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
+                    .layer_count(1)
+                    .color_attachments(&color_attachments)
+                    .depth_attachment(&depth_attachment);
+
+                device.cmd_begin_rendering(command_buffer, &rendering_info);
+
                 for (vb_id, ib_id, count, tex_view) in instanced_renderables {
                     if let (Some(vb), Some(ib)) =
                         (renderer.get_buffer(*vb_id), renderer.get_instance_buffer(*ib_id))
@@ -270,12 +305,48 @@ impl DeferredPass {
                         }
                     }
                 }
+                device.cmd_end_rendering(command_buffer);
             }
 
-            // Transition to Subpass 1: Lighting resolve
-            device.cmd_next_subpass(command_buffer, vk::SubpassContents::INLINE);
+            // Transition to Lighting resolve (manual pass transition with barriers)
+            let barriers = [
+                vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(renderer.gbuffer.albedo[current_frame].image)
+                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
+                vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(renderer.gbuffer.normal[current_frame].image)
+                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
+                vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(renderer.gbuffer.pbr[current_frame].image)
+                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
+                vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(renderer.gbuffer.depth[current_frame].image)
+                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::DEPTH, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
+            ];
+            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &barriers);
 
             if let Some(pipeline) = self.pipeline {
+                let color_attachment = vk::RenderingAttachmentInfo::default()
+                    .image_view(renderer.gbuffer.hdr[current_frame].view)
+                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.1, 0.1, 0.1, 1.0] } });
+
+                let rendering_info = vk::RenderingInfo::default()
+                    .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
+                    .layer_count(1)
+                    .color_attachments(std::slice::from_ref(&color_attachment));
+
+                device.cmd_begin_rendering(command_buffer, &rendering_info);
                 device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
                 device.cmd_bind_descriptor_sets(
@@ -318,6 +389,7 @@ impl DeferredPass {
                 );
 
                 device.cmd_draw(command_buffer, 3, 1, 0, 0);
+                device.cmd_end_rendering(command_buffer);
             }
         }
     }

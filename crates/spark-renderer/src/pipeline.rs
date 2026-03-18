@@ -16,8 +16,6 @@ pub struct PostProcessPipeline {
 impl Pipeline {
     pub fn new(
         device: &Device,
-        render_pass: vk::RenderPass,
-        subpass: u32,
         _extent: vk::Extent2D,
         vert_shader_code: &[u32],
         frag_shader_code: &[u32],
@@ -202,6 +200,17 @@ impl Pipeline {
                 .expect("Failed to create pipeline layout")
         };
 
+        let mut rendering_info = vk::PipelineRenderingCreateInfo::default();
+        let color_formats = if !is_deferred_lighting {
+            vec![vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::R8G8B8A8_UNORM]
+        } else {
+            vec![vk::Format::R16G16B16A16_SFLOAT]
+        };
+        rendering_info = rendering_info.color_attachment_formats(&color_formats);
+        if !is_deferred_lighting {
+            rendering_info = rendering_info.depth_attachment_format(vk::Format::D32_SFLOAT); // Assume fixed depth format for simplicity or pass it
+        }
+
         let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
             .vertex_input_state(&vertex_input_info)
@@ -213,8 +222,7 @@ impl Pipeline {
             .color_blend_state(&color_blending)
             .dynamic_state(&dynamic_state_info)
             .layout(pipeline_layout)
-            .render_pass(render_pass)
-            .subpass(subpass);
+            .push_next(&mut rendering_info);
 
         let graphics_pipelines = unsafe {
             device

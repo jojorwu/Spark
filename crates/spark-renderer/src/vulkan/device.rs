@@ -39,9 +39,21 @@ impl VulkanDevice {
 
         let device_extension_names_raw = [ash::khr::swapchain::NAME.as_ptr()];
 
+        let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
+            .dynamic_rendering(true);
+        let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
+            .descriptor_indexing(true)
+            .shader_sampled_image_array_non_uniform_indexing(true)
+            .descriptor_binding_partially_bound(true)
+            .descriptor_binding_variable_descriptor_count(true)
+            .runtime_descriptor_array(true)
+            .buffer_device_address(true);
+
         let device_create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(std::slice::from_ref(&queue_info))
-            .enabled_extension_names(&device_extension_names_raw);
+            .enabled_extension_names(&device_extension_names_raw)
+            .push_next(&mut features12)
+            .push_next(&mut features13);
 
         let device = unsafe { instance.create_device(pdevice, &device_create_info, None)? };
 

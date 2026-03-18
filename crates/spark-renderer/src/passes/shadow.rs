@@ -5,8 +5,6 @@ use crate::vertex::{Vertex, InstanceData};
 use crate::pipeline::Pipeline;
 
 pub struct ShadowPass {
-    pub render_pass: vk::RenderPass,
-    pub framebuffer: vk::Framebuffer,
     pub pipeline: Option<vk::Pipeline>,
     pub layout: vk::PipelineLayout,
     pub image: vk::Image,
@@ -48,20 +46,6 @@ impl ShadowPass {
             )?
         };
 
-        let render_pass = Self::create_render_pass(device)?;
-
-        let framebuffer = unsafe {
-            device.create_framebuffer(
-                &vk::FramebufferCreateInfo::default()
-                    .render_pass(render_pass)
-                    .attachments(&[view])
-                    .width(Renderer::SHADOW_MAP_CASCADE_SIZE)
-                    .height(Renderer::SHADOW_MAP_CASCADE_SIZE)
-                    .layers(1),
-                None,
-            )?
-        };
-
         let layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&[
@@ -75,8 +59,6 @@ impl ShadowPass {
         };
 
         Ok(Self {
-            render_pass,
-            framebuffer,
             pipeline: None,
             layout,
             image,
@@ -86,38 +68,6 @@ impl ShadowPass {
         })
     }
 
-    fn create_render_pass(device: &ash::Device) -> Result<vk::RenderPass, crate::error::RendererError> {
-        let att = vk::AttachmentDescription::default()
-            .format(vk::Format::D32_SFLOAT)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-        let r = vk::AttachmentReference::default()
-            .attachment(0)
-            .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-        let sub = vk::SubpassDescription::default()
-            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-            .depth_stencil_attachment(&r);
-        let dep = vk::SubpassDependency::default()
-            .src_subpass(vk::SUBPASS_EXTERNAL)
-            .dst_subpass(0)
-            .src_stage_mask(vk::PipelineStageFlags::FRAGMENT_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS)
-            .src_access_mask(vk::AccessFlags::SHADER_READ)
-            .dst_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE);
-
-        Ok(unsafe {
-            device.create_render_pass(
-                &vk::RenderPassCreateInfo::default()
-                    .attachments(std::slice::from_ref(&att))
-                    .subpasses(std::slice::from_ref(&sub))
-                    .dependencies(std::slice::from_ref(&dep)),
-                None,
-            )?
-        })
-    }
 
     pub fn create_pipeline(
         &mut self,
@@ -183,6 +133,9 @@ impl ShadowPass {
             .depth_write_enable(true)
             .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL);
 
+        let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
+            .depth_attachment_format(vk::Format::D32_SFLOAT);
+
         let info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&stages)
             .vertex_input_state(&vertex_input)
@@ -192,8 +145,7 @@ impl ShadowPass {
             .multisample_state(&multisample)
             .depth_stencil_state(&depth_stencil)
             .layout(self.layout)
-            .render_pass(self.render_pass)
-            .subpass(0);
+            .push_next(&mut rendering_info);
 
         self.pipeline = Some(unsafe {
             device
@@ -229,21 +181,25 @@ impl ShadowPass {
         }];
 
         unsafe {
-            device.cmd_begin_render_pass(
-                command_buffer,
-                &vk::RenderPassBeginInfo::default()
-                    .render_pass(self.render_pass)
-                    .framebuffer(self.framebuffer)
-                    .render_area(vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: vk::Extent2D {
-                            width: Renderer::SHADOW_MAP_CASCADE_SIZE,
-                            height: Renderer::SHADOW_MAP_CASCADE_SIZE,
-                        },
-                    })
-                    .clear_values(&clear),
-                vk::SubpassContents::INLINE,
-            );
+            let depth_attachment = vk::RenderingAttachmentInfo::default()
+                .image_view(self.view)
+                .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .clear_value(clear[0]);
+
+            let rendering_info = vk::RenderingInfo::default()
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: vk::Extent2D {
+                        width: Renderer::SHADOW_MAP_CASCADE_SIZE,
+                        height: Renderer::SHADOW_MAP_CASCADE_SIZE,
+                    },
+                })
+                .layer_count(1)
+                .depth_attachment(&depth_attachment);
+
+            device.cmd_begin_rendering(command_buffer, &rendering_info);
 
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
@@ -317,7 +273,7 @@ impl ShadowPass {
                 }
             }
 
-            device.cmd_end_render_pass(command_buffer);
+            device.cmd_end_rendering(command_buffer);
         }
     }
 
@@ -327,8 +283,6 @@ impl ShadowPass {
                 device.destroy_pipeline(p, None);
             }
             device.destroy_pipeline_layout(self.layout, None);
-            device.destroy_framebuffer(self.framebuffer, None);
-            device.destroy_render_pass(self.render_pass, None);
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);

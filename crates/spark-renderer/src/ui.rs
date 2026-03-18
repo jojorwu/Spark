@@ -17,7 +17,6 @@ pub struct EguiRenderer {
 impl EguiRenderer {
     pub fn new(
         device: &ash::Device,
-        render_pass: vk::RenderPass,
         vert_shader_code: &[u32],
         frag_shader_code: &[u32],
         extent: vk::Extent2D,
@@ -69,7 +68,6 @@ impl EguiRenderer {
 
         let pipeline = Self::create_pipeline(
             device,
-            render_pass,
             pipeline_layout,
             vert_shader_code,
             frag_shader_code,
@@ -121,6 +119,20 @@ impl EguiRenderer {
 
                     unsafe {
                         let device = renderer.get_device();
+
+                        let color_attachment = vk::RenderingAttachmentInfo::default()
+                            .image_view(renderer.gbuffer.hdr[renderer.current_frame].view)
+                            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                            .load_op(vk::AttachmentLoadOp::LOAD)
+                            .store_op(vk::AttachmentStoreOp::STORE);
+
+                        let rendering_info = vk::RenderingInfo::default()
+                            .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent: renderer.get_extent() })
+                            .layer_count(1)
+                            .color_attachments(std::slice::from_ref(&color_attachment));
+
+                        device.cmd_begin_rendering(command_buffer, &rendering_info);
+
                         device.cmd_bind_pipeline(
                             command_buffer,
                             vk::PipelineBindPoint::GRAPHICS,
@@ -179,6 +191,8 @@ impl EguiRenderer {
                             0,
                             0,
                         );
+
+                        device.cmd_end_rendering(command_buffer);
                     }
                 }
             }
@@ -213,7 +227,6 @@ impl EguiRenderer {
 
     fn create_pipeline(
         device: &ash::Device,
-        render_pass: vk::RenderPass,
         layout: vk::PipelineLayout,
         vert_code: &[u32],
         frag_code: &[u32],
@@ -296,6 +309,10 @@ impl EguiRenderer {
         let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::default()
             .dynamic_states(&dynamic_states);
 
+        let color_formats = [vk::Format::R16G16B16A16_SFLOAT];
+        let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
+            .color_attachment_formats(&color_formats);
+
         let info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&stages)
             .vertex_input_state(&vertex_input)
@@ -306,8 +323,7 @@ impl EguiRenderer {
             .color_blend_state(&color_blend)
             .dynamic_state(&dynamic_state_info)
             .layout(layout)
-            .render_pass(render_pass)
-            .subpass(1);
+            .push_next(&mut rendering_info);
 
         let pipeline = unsafe {
             device
@@ -386,6 +402,7 @@ impl EguiRenderer {
                     view,
                     sampler,
                     mip_levels: 1,
+                    bindless_index: 0, // egui textures are handled separately in its own DS for now
                 };
 
                 let layouts = [self.descriptor_set_layout];
