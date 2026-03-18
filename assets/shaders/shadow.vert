@@ -10,7 +10,7 @@ struct ObjectData {
     uint indexCount;
     uint firstIndex;
     int  vertexOffset;
-    uint textureIndex;
+    uint materialIndex;
 };
 
 layout(buffer_reference, std430) readonly buffer ObjectDataRef {

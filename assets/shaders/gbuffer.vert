@@ -13,7 +13,7 @@ struct ObjectData {
     uint indexCount;
     uint firstIndex;
     int  vertexOffset;
-    uint textureIndex;
+    uint materialIndex;
 };
 
 layout(buffer_reference, std430) readonly buffer ObjectDataRef {
@@ -32,7 +32,7 @@ layout(location = 0) out vec3 outNormal;
 layout(location = 1) out vec2 outTexCoord;
 layout(location = 2) out vec3 outWorldPos;
 layout(location = 3) out vec3 outColor;
-layout(location = 4) out flat uint outTextureIndex;
+layout(location = 4) out flat uint outMaterialIndex;
 
 layout(push_constant) uniform PushConstants {
     uint lightCount;
@@ -54,7 +54,7 @@ void main() {
     outNormal = mat3(model) * inNormal;
     outTexCoord = inTexCoord;
     outColor = inColor;
-    outTextureIndex = objectBuffer.objects[objIdx].textureIndex;
+    outMaterialIndex = objectBuffer.objects[objIdx].materialIndex;
 
     gl_Position = global.viewProj * worldPos;
 }

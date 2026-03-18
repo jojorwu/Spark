@@ -47,7 +47,24 @@ pub struct ObjectDataSSBO {
     pub index_count: u32,
     pub first_index: u32,
     pub vertex_offset: i32,
-    pub texture_index: u32,
+    pub material_index: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct MaterialDataSSBO {
+    pub albedo_factor: spark_math::Vec4,
+    pub emissive_factor: spark_math::Vec4,
+    pub metallic_factor: f32,
+    pub roughness_factor: f32,
+    pub alpha_cutoff: f32,
+    pub flags: u32,
+    pub albedo_texture: i32,
+    pub normal_texture: i32,
+    pub metallic_roughness_texture: i32,
+    pub emissive_texture: i32,
+    pub occlusion_texture: i32,
+    pub padding: [i32; 3],
 }
 
 impl Attachment {

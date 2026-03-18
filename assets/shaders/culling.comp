@@ -14,7 +14,7 @@ struct ObjectData {
     uint indexCount;
     uint firstIndex;
     int  vertexOffset;
-    uint textureIndex;
+    uint materialIndex;
 };
 
 layout(set = 0, binding = 0) uniform GlobalUBO {

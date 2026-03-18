@@ -13,7 +13,7 @@ use crate::passes::shadow::ShadowPass;
 use crate::passes::culling::CullingPass;
 use crate::passes::hiz::HiZPass;
 use crate::pipeline::Pipeline;
-pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT, ObjectDataSSBO};
+pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT, ObjectDataSSBO, MaterialDataSSBO};
 use crate::ui::EguiRenderer;
 use crate::vulkan::context::VulkanContext;
 use crate::vulkan::device::VulkanDevice;
@@ -45,6 +45,7 @@ pub struct Renderer {
     pub index_buffer: Option<Buffer>,
     pub global_vertex_buffer: Option<Buffer>,
     pub global_index_buffer: Option<Buffer>,
+    pub global_material_buffer: Option<Buffer>,
     pub descriptor_pool: vk::DescriptorPool,
     pub texture_descriptor_sets: std::collections::HashMap<vk::ImageView, vk::DescriptorSet>,
     pub default_texture: Option<Texture>,
@@ -130,6 +131,11 @@ impl Renderer {
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .descriptor_count(1)
                         .stage_flags(vk::ShaderStageFlags::COMPUTE),
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(5)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
                 ]),
                 None,
             )?
@@ -231,6 +237,7 @@ impl Renderer {
             index_buffer: None,
             global_vertex_buffer: None,
             global_index_buffer: None,
+            global_material_buffer: None,
             descriptor_pool,
             texture_descriptor_sets: std::collections::HashMap::new(),
             default_texture: None,
@@ -246,6 +253,10 @@ impl Renderer {
     pub fn set_global_buffers(&mut self, vertex: Buffer, index: Buffer) {
         self.global_vertex_buffer = Some(vertex);
         self.global_index_buffer = Some(index);
+    }
+
+    pub fn set_material_buffer(&mut self, buffer: Buffer) {
+        self.global_material_buffer = Some(buffer);
     }
 
     pub fn set_deferred_pipeline(&mut self, pipeline: vk::Pipeline) {
@@ -395,13 +406,19 @@ impl Renderer {
                     .image_view(hiz_view)
                     .sampler(self.shadow_pass.sampler)];
 
-                let writes = [
+                let mut writes = vec![
                     vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(0).descriptor_type(vk::DescriptorType::UNIFORM_BUFFER).buffer_info(&buf_info),
                     vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&obj_info),
                     vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&ind_info),
                     vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&cnt_info),
                     vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(4).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&hiz_info),
                 ];
+
+                let mat_info;
+                if let Some(mat_buf) = self.global_material_buffer {
+                    mat_info = [vk::DescriptorBufferInfo::default().buffer(mat_buf.handle).range(mat_buf.size)];
+                    writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(5).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&mat_info));
+                }
                 unsafe {
                     self.device.device.update_descriptor_sets(&writes, &[]);
                 }
