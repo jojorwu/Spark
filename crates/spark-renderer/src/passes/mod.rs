@@ -4,3 +4,5 @@ pub mod post_process;
 pub mod culling;
 pub mod hiz;
 pub mod ssao;
+pub mod clustered;
+pub mod taa;

@@ -9,6 +9,7 @@ layout (set = 0, binding = 0) uniform GlobalUBO {
     mat4 lightViewProj;
     mat4 invViewProj;
     vec4 cameraPos;
+    vec4 frustum[6];
 } global;
 
 #if MSAA_SAMPLES > 1
@@ -33,8 +34,21 @@ struct Light {
     vec4 color;
 };
 
-layout (set = 1, std430, binding = 5) buffer LightBuffer {
+layout (set = 1, std430, binding = 5) readonly buffer LightBuffer {
     Light lights[];
+};
+
+struct LightGrid {
+    uint offset;
+    uint count;
+};
+
+layout (set = 0, std430, binding = 6) readonly buffer LightGridBuffer {
+    LightGrid lightGrids[];
+};
+
+layout (set = 0, std430, binding = 7) readonly buffer GlobalIndexList {
+    uint globalIndexList[];
 };
 
 layout(push_constant) uniform PushConstants {
@@ -107,7 +121,7 @@ float calculateShadow(vec3 worldPos) {
 /**
  * Physically Based Rendering (PBR) lighting using Cook-Torrance BRDF.
  */
-vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metallic, float roughness, vec3 viewPos, float ssao, vec2 uv) {
+vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metallic, float roughness, vec3 viewPos, float ssao, vec2 uv, float depth) {
     vec3 N = normalize(normal);
     vec3 V = normalize(viewPos - worldPos);
     vec3 F0 = vec3(0.04);
@@ -116,12 +130,25 @@ vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metalli
     vec3 Lo = vec3(0.0);
     float shadow = calculateShadow(worldPos);
 
-    for (int i = 0; i < push.lightCount; i++) {
-        vec3 L = normalize(lights[i].pos.xyz - worldPos);
+    // Clustered Light Lookup
+    // 16x9x24 grid
+    uint zSlices = 24;
+    float zNear = 0.1;
+    float zFar = 100.0;
+
+    uint clusterZ = uint(max(0.0, log(depth / zNear) * float(zSlices) / log(zFar / zNear)));
+    uvec2 clusterXY = uvec2(uv * vec2(16, 9));
+    uint clusterIndex = clusterXY.x + clusterXY.y * 16 + clusterZ * 16 * 9;
+
+    LightGrid grid = lightGrids[clusterIndex];
+
+    for (uint i = 0; i < grid.count; i++) {
+        uint lightIdx = globalIndexList[grid.offset + i];
+        vec3 L = normalize(lights[lightIdx].pos.xyz - worldPos);
         vec3 H = normalize(V + L);
-        float distance = length(lights[i].pos.xyz - worldPos);
-        float attenuation = lights[i].color.a / (distance * distance);
-        vec3 radiance = lights[i].color.rgb * attenuation;
+        float distance = length(lights[lightIdx].pos.xyz - worldPos);
+        float attenuation = lights[lightIdx].color.w / (distance * distance); // Range in w
+        vec3 radiance = lights[lightIdx].color.rgb * attenuation;
 
         float NDF = DistributionGGX(N, H, roughness);
         float G = GeometrySmith(N, V, L, roughness);
@@ -179,7 +206,11 @@ void main()
         float depth = subpassLoad(inputDepth, i).r;
         vec3 position = worldPosFromDepth(depth, texCoord);
         vec2 pbr = subpassLoad(inputPBR, i).rg;
-        color += calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, texCoord);
+
+        // linear depth for clustering
+        float linearDepth = (2.0 * 0.1) / (100.0 + 0.1 - depth * (100.0 - 0.1));
+
+        color += calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, texCoord, linearDepth);
     }
     outColor = vec4(color / float(MSAA_SAMPLES), 1.0);
 #else
@@ -189,6 +220,9 @@ void main()
     float depth = subpassLoad(inputDepth).r;
     vec3 position = worldPosFromDepth(depth, texCoord);
     vec2 pbr = subpassLoad(inputPBR).rg;
-    outColor = vec4(calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, texCoord), 1.0);
+
+    float linearDepth = (2.0 * 0.1) / (100.0 + 0.1 - depth * (100.0 - 0.1));
+
+    outColor = vec4(calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, texCoord, linearDepth), 1.0);
 #endif
 }

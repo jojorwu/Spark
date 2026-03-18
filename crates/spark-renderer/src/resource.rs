@@ -67,6 +67,20 @@ pub struct MaterialDataSSBO {
     pub padding: [i32; 3],
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct ClusterAABB {
+    pub min: spark_math::Vec4,
+    pub max: spark_math::Vec4,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct LightGrid {
+    pub offset: u32,
+    pub count: u32,
+}
+
 impl Attachment {
     /// Destroys the attachment resources.
     pub fn destroy(&self, device: &ash::Device) {

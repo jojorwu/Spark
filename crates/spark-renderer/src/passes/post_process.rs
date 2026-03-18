@@ -183,11 +183,17 @@ impl PostProcessPass {
         device: &ash::Device,
         hdr_attachments: &[Attachment],
         sampler: vk::Sampler,
+        taa_images: Option<&Vec<Attachment>>,
     ) {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
+            let view = if let Some(taa) = taa_images {
+                taa[i].view
+            } else {
+                hdr_attachments[i].view
+            };
             let img_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(hdr_attachments[i].view)
+                .image_view(view)
                 .sampler(sampler)];
             let blm_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)

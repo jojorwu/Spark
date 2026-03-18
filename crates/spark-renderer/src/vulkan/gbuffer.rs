@@ -7,6 +7,7 @@ pub struct GBuffer {
     pub albedo: Vec<Attachment>,
     pub normal: Vec<Attachment>,
     pub pbr: Vec<Attachment>,
+    pub velocity: Vec<Attachment>,
     pub depth: Vec<Attachment>,
     pub ssao: Vec<Attachment>,
     pub ssao_blur: Vec<Attachment>,
@@ -44,6 +45,13 @@ impl GBuffer {
             &props,
             extent,
             vk::Format::R8G8B8A8_UNORM,
+            msaa_samples,
+        );
+        let velocity = crate::resource::create_frame_attachments(
+            device,
+            &props,
+            extent,
+            vk::Format::R16G16_SFLOAT,
             msaa_samples,
         );
         let normal = crate::resource::create_frame_attachments(
@@ -96,6 +104,7 @@ impl GBuffer {
             albedo,
             normal,
             pbr,
+            velocity,
             depth,
             ssao,
             ssao_blur,
@@ -121,6 +130,7 @@ impl GBuffer {
         for a in self.albedo.drain(..) { a.destroy(device); }
         for a in self.normal.drain(..) { a.destroy(device); }
         for a in self.pbr.drain(..) { a.destroy(device); }
+        for a in self.velocity.drain(..) { a.destroy(device); }
         for a in self.depth.drain(..) { a.destroy(device); }
         for a in self.ssao.drain(..) { a.destroy(device); }
         for a in self.ssao_blur.drain(..) { a.destroy(device); }

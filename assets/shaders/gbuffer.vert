@@ -33,6 +33,8 @@ layout(location = 1) out vec2 outTexCoord;
 layout(location = 2) out vec3 outWorldPos;
 layout(location = 3) out vec3 outColor;
 layout(location = 4) out flat uint outMaterialIndex;
+layout(location = 5) out vec4 outCurrPos;
+layout(location = 6) out vec4 outPrevPos;
 
 layout(push_constant) uniform PushConstants {
     uint lightCount;
@@ -42,6 +44,7 @@ layout(push_constant) uniform PushConstants {
     float height;
     uint  padding;
     uint64_t objectBufferAddress;
+    mat4 prevViewProj;
 } push;
 
 void main() {
@@ -56,5 +59,8 @@ void main() {
     outColor = inColor;
     outMaterialIndex = objectBuffer.objects[objIdx].materialIndex;
 
-    gl_Position = global.viewProj * worldPos;
+    outCurrPos = global.viewProj * worldPos;
+    outPrevPos = push.prevViewProj * worldPos;
+
+    gl_Position = outCurrPos;
 }

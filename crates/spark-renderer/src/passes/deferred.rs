@@ -254,7 +254,7 @@ impl DeferredPass {
         let global_ds = renderer.frames[current_frame].global_descriptor_set;
 
         unsafe {
-            let color_formats = [vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::R8G8B8A8_UNORM];
+            let color_formats = [vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::R8G8B8A8_UNORM, vk::Format::R16G16_SFLOAT];
             let mut inheritance_info = vk::CommandBufferInheritanceRenderingInfo::default()
                 .color_attachment_formats(&color_formats)
                 .depth_attachment_format(vk::Format::D32_SFLOAT);
@@ -302,6 +302,12 @@ impl DeferredPass {
                         .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }),
                     vk::RenderingAttachmentInfo::default()
                         .image_view(renderer.gbuffer.pbr[current_frame].view)
+                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                        .store_op(vk::AttachmentStoreOp::STORE)
+                        .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }),
+                    vk::RenderingAttachmentInfo::default()
+                        .image_view(renderer.gbuffer.velocity[current_frame].view)
                         .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                         .load_op(vk::AttachmentLoadOp::CLEAR)
                         .store_op(vk::AttachmentStoreOp::STORE)

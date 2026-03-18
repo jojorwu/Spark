@@ -185,7 +185,7 @@ impl Pipeline {
 
         let mut rendering_info = vk::PipelineRenderingCreateInfo::default();
         let color_formats = if !is_deferred_lighting {
-            vec![vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::R8G8B8A8_UNORM]
+            vec![vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::R8G8B8A8_UNORM, vk::Format::R16G16_SFLOAT]
         } else {
             vec![vk::Format::R16G16B16A16_SFLOAT]
         };

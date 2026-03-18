@@ -13,6 +13,8 @@ use crate::passes::shadow::ShadowPass;
 use crate::passes::culling::CullingPass;
 use crate::passes::hiz::HiZPass;
 use crate::passes::ssao::SSAOPass;
+use crate::passes::clustered::ClusteredPass;
+use crate::passes::taa::TAAPass;
 use crate::pipeline::Pipeline;
 pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT, ObjectDataSSBO, MaterialDataSSBO};
 use crate::ui::EguiRenderer;
@@ -39,6 +41,8 @@ pub struct Renderer {
     pub culling_pass: Option<CullingPass>,
     pub hiz_pass: Option<HiZPass>,
     pub ssao_pass: Option<SSAOPass>,
+    pub clustered_pass: Option<ClusteredPass>,
+    pub taa_pass: Option<TAAPass>,
     pub frames: [RenderFrame; MAX_FRAMES_IN_FLIGHT],
     pub pipeline_cache: vk::PipelineCache,
     current_frame: usize,
@@ -53,10 +57,24 @@ pub struct Renderer {
     pub default_texture: Option<Texture>,
     pub default_descriptor_set: vk::DescriptorSet,
     pub scene_view_matrix_for_pos: spark_math::Mat4,
+    pub prev_view_proj: spark_math::Mat4,
+    pub frame_index: u64,
     egui_renderer: Option<EguiRenderer>,
     pub bindless_descriptor_set_layout: vk::DescriptorSetLayout,
     pub bindless_descriptor_set: vk::DescriptorSet,
     pub next_bindless_index: std::sync::atomic::AtomicU32,
+}
+
+fn halton(index: u32, base: u32) -> f32 {
+    let mut result = 0.0;
+    let mut f = 1.0;
+    let mut i = index;
+    while i > 0 {
+        f = f / base as f32;
+        result += f * (i % base) as f32;
+        i = i / base;
+    }
+    result
 }
 
 impl Renderer {
@@ -138,6 +156,16 @@ impl Renderer {
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .descriptor_count(1)
                         .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(6)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(7)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::FRAGMENT),
                 ]),
                 None,
             )?
@@ -232,6 +260,8 @@ impl Renderer {
             culling_pass: None,
             hiz_pass: None,
             ssao_pass: None,
+            clustered_pass: None,
+            taa_pass: None,
             frames,
             pipeline_cache,
             current_frame: 0,
@@ -246,6 +276,8 @@ impl Renderer {
             default_texture: None,
             default_descriptor_set: vk::DescriptorSet::null(),
             scene_view_matrix_for_pos: spark_math::Mat4::IDENTITY,
+            prev_view_proj: spark_math::Mat4::IDENTITY,
+            frame_index: 0,
             egui_renderer,
             bindless_descriptor_set_layout,
             bindless_descriptor_set,
@@ -381,6 +413,24 @@ impl Renderer {
         self.update_ssao_descriptor_sets();
     }
 
+    pub fn create_clustered_pipeline(&mut self, build: &[u32], cull: &[u32]) {
+        let pass = ClusteredPass::new(self, build, cull).unwrap();
+        self.clustered_pass = Some(pass);
+        self.update_clustered_descriptor_sets();
+    }
+
+    fn update_clustered_descriptor_sets(&self) {
+        if let (Some(pass), Some(lb)) = (&self.clustered_pass, self.frames[self.current_frame].light_buffer) {
+            pass.update_descriptor_sets(&self.device.device, &lb);
+        }
+    }
+
+    pub fn create_taa_pipeline(&mut self, vert: &[u32], frag: &[u32]) {
+        let pass = TAAPass::new(self, frag, vert).unwrap();
+        pass.update_descriptor_sets(&self.device.device, &self.gbuffer.hdr, &self.gbuffer.velocity, &self.gbuffer.depth, self.shadow_pass.sampler);
+        self.taa_pass = Some(pass);
+    }
+
     fn update_ssao_descriptor_sets(&self) {
         if let Some(pass) = &self.ssao_pass {
             pass.update_descriptor_sets(
@@ -406,15 +456,23 @@ impl Renderer {
     }
 
     fn update_post_process_descriptor_sets(&self) {
+        let taa_images = self.taa_pass.as_ref().map(|t| &t.history_images);
         self.post_process_pass.update_descriptor_sets(
             &self.device.device,
             &self.gbuffer.hdr,
             self.shadow_pass.sampler,
+            taa_images,
         );
     }
 
     pub fn ensure_global_descriptor_set(&mut self) {
         let hiz_view = self.hiz_pass.as_ref().map(|h| h.pyramid_view).unwrap_or(self.shadow_pass.view); // Placeholder if no hiz
+
+        let (grid_buf, index_buf) = if let Some(pass) = &self.clustered_pass {
+            (Some(pass.light_grid_buffer), Some(pass.global_index_list))
+        } else {
+            (None, None)
+        };
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let frame = &self.frames[i];
@@ -443,6 +501,18 @@ impl Renderer {
                 if let Some(mat_buf) = self.global_material_buffer {
                     mat_info = [vk::DescriptorBufferInfo::default().buffer(mat_buf.handle).range(mat_buf.size)];
                     writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(5).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&mat_info));
+                }
+
+                let grid_info;
+                if let Some(gb) = grid_buf {
+                    grid_info = [vk::DescriptorBufferInfo::default().buffer(gb.handle).range(gb.size)];
+                    writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(6).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&grid_info));
+                }
+
+                let idx_info;
+                if let Some(ib) = index_buf {
+                    idx_info = [vk::DescriptorBufferInfo::default().buffer(ib.handle).range(ib.size)];
+                    writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(7).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&idx_info));
                 }
                 unsafe {
                     self.device.device.update_descriptor_sets(&writes, &[]);
@@ -533,6 +603,7 @@ impl Renderer {
 
         if needs_reupdate {
             self.update_deferred_descriptor_sets();
+                self.update_clustered_descriptor_sets();
         }
 
         let lb = self.frames[self.current_frame].light_buffer.unwrap();
@@ -713,6 +784,8 @@ impl Renderer {
                 }
                 Err(e) => panic!("Failed to present swapchain image: {:?}", e),
             }
+            self.prev_view_proj = view_proj;
+            self.frame_index += 1;
             self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
         }
     }
@@ -738,14 +811,31 @@ impl Renderer {
                 hiz.record_commands(
                     &self.device.device,
                     command_buffer,
-                    self.gbuffer.depth[self.current_frame].view,
+                    self.gbuffer.depth[(self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT].view,
                     self.shadow_pass.sampler,
                 );
             }
 
-            // 0b. SSAO Pass (Placeholder for future pre-pass if needed)
-            if self.ssao_pass.is_some() {
-                // Currently executed after G-Buffer pass for single-frame simplicity
+            // 0b. Clustered Shading: Light Culling
+            if let Some(clustered) = &self.clustered_pass {
+                let view = self.scene_view_matrix_for_pos;
+                let proj = spark_math::Mat4::perspective_rh(
+                    45.0f32.to_radians(),
+                    self.swapchain.extent.width as f32 / self.swapchain.extent.height as f32,
+                    0.1,
+                    100.0,
+                );
+
+                clustered.record_build_commands(
+                    &self.device.device,
+                    command_buffer,
+                    proj.inverse(),
+                    [self.swapchain.extent.width as f32, self.swapchain.extent.height as f32],
+                    0.1,
+                    100.0
+                );
+
+                clustered.record_cull_commands(&self.device.device, command_buffer, view, self.light_count);
             }
 
             // 0c. Culling Pass (GPU-Driven)
@@ -776,6 +866,7 @@ impl Renderer {
                 height: f32,
                 padding: u32,
                 object_buffer_address: u64,
+                prev_view_proj: spark_math::Mat4,
             }
             let pc = PC {
                 count: self.light_count,
@@ -785,6 +876,7 @@ impl Renderer {
                 height: self.swapchain.extent.height as f32,
                 padding: 0,
                 object_buffer_address: self.frames[self.current_frame].object_data_buffer.map_or(0, |b| b.address),
+                prev_view_proj: self.prev_view_proj,
             };
             let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
 
@@ -820,15 +912,34 @@ impl Renderer {
                 lvp: spark_math::Mat4,
                 inv_vp: spark_math::Mat4,
                 camera_pos: [f32; 4],
+                frustum: [spark_math::Vec4; 6],
             }
 
             let inv_v = self.scene_view_matrix_for_pos.inverse();
             let camera_pos = [inv_v.w_axis.x, inv_v.w_axis.y, inv_v.w_axis.z, 1.0];
+
+            // Calculate frustum planes
+            let mut frustum = [spark_math::Vec4::ZERO; 6];
+            let m = view_proj.transpose();
+            frustum[0] = m.w_axis + m.x_axis; // Left
+            frustum[1] = m.w_axis - m.x_axis; // Right
+            frustum[2] = m.w_axis + m.y_axis; // Bottom
+            frustum[3] = m.w_axis - m.y_axis; // Top
+            frustum[4] = m.w_axis + m.z_axis; // Near
+            frustum[5] = m.w_axis - m.z_axis; // Far
+
+            // Normalize
+            for plane in &mut frustum {
+                let len = spark_math::Vec3::new(plane.x, plane.y, plane.z).length();
+                *plane /= len;
+            }
+
             let ubo = GlobalUBO {
                 vp: view_proj,
                 lvp: light_view_proj,
                 inv_vp: view_proj.inverse(),
                 camera_pos,
+                frustum,
             };
 
             {
@@ -986,6 +1097,10 @@ impl Renderer {
                 &[],
                 &[hdr_barrier]
             );
+
+            if let Some(taa) = &self.taa_pass {
+                taa.record_commands(&self.device.device, command_buffer, self.swapchain.extent, self.current_frame);
+            }
 
             self.post_process_pass.record_commands(
                 &self.device.device,
@@ -1311,6 +1426,12 @@ impl Renderer {
     /// Returns the current swapchain extent.
     pub fn get_extent(&self) -> vk::Extent2D {
         self.swapchain.extent
+    }
+
+    pub fn get_jitter(&self) -> [f32; 2] {
+        let x = halton((self.frame_index % 16) as u32 + 1, 2) - 0.5;
+        let y = halton((self.frame_index % 16) as u32 + 1, 3) - 0.5;
+        [x / self.swapchain.extent.width as f32, y / self.swapchain.extent.height as f32]
     }
     /// Returns the raw ash::Device.
     pub fn get_device(&self) -> &ash::Device {

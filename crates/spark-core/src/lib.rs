@@ -114,12 +114,15 @@ impl Engine {
                     self.resource_manager.upload_global_buffers(&mut self.renderer);
 
                     let extent = self.renderer.get_extent();
-                    let projection = spark_math::Mat4::perspective_rh(
+                    let jitter = self.renderer.get_jitter();
+                    let mut projection = spark_math::Mat4::perspective_rh(
                         45.0f32.to_radians(),
                         extent.width as f32 / extent.height as f32,
                         0.1,
                         100.0,
                     );
+                    projection.col_mut(2).x += jitter[0] * projection.col(0).x;
+                    projection.col_mut(2).y += jitter[1] * projection.col(1).y;
 
                     // Use the cached view matrix
                     let view_matrix = self.scene.last_view_matrix;
@@ -131,7 +134,7 @@ impl Engine {
                     let mut indirect_commands = Vec::new();
                     let mut object_ssbos = Vec::new();
 
-                    for (model, _vc, ic, fi, vo, tex_id, vb_id, br) in &renderables_raw {
+                    for (model, _vc, ic, fi, vo, _tex_id, vb_id, br) in &renderables_raw {
                          object_ssbos.push(spark_renderer::ObjectDataSSBO {
                             model: *model,
                             sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, *br),
@@ -149,7 +152,7 @@ impl Engine {
                         });
                     }
 
-                    for (ic, fi, vo, tex_id, vb_id, br, transforms) in &instanced_raw {
+                    for (ic, fi, vo, _tex_id, vb_id, br, transforms) in &instanced_raw {
                         for transform in transforms {
                              object_ssbos.push(spark_renderer::ObjectDataSSBO {
                                 model: *transform,

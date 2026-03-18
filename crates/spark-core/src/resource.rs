@@ -152,7 +152,6 @@ impl ResourceManager {
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
                 use spark_renderer::vertex::Vertex;
-                use spark_math::Vec2;
                 let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
                 let positions = reader.read_positions().unwrap().collect::<Vec<_>>();

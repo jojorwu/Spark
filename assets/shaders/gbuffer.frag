@@ -6,6 +6,8 @@ layout(location = 1) in vec2 inTexCoord;
 layout(location = 2) in vec3 inWorldPos;
 layout(location = 3) in vec3 inColor;
 layout(location = 4) in flat uint inMaterialIndex;
+layout(location = 5) in vec4 inCurrPos;
+layout(location = 6) in vec4 inPrevPos;
 
 struct MaterialData {
     vec4 albedoFactor;
@@ -31,6 +33,7 @@ layout(set = 1, binding = 0) uniform sampler2D textures[];
 layout(location = 0) out vec4 outAlbedo;
 layout(location = 1) out vec4 outNormal;
 layout(location = 2) out vec4 outPBR;
+layout(location = 3) out vec2 outVelocity;
 
 layout(push_constant) uniform PushConstants {
     uint lightCount;
@@ -40,6 +43,7 @@ layout(push_constant) uniform PushConstants {
     float height;
     uint  padding;
     uint64_t objectBufferAddress;
+    mat4 prevViewProj;
 } push;
 
 void main() {
@@ -72,4 +76,8 @@ void main() {
     outAlbedo = albedo;
     outNormal = vec4(normal * 0.5 + 0.5, 1.0);
     outPBR = vec4(metallic, roughness, 0.0, 1.0);
+
+    vec2 currPos = (inCurrPos.xy / inCurrPos.w) * 0.5 + 0.5;
+    vec2 prevPos = (inPrevPos.xy / inPrevPos.w) * 0.5 + 0.5;
+    outVelocity = currPos - prevPos;
 }
