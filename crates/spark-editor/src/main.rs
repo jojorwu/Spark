@@ -65,6 +65,8 @@ fn main() {
         false, // Not deferred lighting
         0,
         engine.renderer.pipeline_cache,
+        engine.renderer.global_descriptor_set_layout,
+        engine.renderer.bindless_descriptor_set_layout,
     );
 
     engine.renderer.set_pipeline(pipeline);
@@ -95,6 +97,8 @@ fn main() {
         true, // Deferred lighting
         4,    // 4 input attachments (Albedo, Normal, PBR, Depth)
         engine.renderer.pipeline_cache,
+        engine.renderer.global_descriptor_set_layout,
+        engine.renderer.bindless_descriptor_set_layout,
     );
 
     engine.renderer.set_deferred_pipeline(deferred_pipeline.graphics_pipeline);
@@ -126,6 +130,9 @@ fn main() {
         children: Vec::new(),
         data: NodeData::Mesh {
             vertex_count: 3,
+            index_count: 3,
+            first_index: 0,
+            vertex_offset: 0,
             texture_id: None,
             vertex_buffer_id: Some(0),
             bounding_radius: 1.0,

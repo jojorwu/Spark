@@ -47,11 +47,16 @@ impl VulkanDevice {
             .descriptor_binding_partially_bound(true)
             .descriptor_binding_variable_descriptor_count(true)
             .runtime_descriptor_array(true)
+            .draw_indirect_count(true)
             .buffer_device_address(true);
+
+        let mut features11 = vk::PhysicalDeviceVulkan11Features::default()
+            .shader_draw_parameters(true);
 
         let device_create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(std::slice::from_ref(&queue_info))
             .enabled_extension_names(&device_extension_names_raw)
+            .push_next(&mut features11)
             .push_next(&mut features12)
             .push_next(&mut features13);
 

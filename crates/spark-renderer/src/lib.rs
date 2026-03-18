@@ -10,8 +10,9 @@ use crate::error::RendererError;
 use crate::passes::deferred::DeferredPass;
 use crate::passes::post_process::PostProcessPass;
 use crate::passes::shadow::ShadowPass;
+use crate::passes::culling::CullingPass;
 use crate::pipeline::Pipeline;
-pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT};
+pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT, ObjectDataSSBO};
 use crate::ui::EguiRenderer;
 use crate::vulkan::context::VulkanContext;
 use crate::vulkan::device::VulkanDevice;
@@ -33,6 +34,7 @@ pub struct Renderer {
     pub shadow_pass: ShadowPass,
     pub deferred_pass: DeferredPass,
     pub post_process_pass: PostProcessPass,
+    pub culling_pass: Option<CullingPass>,
     pub frames: [RenderFrame; MAX_FRAMES_IN_FLIGHT],
     pub pipeline_cache: vk::PipelineCache,
     current_frame: usize,
@@ -104,6 +106,21 @@ impl Renderer {
                         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                         .descriptor_count(1)
                         .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(1)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE),
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(2)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(3)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
                 ]),
                 None,
             )?
@@ -163,6 +180,9 @@ impl Renderer {
                     global_descriptor_set: global_descriptor_sets[i],
                     instance_pool: Vec::new(),
                     instance_index: 0,
+                    indirect_commands_buffer: None,
+                    object_data_buffer: None,
+                    draw_count_buffer: None,
                 }
             })
             .collect::<Vec<_>>()
@@ -192,6 +212,7 @@ impl Renderer {
             shadow_pass,
             deferred_pass,
             post_process_pass,
+            culling_pass: None,
             frames,
             pipeline_cache,
             current_frame: 0,
@@ -217,6 +238,7 @@ impl Renderer {
 
     fn update_deferred_descriptor_sets(&self) {
         let light_buffers: Vec<Buffer> = self.frames.iter().filter_map(|f| f.light_buffer).collect();
+        let object_buffers: Vec<Option<Buffer>> = self.frames.iter().map(|f| f.object_data_buffer).collect();
         self.deferred_pass.update_descriptor_sets(
             &self.device.device,
             &self.gbuffer.albedo,
@@ -226,6 +248,7 @@ impl Renderer {
             self.shadow_pass.view,
             self.shadow_pass.sampler,
             &light_buffers,
+            &object_buffers,
         );
     }
 
@@ -298,6 +321,15 @@ impl Renderer {
         );
     }
 
+    pub fn create_culling_pipeline(&mut self, shader_code: &[u32]) {
+        self.culling_pass = Some(CullingPass::new(
+            &self.device.device,
+            self.descriptor_pool,
+            shader_code,
+            self.global_descriptor_set_layout,
+        ));
+    }
+
     pub fn create_post_process_pipeline(&mut self, vert_spirv: &[u32], frag_spirv: &[u32], bloom_frag_spirv: &[u32]) {
         self.post_process_pass.create_pipelines(
             &self.device.device,
@@ -321,17 +353,20 @@ impl Renderer {
     pub fn ensure_global_descriptor_set(&mut self) {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let frame = &self.frames[i];
-            if let Some(global_buffer) = frame.global_buffer {
+            if let (Some(global_buffer), Some(obj_buf), Some(ind_buf), Some(cnt_buf)) =
+                (frame.global_buffer, frame.object_data_buffer, frame.indirect_commands_buffer, frame.draw_count_buffer) {
                 let ds = frame.global_descriptor_set;
-                let buf_info = [vk::DescriptorBufferInfo::default()
-                    .buffer(global_buffer.handle)
-                    .offset(0)
-                    .range(global_buffer.size)];
-                let writes = [vk::WriteDescriptorSet::default()
-                    .dst_set(ds)
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&buf_info)];
+                let buf_info = [vk::DescriptorBufferInfo::default().buffer(global_buffer.handle).range(global_buffer.size)];
+                let obj_info = [vk::DescriptorBufferInfo::default().buffer(obj_buf.handle).range(obj_buf.size)];
+                let ind_info = [vk::DescriptorBufferInfo::default().buffer(ind_buf.handle).range(ind_buf.size)];
+                let cnt_info = [vk::DescriptorBufferInfo::default().buffer(cnt_buf.handle).range(cnt_buf.size)];
+
+                let writes = [
+                    vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(0).descriptor_type(vk::DescriptorType::UNIFORM_BUFFER).buffer_info(&buf_info),
+                    vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&obj_info),
+                    vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&ind_info),
+                    vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&cnt_info),
+                ];
                 unsafe {
                     self.device.device.update_descriptor_sets(&writes, &[]);
                 }
@@ -438,6 +473,52 @@ impl Renderer {
         (frame.instance_pool.len() - 1) as u32
     }
 
+    pub fn update_indirect_buffers(
+        &mut self,
+        commands: &[vk::DrawIndexedIndirectCommand],
+        object_data: &[ObjectDataSSBO],
+    ) {
+        let frame_idx = self.current_frame;
+        let cmd_sz = (commands.len() * std::mem::size_of::<vk::DrawIndexedIndirectCommand>()) as u64;
+
+        let mut buffer = self.frames[frame_idx].indirect_commands_buffer;
+        if buffer.is_none() || buffer.unwrap().size < cmd_sz {
+            if let Some(old) = buffer {
+                self.device.destroy_buffer(old);
+            }
+            buffer = Some(self.create_buffer(
+                cmd_sz.max(1024),
+                vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ));
+            self.frames[frame_idx].indirect_commands_buffer = buffer;
+        }
+        self.upload_to_buffer(&buffer.unwrap(), commands);
+
+        let obj_sz = (object_data.len() * std::mem::size_of::<ObjectDataSSBO>()) as u64;
+        let mut obj_buffer = self.frames[frame_idx].object_data_buffer;
+        if obj_buffer.is_none() || obj_buffer.unwrap().size < obj_sz {
+            if let Some(old) = obj_buffer {
+                self.device.destroy_buffer(old);
+            }
+            obj_buffer = Some(self.create_buffer(
+                obj_sz.max(1024),
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ));
+            self.frames[frame_idx].object_data_buffer = obj_buffer;
+        }
+        self.upload_to_buffer(&obj_buffer.unwrap(), object_data);
+
+        if self.frames[frame_idx].draw_count_buffer.is_none() {
+            self.frames[frame_idx].draw_count_buffer = Some(self.create_buffer(
+                4,
+                vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            ));
+        }
+    }
+
     /// Gets a reusable instance buffer from the pool or creates a new one if necessary.
     pub fn get_or_create_instance_buffer(&mut self, sz: vk::DeviceSize) -> u32 {
         let frame_idx = self.current_frame;
@@ -476,6 +557,7 @@ impl Renderer {
         light_view_proj: spark_math::Mat4,
         window: &Window,
         egui_output: Option<(egui::FullOutput, egui::Context)>,
+        object_count: u32,
     ) {
         let (image_available, in_flight, command_buffer, render_finished) = {
             let frame = &self.frames[self.current_frame];
@@ -519,6 +601,7 @@ impl Renderer {
                 view_proj,
                 light_view_proj,
                 egui_output,
+                object_count,
             );
             let s_available = [image_available];
             let s_finished = [render_finished];
@@ -563,6 +646,7 @@ impl Renderer {
         view_proj: spark_math::Mat4,
         light_view_proj: spark_math::Mat4,
         egui_output: Option<(egui::FullOutput, egui::Context)>,
+        object_count: u32,
     ) {
         let frame = &self.frames[self.current_frame];
         let command_buffer = frame.command_buffer;
@@ -571,6 +655,24 @@ impl Renderer {
                 .device
                 .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
                 .unwrap();
+
+            // 0. Culling Pass (GPU-Driven)
+            if let Some(culling) = &self.culling_pass {
+                let frame = &self.frames[self.current_frame];
+                if let (Some(obj_buf), Some(ind_buf)) = (frame.object_data_buffer, frame.indirect_commands_buffer) {
+                    // We need a small buffer to store the count (reset and atomicAdd)
+                    // For now reuse indirect buffer tail or create one
+                    culling.record_commands(
+                        &self.device.device,
+                        command_buffer,
+                        object_count,
+                        frame.global_descriptor_set,
+                        &obj_buf,
+                        &ind_buf,
+                        &frame.draw_count_buffer.unwrap(),
+                    );
+                }
+            }
 
             // 1. Shadow Pass
             self.shadow_pass.record_commands(
@@ -643,6 +745,7 @@ impl Renderer {
                 instanced_renderables,
                 pc_bytes,
                 self.current_frame,
+                0, // TODO: track actual indirect command count
             );
 
             if let Some((output, ctx)) = egui_output {
@@ -1148,6 +1251,12 @@ impl Drop for Renderer {
                 for ib in frame.instance_pool.drain(..) {
                     self.device.destroy_buffer(ib);
                 }
+                if let Some(ib) = frame.indirect_commands_buffer.take() {
+                    self.device.destroy_buffer(ib);
+                }
+                if let Some(ob) = frame.object_data_buffer.take() {
+                    self.device.destroy_buffer(ob);
+                }
                 self.device.device.destroy_semaphore(frame.image_available, None);
                 self.device.device.destroy_semaphore(frame.render_finished, None);
                 self.device.device.destroy_fence(frame.in_flight, None);
@@ -1175,6 +1284,9 @@ impl Drop for Renderer {
                 .destroy_descriptor_pool(self.descriptor_pool, None);
             if let Some(mut e) = self.egui_renderer.take() {
                 e.destroy(self);
+            }
+            if let Some(cp) = self.culling_pass.take() {
+                cp.destroy(&self.device.device);
             }
             if let Some(t) = self.default_texture.take() {
                 self.destroy_texture(t);

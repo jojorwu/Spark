@@ -102,7 +102,15 @@ impl ResourceManager {
                 self.meshes.push(vb);
                 mesh_id = Some((self.meshes.len() - 1) as u32);
             }
-            NodeData::Mesh { vertex_count, texture_id: None, vertex_buffer_id: mesh_id, bounding_radius }
+            NodeData::Mesh {
+                vertex_count,
+                index_count: 0, // Not used in this basic loader yet
+                first_index: 0,
+                vertex_offset: 0,
+                texture_id: None,
+                vertex_buffer_id: mesh_id,
+                bounding_radius
+            }
         } else {
             NodeData::None
         };

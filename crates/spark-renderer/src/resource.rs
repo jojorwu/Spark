@@ -29,6 +29,20 @@ pub struct RenderFrame {
     pub global_descriptor_set: vk::DescriptorSet,
     pub instance_pool: Vec<Buffer>,
     pub instance_index: usize,
+    pub indirect_commands_buffer: Option<Buffer>,
+    pub object_data_buffer: Option<Buffer>,
+    pub draw_count_buffer: Option<Buffer>,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct ObjectDataSSBO {
+    pub model: spark_math::Mat4,
+    pub sphere: spark_math::Vec4,
+    pub index_count: u32,
+    pub first_index: u32,
+    pub vertex_offset: i32,
+    pub texture_index: u32,
 }
 
 impl Attachment {

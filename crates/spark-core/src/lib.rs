@@ -127,22 +127,49 @@ impl Engine {
                     // Single pass for culled rendering
                     let (renderables_raw, instanced_raw, _, lights) = self.scene.collect_render_data(Some(&frustum));
 
-                    // Map texture IDs to ImageViews
-                    let renderables: Vec<(spark_math::Mat4, u32, Option<spark_renderer::ash::vk::ImageView>, Option<u32>)> = renderables_raw.iter().map(|(model, v_count, tex_id, vb_id)| {
-                        let view = tex_id.and_then(|id| self.resource_manager.gpu_textures.get(id as usize)).map(|t| t.view);
-                        (*model, *v_count, view, *vb_id)
-                    }).collect();
+                    // Prepare GPU Indirect and Object buffers
+                    let mut indirect_commands = Vec::new();
+                    let mut object_ssbos = Vec::new();
 
-                    // Prepare instance buffers using reuse mechanism
-                    let mut instanced_renderables = Vec::new();
-                    for (vb_id, tex_id, transforms) in instanced_raw {
-                        let sz = (std::mem::size_of::<spark_math::Mat4>() * transforms.len()) as u64;
-                        let ib_id = self.renderer.get_or_create_instance_buffer(sz);
-                        let instance_buffer = self.renderer.get_instance_buffer(ib_id).unwrap();
-                        self.renderer.upload_to_buffer(instance_buffer, &transforms);
-                        let view = tex_id.and_then(|id| self.resource_manager.gpu_textures.get(id as usize)).map(|t| t.view);
-                        instanced_renderables.push((vb_id, ib_id, transforms.len() as u32, view));
+                    for (model, _vc, ic, fi, vo, tex_id, _vb_id) in &renderables_raw {
+                         object_ssbos.push(spark_renderer::ObjectDataSSBO {
+                            model: *model,
+                            sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, 1.0), // Placeholder
+                            index_count: *ic,
+                            first_index: *fi,
+                            vertex_offset: *vo,
+                            texture_index: tex_id.unwrap_or(0),
+                        });
+                        indirect_commands.push(spark_renderer::ash::vk::DrawIndexedIndirectCommand {
+                            index_count: *ic,
+                            instance_count: 1,
+                            first_index: *fi,
+                            vertex_offset: *vo,
+                            first_instance: (object_ssbos.len() - 1) as u32,
+                        });
                     }
+
+                    for (ic, fi, vo, tex_id, _vb_id, transforms) in &instanced_raw {
+                        for transform in transforms {
+                             object_ssbos.push(spark_renderer::ObjectDataSSBO {
+                                model: *transform,
+                                sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, 1.0),
+                                index_count: *ic,
+                                first_index: *fi,
+                                vertex_offset: *vo,
+                                texture_index: tex_id.unwrap_or(0),
+                            });
+                            indirect_commands.push(spark_renderer::ash::vk::DrawIndexedIndirectCommand {
+                                index_count: *ic,
+                                instance_count: 1,
+                                first_index: *fi,
+                                vertex_offset: *vo,
+                                first_instance: (object_ssbos.len() - 1) as u32,
+                            });
+                        }
+                    }
+                    self.renderer.update_indirect_buffers(&indirect_commands, &object_ssbos);
+                    let total_objects = object_ssbos.len() as u32;
 
                     let view_proj = projection * view_matrix;
 
@@ -171,13 +198,15 @@ impl Engine {
                     self.renderer.update_lights(&renderer_lights);
 
                     self.renderer.scene_view_matrix_for_pos = view_matrix;
+
                     self.renderer.draw_frame(
-                        &renderables,
-                        &instanced_renderables,
+                        &[],
+                        &[],
                         view_proj,
                         light_view_proj,
                         &self.window,
-                        egui_output
+                        egui_output,
+                        total_objects
                     );
 
                     // Clear temporary instance buffers for next frame

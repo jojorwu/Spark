@@ -8,6 +8,9 @@ pub enum NodeData {
     None,
     Mesh {
         vertex_count: u32,
+        index_count: u32,
+        first_index: u32,
+        vertex_offset: i32,
         texture_id: Option<u32>,
         vertex_buffer_id: Option<u32>,
         bounding_radius: f32,
@@ -47,8 +50,8 @@ pub struct Scene {
 }
 
 struct SceneDataCollector {
-    renderables: Vec<(Mat4, u32, Option<u32>, Option<u32>)>,
-    instanced: std::collections::HashMap<(u32, Option<u32>), Vec<Mat4>>,
+    renderables: Vec<(Mat4, u32, u32, u32, i32, Option<u32>, Option<u32>)>,
+    instanced: std::collections::HashMap<(u32, u32, i32, Option<u32>, u32), Vec<Mat4>>,
     lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>,
 }
 
@@ -134,15 +137,15 @@ impl Scene {
         &self,
         frustum: Option<&spark_math::Frustum>,
     ) -> (
-        Vec<(Mat4, u32, Option<u32>, Option<u32>)>,
-        Vec<(u32, Option<u32>, Vec<Mat4>)>,
+        Vec<(Mat4, u32, u32, u32, i32, Option<u32>, Option<u32>)>,
+        Vec<(u32, u32, i32, Option<u32>, u32, Vec<Mat4>)>,
         Mat4,
         Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>
     ) {
         let data = self.collect_data_parallel(self.root, frustum);
 
         let instanced_data = data.instanced.into_iter()
-            .map(|((vb_id, tex_id), transforms)| (vb_id, tex_id, transforms))
+            .map(|((ic, fi, vo, tex_id, vb_id), transforms)| (ic, fi, vo, tex_id, vb_id, transforms))
             .collect();
 
         (data.renderables, instanced_data, self.last_view_matrix, data.lights)
@@ -163,6 +166,9 @@ impl Scene {
             match &node.data {
                 NodeData::Mesh {
                     vertex_count,
+                    index_count,
+                    first_index,
+                    vertex_offset,
                     texture_id,
                     vertex_buffer_id,
                     bounding_radius,
@@ -175,11 +181,14 @@ impl Scene {
                     };
                     if visible {
                         if let Some(vb_id) = vertex_buffer_id {
-                            data.instanced.entry((*vb_id, *texture_id)).or_default().push(node.global_transform);
+                            data.instanced.entry((*index_count, *first_index, *vertex_offset, *texture_id, *vb_id)).or_default().push(node.global_transform);
                         } else {
                             data.renderables.push((
                                 node.global_transform,
                                 *vertex_count,
+                                *index_count,
+                                *first_index,
+                                *vertex_offset,
                                 *texture_id,
                                 *vertex_buffer_id,
                             ));

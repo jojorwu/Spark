@@ -46,6 +46,11 @@ impl DeferredPass {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(6)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
         ];
 
         let ds_layout = unsafe {
@@ -94,6 +99,7 @@ impl DeferredPass {
         shadow_view: vk::ImageView,
         shadow_sampler: vk::Sampler,
         light_buffers: &[Buffer],
+        object_data_buffers: &[Option<Buffer>],
     ) {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let alb_info = [vk::DescriptorImageInfo::default()
@@ -158,6 +164,23 @@ impl DeferredPass {
                 );
             }
 
+            let mut obj_info = Vec::new();
+            if let Some(Some(ob)) = object_data_buffers.get(i) {
+                obj_info.push(
+                    vk::DescriptorBufferInfo::default()
+                        .buffer(ob.handle)
+                        .offset(0)
+                        .range(ob.size),
+                );
+                writes.push(
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.descriptor_sets[i])
+                        .dst_binding(6)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(&obj_info),
+                );
+            }
+
             unsafe {
                 device.update_descriptor_sets(&writes, &[]);
             }
@@ -168,10 +191,11 @@ impl DeferredPass {
         &self,
         renderer: &Renderer,
         command_buffer: vk::CommandBuffer,
-        renderables: &[(spark_math::Mat4, u32, Option<vk::ImageView>, Option<u32>)],
-        instanced_renderables: &[(u32, u32, u32, Option<vk::ImageView>)],
+        _renderables: &[(spark_math::Mat4, u32, Option<vk::ImageView>, Option<u32>)],
+        _instanced_renderables: &[(u32, u32, u32, Option<vk::ImageView>)],
         pc_bytes: &[u8],
         current_frame: usize,
+        max_indirect_commands: u32,
     ) {
         let device = &renderer.device.device;
         let extent = renderer.get_extent();
@@ -240,71 +264,39 @@ impl DeferredPass {
 
                 device.cmd_begin_rendering(command_buffer, &rendering_info);
 
-                for (vb_id, ib_id, count, tex_view) in instanced_renderables {
-                    if let (Some(vb), Some(ib)) =
-                        (renderer.get_buffer(*vb_id), renderer.get_instance_buffer(*ib_id))
-                    {
-                        let ds = tex_view
-                            .and_then(|v| renderer.texture_descriptor_sets.get(&v))
-                            .unwrap_or(&renderer.default_descriptor_set);
+                if let Some(indirect_buffer) = renderer.frames[current_frame].indirect_commands_buffer {
+                    device.cmd_bind_descriptor_sets(
+                        command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.layout,
+                        0,
+                        &[global_ds, renderer.bindless_descriptor_set],
+                        &[],
+                    );
 
-                        device.cmd_bind_descriptor_sets(
+                    // For indirect rendering, we assume a unified vertex/index buffer strategy or bind per-draw if needed.
+                    // Here we assume vertices/indices are already bound by the caller or global.
+                    if let Some(count_buffer) = renderer.frames[current_frame].draw_count_buffer {
+                         device.cmd_draw_indexed_indirect_count(
                             command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            pipeline.layout,
+                            indirect_buffer.handle,
                             0,
-                            &[global_ds, *ds],
-                            &[],
+                            count_buffer.handle,
+                            0,
+                            max_indirect_commands,
+                            std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
                         );
-
-                        device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle, ib.handle], &[0, 0]);
-                        if let Some(idx_b) = renderer.index_buffer {
-                            device.cmd_bind_index_buffer(command_buffer, idx_b.handle, 0, vk::IndexType::UINT32);
-                            device.cmd_draw_indexed(command_buffer, (idx_b.size / 4) as u32, *count, 0, 0, 0);
-                        } else {
-                            device.cmd_draw(
-                                command_buffer,
-                                (vb.size / std::mem::size_of::<crate::vertex::Vertex>() as u64) as u32,
-                                *count,
-                                0,
-                                0,
-                            );
-                        }
+                    } else {
+                        device.cmd_draw_indexed_indirect(
+                            command_buffer,
+                            indirect_buffer.handle,
+                            0,
+                            max_indirect_commands,
+                            std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                        );
                     }
                 }
 
-                for (_model, _, tex_view, vb_id) in renderables {
-                    if let Some(vb_id) = vb_id {
-                        if let Some(vb) = renderer.get_buffer(*vb_id) {
-                        let ds = tex_view
-                            .and_then(|v| renderer.texture_descriptor_sets.get(&v))
-                            .unwrap_or(&renderer.default_descriptor_set);
-
-                        device.cmd_bind_descriptor_sets(
-                            command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            pipeline.layout,
-                            0,
-                            &[global_ds, *ds],
-                            &[],
-                        );
-
-                        device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
-                            if let Some(idx_b) = renderer.index_buffer {
-                                device.cmd_bind_index_buffer(command_buffer, idx_b.handle, 0, vk::IndexType::UINT32);
-                                device.cmd_draw_indexed(command_buffer, (idx_b.size / 4) as u32, 1, 0, 0, 0);
-                            } else {
-                                device.cmd_draw(
-                                    command_buffer,
-                                    (vb.size / std::mem::size_of::<crate::vertex::Vertex>() as u64) as u32,
-                                    1,
-                                    0,
-                                    0,
-                                );
-                            }
-                        }
-                    }
-                }
                 device.cmd_end_rendering(command_buffer);
             }
 

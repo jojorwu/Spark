@@ -23,20 +23,19 @@ impl Pipeline {
         is_deferred_lighting: bool,
         input_attachments_count: u32,
         pipeline_cache: vk::PipelineCache,
+        global_ds_layout: vk::DescriptorSetLayout, // Pass this in
+        bindless_ds_layout: vk::DescriptorSetLayout, // Pass this in
     ) -> Self {
         let vert_shader_module = Self::create_shader_module(device, vert_shader_code);
         let frag_shader_module = Self::create_shader_module(device, frag_shader_code);
 
         let main_function_name = CString::new("main").unwrap();
 
-        use crate::vertex::{InstanceData, Vertex};
+        use crate::vertex::Vertex;
         let binding_descriptions = [
             Vertex::get_binding_description(),
-            InstanceData::get_binding_description(),
         ];
-        let mut attribute_descriptions = Vec::new();
-        attribute_descriptions.extend_from_slice(&Vertex::get_attribute_descriptions());
-        attribute_descriptions.extend_from_slice(&InstanceData::get_attribute_descriptions());
+        let attribute_descriptions = Vertex::get_attribute_descriptions();
 
         let shader_stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -125,7 +124,7 @@ impl Pipeline {
         let push_constant_ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(64)];
+            .size(128)];
 
         let mut descriptor_set_layout_bindings = Vec::new();
         if is_deferred_lighting {
@@ -154,14 +153,13 @@ impl Pipeline {
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             );
-        } else {
-            // Binding for Albedo Map
+            // Binding for Object Data SSBO
             descriptor_set_layout_bindings.push(
                 vk::DescriptorSetLayoutBinding::default()
-                    .binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .binding(input_attachments_count + 2)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                    .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
             );
         }
 
@@ -174,22 +172,7 @@ impl Pipeline {
                 .expect("Failed to create descriptor set layout")
         };
 
-        let global_ds_layout = unsafe {
-            device
-                .create_descriptor_set_layout(
-                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[
-                        vk::DescriptorSetLayoutBinding::default()
-                            .binding(0)
-                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                            .descriptor_count(1)
-                            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-                    ]),
-                    None,
-                )
-                .unwrap()
-        };
-
-        let set_layouts = [global_ds_layout, descriptor_set_layout];
+        let set_layouts = [global_ds_layout, bindless_ds_layout, descriptor_set_layout];
 
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
             .push_constant_ranges(&push_constant_ranges)
@@ -208,7 +191,7 @@ impl Pipeline {
         };
         rendering_info = rendering_info.color_attachment_formats(&color_formats);
         if !is_deferred_lighting {
-            rendering_info = rendering_info.depth_attachment_format(vk::Format::D32_SFLOAT); // Assume fixed depth format for simplicity or pass it
+            rendering_info = rendering_info.depth_attachment_format(vk::Format::D32_SFLOAT);
         }
 
         let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
