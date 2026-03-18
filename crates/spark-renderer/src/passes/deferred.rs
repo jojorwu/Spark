@@ -76,10 +76,6 @@ impl DeferredPass {
             )?
         };
 
-        // Note: We need to store ds_layout to destroy it later,
-        // but for now we'll assume it's managed or we'll refactor later.
-        // Actually, let's include it in the struct.
-
         Ok(Self {
             pipeline: None,
             layout,
@@ -179,7 +175,7 @@ impl DeferredPass {
     ) {
         let device = &renderer.device.device;
         let extent = renderer.get_extent();
-        let global_ds = renderer.global_descriptor_sets[current_frame];
+        let global_ds = renderer.frames[current_frame].global_descriptor_set;
 
         unsafe {
             // Subpass 0: G-Buffer Generation

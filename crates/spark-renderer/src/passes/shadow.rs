@@ -1,5 +1,5 @@
 use ash::vk;
-use crate::resource::{Attachment, Buffer};
+use crate::resource::Attachment;
 use crate::Renderer;
 use crate::vertex::{Vertex, InstanceData};
 use crate::pipeline::Pipeline;

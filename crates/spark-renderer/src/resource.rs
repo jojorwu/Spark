@@ -1,8 +1,9 @@
 use ash::vk;
-use crate::MAX_FRAMES_IN_FLIGHT;
+
+pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 /// Represents a Vulkan buffer with its associated memory and size.
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Buffer {
     pub handle: vk::Buffer,
     pub memory: vk::DeviceMemory,
@@ -14,6 +15,19 @@ pub struct Attachment {
     pub image: vk::Image,
     pub memory: vk::DeviceMemory,
     pub view: vk::ImageView,
+}
+
+/// Represents all resources and synchronization primitives for a single frame.
+#[derive(Debug)]
+pub struct RenderFrame {
+    pub command_buffer: vk::CommandBuffer,
+    pub image_available: vk::Semaphore,
+    pub render_finished: vk::Semaphore,
+    pub in_flight: vk::Fence,
+    pub global_buffer: Option<Buffer>,
+    pub light_buffer: Option<Buffer>,
+    pub global_descriptor_set: vk::DescriptorSet,
+    pub instance_buffers: Vec<Buffer>,
 }
 
 impl Attachment {
