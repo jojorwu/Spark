@@ -1,5 +1,5 @@
-use spark_math::{Vec3, Vec2};
 use ash::vk;
+use spark_math::{Vec2, Vec3};
 use std::mem;
 
 #[repr(C)]
@@ -30,22 +30,22 @@ impl InstanceData {
             // Mat4 takes 4 locations
             vk::VertexInputAttributeDescription::default()
                 .binding(1)
-                .location(3)
+                .location(4)
                 .format(vk::Format::R32G32B32A32_SFLOAT)
                 .offset(0),
             vk::VertexInputAttributeDescription::default()
                 .binding(1)
-                .location(4)
+                .location(5)
                 .format(vk::Format::R32G32B32A32_SFLOAT)
                 .offset(16),
             vk::VertexInputAttributeDescription::default()
                 .binding(1)
-                .location(5)
+                .location(6)
                 .format(vk::Format::R32G32B32A32_SFLOAT)
                 .offset(32),
             vk::VertexInputAttributeDescription::default()
                 .binding(1)
-                .location(6)
+                .location(7)
                 .format(vk::Format::R32G32B32A32_SFLOAT)
                 .offset(48),
         ]

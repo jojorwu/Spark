@@ -125,11 +125,17 @@ impl Engine {
                     let frustum = spark_math::Frustum::from_matrix(projection * view_matrix);
 
                     // Second pass for culled rendering
-                    let (renderables, instanced_raw, _, lights) = self.scene.collect_render_data(Some(&frustum));
+                    let (renderables_raw, instanced_raw, _, lights) = self.scene.collect_render_data(Some(&frustum));
+
+                    // Map texture IDs to ImageViews
+                    let renderables: Vec<(spark_math::Mat4, u32, Option<spark_renderer::ash::vk::ImageView>, Option<u32>)> = renderables_raw.iter().map(|(model, v_count, tex_id, vb_id)| {
+                        let view = tex_id.and_then(|id| self.resource_manager.gpu_textures.get(id as usize)).map(|t| t.view);
+                        (*model, *v_count, view, *vb_id)
+                    }).collect();
 
                     // Prepare instance buffers
                     let mut instanced_renderables = Vec::new();
-                    for (vb_id, transforms) in instanced_raw {
+                    for (vb_id, tex_id, transforms) in instanced_raw {
                         let instance_buffer = self.renderer.create_buffer(
                             (std::mem::size_of::<spark_math::Mat4>() * transforms.len()) as u64,
                             spark_renderer::ash::vk::BufferUsageFlags::VERTEX_BUFFER,
@@ -137,7 +143,8 @@ impl Engine {
                         );
                         self.renderer.upload_to_buffer(&instance_buffer, &transforms);
                         let ib_id = self.renderer.add_instance_buffer(instance_buffer);
-                        instanced_renderables.push((vb_id, ib_id, transforms.len() as u32));
+                        let view = tex_id.and_then(|id| self.resource_manager.gpu_textures.get(id as usize)).map(|t| t.view);
+                        instanced_renderables.push((vb_id, ib_id, transforms.len() as u32, view));
                     }
 
                     let view_proj = projection * view_matrix;
@@ -152,7 +159,7 @@ impl Engine {
                     let light_proj = spark_math::Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 0.1, 100.0);
                     let light_view_proj = light_proj * light_view;
 
-                    let main_light = lights.first().cloned().unwrap_or((
+                    let _main_light = lights.first().cloned().unwrap_or((
                         spark_math::Mat4::IDENTITY,
                         crate::scene::LightType::Directional,
                         spark_math::Vec3::ONE,
@@ -160,12 +167,18 @@ impl Engine {
                         10.0
                     ));
 
+                    // Convert lights for renderer
+                    let renderer_lights: Vec<(spark_math::Vec3, spark_math::Vec3, f32)> = lights.iter().map(|(trans, _type, col, intensity, _range)| {
+                        (trans.w_axis.xyz(), *col, *intensity)
+                    }).collect();
+                    self.renderer.update_lights(&renderer_lights);
+
+                    self.renderer.scene_view_matrix_for_pos = view_matrix;
                     self.renderer.draw_frame(
                         &renderables,
                         &instanced_renderables,
                         view_proj,
                         light_view_proj,
-                        (main_light.0.w_axis.xyz(), main_light.2 * main_light.3),
                         &self.window,
                         egui_output
                     );

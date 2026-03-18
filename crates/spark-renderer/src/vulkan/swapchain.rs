@@ -1,4 +1,7 @@
-use ash::{vk, Device, Instance, khr::surface::Instance as Surface, khr::swapchain::Device as SwapchainLoader};
+use ash::{
+    khr::surface::Instance as Surface, khr::swapchain::Device as SwapchainLoader, vk, Device,
+    Instance,
+};
 
 pub struct VulkanSwapchain {
     pub loader: SwapchainLoader,
@@ -18,7 +21,7 @@ impl VulkanSwapchain {
         surface: vk::SurfaceKHR,
         width: u32,
         height: u32,
-    ) -> Self {
+    ) -> Result<Self, crate::error::RendererError> {
         let loader = SwapchainLoader::new(instance, device);
         let (handle, images, views, format, extent) = Self::create_internal(
             pdevice,
@@ -28,16 +31,16 @@ impl VulkanSwapchain {
             &loader,
             width,
             height,
-        );
+        )?;
 
-        Self {
+        Ok(Self {
             loader,
             handle,
             images,
             views,
             format,
             extent,
-        }
+        })
     }
 
     fn create_internal(
@@ -48,22 +51,31 @@ impl VulkanSwapchain {
         loader: &SwapchainLoader,
         width: u32,
         height: u32,
-    ) -> (vk::SwapchainKHR, Vec<vk::Image>, Vec<vk::ImageView>, vk::Format, vk::Extent2D) {
+    ) -> Result<(
+        vk::SwapchainKHR,
+        Vec<vk::Image>,
+        Vec<vk::ImageView>,
+        vk::Format,
+        vk::Extent2D,
+    ), crate::error::RendererError> {
         let formats = unsafe {
             surface_loader
-                .get_physical_device_surface_formats(pdevice, surface)
-                .unwrap()
+                .get_physical_device_surface_formats(pdevice, surface)?
         };
 
         // Prefer HDR/High-bit-depth formats
-        let surface_format = formats.iter().cloned().find(|f| {
-            f.format == vk::Format::A2B10G10R10_UNORM_PACK32 || f.format == vk::Format::R16G16B16A16_SFLOAT
-        }).unwrap_or(formats[0]);
+        let surface_format = formats
+            .iter()
+            .cloned()
+            .find(|f| {
+                f.format == vk::Format::A2B10G10R10_UNORM_PACK32
+                    || f.format == vk::Format::R16G16B16A16_SFLOAT
+            })
+            .unwrap_or(formats[0]);
 
         let surface_caps = unsafe {
             surface_loader
-                .get_physical_device_surface_capabilities(pdevice, surface)
-                .unwrap()
+                .get_physical_device_surface_capabilities(pdevice, surface)?
         };
 
         let mut extent = surface_caps.current_extent;
@@ -93,39 +105,32 @@ impl VulkanSwapchain {
 
         let handle = unsafe {
             loader
-                .create_swapchain(&swapchain_create_info, None)
-                .expect("Failed to create swapchain")
+                .create_swapchain(&swapchain_create_info, None)?
         };
 
         let images = unsafe {
             loader
-                .get_swapchain_images(handle)
-                .expect("Failed to get swapchain images")
+                .get_swapchain_images(handle)?
         };
 
-        let views: Vec<vk::ImageView> = images
-            .iter()
-            .map(|&image| {
-                let create_info = vk::ImageViewCreateInfo::default()
-                    .image(image)
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(surface_format.format)
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    });
-                unsafe {
-                    device
-                        .create_image_view(&create_info, None)
-                        .expect("Failed to create image view")
-                }
-            })
-            .collect();
+        let mut views = Vec::new();
+        for &image in &images {
+            let create_info = vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(surface_format.format)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+            let view = unsafe { device.create_image_view(&create_info, None)? };
+            views.push(view);
+        }
 
-        (handle, images, views, surface_format.format, extent)
+        Ok((handle, images, views, surface_format.format, extent))
     }
 }
 
