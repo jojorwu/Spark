@@ -62,13 +62,13 @@ impl Engine {
 
     pub fn run<F>(mut self, mut ui_callback: F)
     where
-        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
+        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
     {
         let event_loop = self.event_loop.take().unwrap();
         self.plugin_manager.init_plugins(&mut self.scene);
 
         event_loop.run(move |event, elwt| {
-            let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene);
+            let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene, &mut self.resource_manager, &mut self.renderer);
             if ui_consumed {
                 // UI consumed the event
             }

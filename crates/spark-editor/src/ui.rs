@@ -3,6 +3,7 @@ use egui_winit::State;
 use winit::window::Window;
 use winit::event::WindowEvent;
 use egui_gizmo::{Gizmo, GizmoMode};
+use spark_math::Vec4Swizzles;
 
 use spark_core::scene::{Scene, NodeKey, Node};
 
@@ -38,6 +39,8 @@ pub struct EditorUI {
     pub undo_stack: Vec<Box<dyn Command>>,
     pub redo_stack: Vec<Box<dyn Command>>,
     pub gizmo_mode: GizmoMode,
+    pub camera_pos: spark_math::Vec3,
+    pub camera_rot: spark_math::Vec2, // Yaw, Pitch
 }
 
 impl EditorUI {
@@ -61,6 +64,8 @@ impl EditorUI {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             gizmo_mode: GizmoMode::Translate,
+            camera_pos: spark_math::Vec3::new(0.0, 2.0, 10.0),
+            camera_rot: spark_math::Vec2::new(-90.0f32.to_radians(), 0.0),
         }
     }
 
@@ -80,7 +85,7 @@ impl EditorUI {
         full_output
     }
 
-    pub fn draw_ui(&mut self, scene: &mut Scene) {
+    pub fn draw_ui(&mut self, scene: &mut Scene, resource_manager: &mut spark_core::resource::ResourceManager, renderer: &mut spark_renderer::Renderer) {
         egui::TopBottomPanel::top("menu").show(&self.egui_ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -95,6 +100,14 @@ impl EditorUI {
                             if let Ok(new_scene) = Scene::load_from_file(path.to_str().unwrap()) {
                                 *scene = new_scene;
                             }
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("Import glTF").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("glTF", &["gltf", "glb"])
+                            .pick_file() {
+                            resource_manager.load_scene(path, scene, renderer);
                         }
                         ui.close_menu();
                     }
@@ -207,13 +220,7 @@ impl EditorUI {
                     let (mut scale, mut rotation, mut translation) = node.local_transform.to_scale_rotation_translation();
 
                     let mut changed = false;
-                    ui.horizontal(|ui| {
-                        ui.label("Pos:");
-                        changed |= ui.drag_angle(&mut translation.x).changed();
-                        changed |= ui.drag_angle(&mut translation.y).changed();
-                        changed |= ui.drag_angle(&mut translation.z).changed();
-                    });
-                    // Actually use DragValue for non-angles
+                    let initial_transform = node.local_transform;
                     ui.horizontal(|ui| {
                         ui.label("Pos:");
                         changed |= ui.add(egui::DragValue::new(&mut translation.x).speed(0.1)).changed();
@@ -253,6 +260,15 @@ impl EditorUI {
 
                     if changed {
                         node.local_transform = spark_math::Mat4::from_scale_rotation_translation(scale, rotation, translation);
+                    }
+
+                    if ui.input(|i| i.pointer.any_released()) && changed {
+                         self.undo_stack.push(Box::new(TransformCommand {
+                            node_key: selected_key,
+                            old_transform: initial_transform,
+                            new_transform: node.local_transform,
+                        }));
+                        self.redo_stack.clear();
                     }
 
                     ui.separator();
@@ -333,8 +349,84 @@ impl EditorUI {
     pub fn draw_viewport(&mut self, scene: &mut Scene) {
         if let Some(texture_id) = self.viewport_texture_id {
             egui::Window::new("Viewport").show(&self.egui_ctx, |ui| {
+                // Keyboard shortcuts
+                if ui.input(|i| i.key_pressed(egui::Key::T)) { self.gizmo_mode = egui_gizmo::GizmoMode::Translate; }
+                if ui.input(|i| i.key_pressed(egui::Key::R)) { self.gizmo_mode = egui_gizmo::GizmoMode::Rotate; }
+                if ui.input(|i| i.key_pressed(egui::Key::S)) { self.gizmo_mode = egui_gizmo::GizmoMode::Scale; }
+
                 let size = ui.available_size();
-                let rect = ui.image(egui::load::SizedTexture::new(texture_id, size)).rect;
+                let response = ui.image(egui::load::SizedTexture::new(texture_id, size));
+                let rect = response.rect;
+
+                // Camera Controls
+                if response.hovered() {
+                    let speed = 0.1;
+                    let rot_speed = 0.005;
+
+                    if ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary)) {
+                        let delta = ui.input(|i| i.pointer.delta());
+                        self.camera_rot.x += delta.x * rot_speed;
+                        self.camera_rot.y -= delta.y * rot_speed;
+                        self.camera_rot.y = self.camera_rot.y.clamp(-1.5, 1.5);
+                    }
+
+                    let forward = spark_math::Vec3::new(
+                        self.camera_rot.x.cos() * self.camera_rot.y.cos(),
+                        self.camera_rot.y.sin(),
+                        self.camera_rot.x.sin() * self.camera_rot.y.cos(),
+                    ).normalize();
+                    let right = forward.cross(spark_math::Vec3::Y).normalize();
+
+                    if ui.input(|i| i.key_down(egui::Key::W)) { self.camera_pos += forward * speed; }
+                    if ui.input(|i| i.key_down(egui::Key::S)) { self.camera_pos -= forward * speed; }
+                    if ui.input(|i| i.key_down(egui::Key::A)) { self.camera_pos -= right * speed; }
+                    if ui.input(|i| i.key_down(egui::Key::D)) { self.camera_pos += right * speed; }
+
+                    scene.last_view_matrix = spark_math::Mat4::look_at_rh(
+                        self.camera_pos,
+                        self.camera_pos + forward,
+                        spark_math::Vec3::Y
+                    );
+                }
+
+                // Picking
+                if response.clicked_by(egui::PointerButton::Primary) {
+                    if let Some(pointer_pos) = ui.input(|i| i.pointer.interact_pos()) {
+                        if rect.contains(pointer_pos) {
+                            let normalized_x = (pointer_pos.x - rect.min.x) / rect.width();
+                            let normalized_y = (pointer_pos.y - rect.min.y) / rect.height();
+
+                            let view = scene.last_view_matrix;
+                            let projection = spark_math::Mat4::perspective_rh(
+                                45.0f32.to_radians(),
+                                size.x / size.y,
+                                0.1,
+                                100.0,
+                            );
+                            let inv_vp = (projection * view).inverse();
+
+                            let ndc_x = normalized_x * 2.0 - 1.0;
+                            let ndc_y = (1.0 - normalized_y) * 2.0 - 1.0;
+
+                            let near_ndc = spark_math::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+                            let far_ndc = spark_math::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+
+                            let near_world = inv_vp * near_ndc;
+                            let far_world = inv_vp * far_ndc;
+
+                            let origin = near_world.xyz() / near_world.w;
+                            let target = far_world.xyz() / far_world.w;
+                            let direction = (target - origin).normalize();
+
+                            let ray = spark_math::Ray::new(origin, direction);
+                            if let Some((key, _)) = scene.pick_node(&ray) {
+                                self.selected_node = Some(key);
+                            } else {
+                                self.selected_node = None;
+                            }
+                        }
+                    }
+                }
 
                 if let Some(selected_key) = self.selected_node {
                     let (view, projection, model, parent_key) = {
