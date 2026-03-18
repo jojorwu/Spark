@@ -173,7 +173,7 @@ fn main() {
             winit::event::Event::AboutToWait => {
                 ui.begin_frame(window);
                 ui.draw_ui(scene);
-                ui.draw_viewport();
+                ui.draw_viewport(scene);
                 let full_output = ui.end_frame(window);
                 (false, Some((full_output, ui.egui_ctx.clone())))
             }
