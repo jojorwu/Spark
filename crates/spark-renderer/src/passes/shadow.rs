@@ -4,12 +4,15 @@ use crate::Renderer;
 use crate::vertex::Vertex;
 use crate::pipeline::Pipeline;
 
+pub const SHADOW_CASCADE_COUNT: usize = 4;
+
 pub struct ShadowPass {
     pub pipeline: Option<vk::Pipeline>,
     pub layout: vk::PipelineLayout,
     pub image: vk::Image,
     pub memory: vk::DeviceMemory,
-    pub view: vk::ImageView,
+    pub view: vk::ImageView, // View into the entire array
+    pub cascade_views: [vk::ImageView; SHADOW_CASCADE_COUNT],
     pub sampler: vk::Sampler,
 }
 
@@ -20,17 +23,74 @@ impl ShadowPass {
         instance: &ash::Instance,
     ) -> Result<Self, crate::error::RendererError> {
         let props = unsafe { instance.get_physical_device_memory_properties(pdevice) };
-        let attachment = Attachment::create_image_resource(
-            device,
-            &props,
-            Renderer::SHADOW_MAP_CASCADE_SIZE,
-            Renderer::SHADOW_MAP_CASCADE_SIZE,
-            vk::Format::D32_SFLOAT,
-            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-            vk::SampleCountFlags::TYPE_1,
-        );
+        let extent = vk::Extent3D {
+            width: Renderer::SHADOW_MAP_CASCADE_SIZE,
+            height: Renderer::SHADOW_MAP_CASCADE_SIZE,
+            depth: 1,
+        };
 
-        let (image, memory, view) = (attachment.image, attachment.memory, attachment.view);
+        let image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .extent(extent)
+            .mip_levels(1)
+            .array_layers(SHADOW_CASCADE_COUNT as u32)
+            .format(vk::Format::D32_SFLOAT)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let image = unsafe { device.create_image(&image_info, None)? };
+        let reqs = unsafe { device.get_image_memory_requirements(image) };
+        let mut type_idx = 0;
+        for i in 0..props.memory_type_count {
+            if (reqs.memory_type_bits & (1 << i)) != 0
+                && (props.memory_types[i as usize].property_flags & vk::MemoryPropertyFlags::DEVICE_LOCAL) == vk::MemoryPropertyFlags::DEVICE_LOCAL
+            {
+                type_idx = i;
+                break;
+            }
+        }
+
+        let memory = unsafe {
+            device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(reqs.size)
+                    .memory_type_index(type_idx),
+                None,
+            )?
+        };
+        unsafe { device.bind_image_memory(image, memory, 0)? };
+
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(vk::ImageViewType::TYPE_2D_ARRAY)
+            .format(vk::Format::D32_SFLOAT)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::DEPTH,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: SHADOW_CASCADE_COUNT as u32,
+            });
+        let view = unsafe { device.create_image_view(&view_info, None)? };
+
+        let mut cascade_views = [vk::ImageView::null(); SHADOW_CASCADE_COUNT];
+        for i in 0..SHADOW_CASCADE_COUNT {
+             let v_info = vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::D32_SFLOAT)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::DEPTH,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: i as u32,
+                    layer_count: 1,
+                });
+            cascade_views[i] = unsafe { device.create_image_view(&v_info, None)? };
+        }
 
         let sampler = unsafe {
             device.create_sampler(
@@ -64,6 +124,7 @@ impl ShadowPass {
             image,
             memory,
             view,
+            cascade_views,
             sampler,
         })
     }
@@ -160,7 +221,7 @@ impl ShadowPass {
         &self,
         device: &ash::Device,
         command_buffer: vk::CommandBuffer,
-        light_view_proj: spark_math::Mat4,
+        light_view_projs: &[spark_math::Mat4; SHADOW_CASCADE_COUNT],
         renderer: &Renderer,
         object_count: u32,
         is_secondary: bool,
@@ -191,90 +252,92 @@ impl ShadowPass {
 
             device.begin_command_buffer(command_buffer, &begin_info).unwrap();
 
-            let depth_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(self.view)
-                .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(clear[0]);
+            for cascade_idx in 0..SHADOW_CASCADE_COUNT {
+                let depth_attachment = vk::RenderingAttachmentInfo::default()
+                    .image_view(self.cascade_views[cascade_idx])
+                    .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .clear_value(clear[0]);
 
-            let rendering_info = vk::RenderingInfo::default()
-                .render_area(vk::Rect2D {
-                    offset: vk::Offset2D { x: 0, y: 0 },
-                    extent: vk::Extent2D {
-                        width: Renderer::SHADOW_MAP_CASCADE_SIZE,
-                        height: Renderer::SHADOW_MAP_CASCADE_SIZE,
-                    },
-                })
-                .layer_count(1)
-                .depth_attachment(&depth_attachment);
+                let rendering_info = vk::RenderingInfo::default()
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D {
+                            width: Renderer::SHADOW_MAP_CASCADE_SIZE,
+                            height: Renderer::SHADOW_MAP_CASCADE_SIZE,
+                        },
+                    })
+                    .layer_count(1)
+                    .depth_attachment(&depth_attachment);
 
-            device.cmd_begin_rendering(command_buffer, &rendering_info);
+                device.cmd_begin_rendering(command_buffer, &rendering_info);
 
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
-            let shadow_viewport = vk::Viewport::default()
-                .width(Renderer::SHADOW_MAP_CASCADE_SIZE as f32)
-                .height(Renderer::SHADOW_MAP_CASCADE_SIZE as f32)
-                .min_depth(0.0)
-                .max_depth(1.0);
-            let shadow_scissor = vk::Rect2D::default().extent(vk::Extent2D {
-                width: Renderer::SHADOW_MAP_CASCADE_SIZE,
-                height: Renderer::SHADOW_MAP_CASCADE_SIZE,
-            });
-            device.cmd_set_viewport(command_buffer, 0, &[shadow_viewport]);
-            device.cmd_set_scissor(command_buffer, 0, &[shadow_scissor]);
+                let shadow_viewport = vk::Viewport::default()
+                    .width(Renderer::SHADOW_MAP_CASCADE_SIZE as f32)
+                    .height(Renderer::SHADOW_MAP_CASCADE_SIZE as f32)
+                    .min_depth(0.0)
+                    .max_depth(1.0);
+                let shadow_scissor = vk::Rect2D::default().extent(vk::Extent2D {
+                    width: Renderer::SHADOW_MAP_CASCADE_SIZE,
+                    height: Renderer::SHADOW_MAP_CASCADE_SIZE,
+                });
+                device.cmd_set_viewport(command_buffer, 0, &[shadow_viewport]);
+                device.cmd_set_scissor(command_buffer, 0, &[shadow_scissor]);
 
-            #[repr(C)]
-            struct PC {
-                lvp: spark_math::Mat4,
-                padding: u32,
-                address: u64,
-            }
-            let frame = &renderer.frames[renderer.current_frame];
-            let pc = PC {
-                lvp: light_view_proj,
-                padding: 0,
-                address: frame.object_data_buffer.map_or(0, |b| b.address),
-            };
-            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+                #[repr(C)]
+                struct PC {
+                    lvp: spark_math::Mat4,
+                    padding: u32,
+                    address: u64,
+                }
+                let frame = &renderer.frames[renderer.current_frame];
+                let pc = PC {
+                    lvp: light_view_projs[cascade_idx],
+                    padding: 0,
+                    address: frame.object_data_buffer.map_or(0, |b| b.address),
+                };
+                let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
 
-            device.cmd_push_constants(
-                command_buffer,
-                self.layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                pc_bytes,
-            );
+                device.cmd_push_constants(
+                    command_buffer,
+                    self.layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    pc_bytes,
+                );
 
-            if let Some(indirect_buffer) = frame.indirect_commands_buffer {
-                if let (Some(vb), Some(ib)) = (renderer.global_vertex_buffer, renderer.global_index_buffer) {
-                    device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
-                    device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
+                if let Some(indirect_buffer) = frame.indirect_commands_buffer {
+                    if let (Some(vb), Some(ib)) = (renderer.global_vertex_buffer, renderer.global_index_buffer) {
+                        device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
+                        device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
 
-                    if let Some(count_buffer) = frame.draw_count_buffer {
-                        device.cmd_draw_indexed_indirect_count(
-                            command_buffer,
-                            indirect_buffer.handle,
-                            0,
-                            count_buffer.handle,
-                            0,
-                            object_count,
-                            std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
-                        );
-                    } else {
-                        device.cmd_draw_indexed_indirect(
-                            command_buffer,
-                            indirect_buffer.handle,
-                            0,
-                            object_count,
-                            std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
-                        );
+                        if let Some(count_buffer) = frame.draw_count_buffer {
+                            device.cmd_draw_indexed_indirect_count(
+                                command_buffer,
+                                indirect_buffer.handle,
+                                0,
+                                count_buffer.handle,
+                                0,
+                                object_count,
+                                std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                            );
+                        } else {
+                            device.cmd_draw_indexed_indirect(
+                                command_buffer,
+                                indirect_buffer.handle,
+                                0,
+                                object_count,
+                                std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                            );
+                        }
                     }
                 }
-            }
 
-            device.cmd_end_rendering(command_buffer);
+                device.cmd_end_rendering(command_buffer);
+            }
             device.end_command_buffer(command_buffer).unwrap();
         }
     }

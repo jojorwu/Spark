@@ -7,3 +7,4 @@ pub mod ssao;
 pub mod clustered;
 pub mod taa;
 pub mod grid;
+pub mod volumetric;

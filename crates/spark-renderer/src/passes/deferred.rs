@@ -66,6 +66,11 @@ impl DeferredPass {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(10)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
 
         let ds_layout = unsafe {
@@ -118,6 +123,7 @@ impl DeferredPass {
         ssao_attachments: &[Attachment],
         irradiance_view: vk::ImageView,
         specular_view: vk::ImageView,
+        brdf_lut_view: vk::ImageView,
     ) {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let alb_info = [vk::DescriptorImageInfo::default()
@@ -233,6 +239,18 @@ impl DeferredPass {
                     .dst_binding(9)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&spec_info),
+            );
+
+            let brdf_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(brdf_lut_view)
+                .sampler(shadow_sampler)];
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(10)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&brdf_info),
             );
 
             unsafe {

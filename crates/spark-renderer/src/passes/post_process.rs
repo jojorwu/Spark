@@ -35,6 +35,11 @@ impl PostProcessPass {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
         let ds_layout = unsafe {
             device.create_descriptor_set_layout(
@@ -59,7 +64,7 @@ impl PostProcessPass {
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32 * 2),
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32 * 3),
         ];
         let descriptor_pool = unsafe {
             device.create_descriptor_pool(
@@ -190,6 +195,7 @@ impl PostProcessPass {
         hdr_attachments: &[Attachment],
         sampler: vk::Sampler,
         taa_images: Option<&Vec<Attachment>>,
+        fog_images: Option<&Vec<Attachment>>,
     ) {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let view = if let Some(taa) = taa_images {
@@ -205,7 +211,7 @@ impl PostProcessPass {
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image_view(self.bloom_views[0])
                 .sampler(sampler)];
-            let writes = [
+            let mut writes = vec![
                 vk::WriteDescriptorSet::default()
                     .dst_set(self.descriptor_sets[i])
                     .dst_binding(0)
@@ -219,6 +225,24 @@ impl PostProcessPass {
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&blm_info),
             ];
+
+            let fog_view = if let Some(fog) = fog_images {
+                fog[i].view
+            } else {
+                taa_images.map(|t| t[i].view).unwrap_or(hdr_attachments[i].view)
+            };
+            let fog_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(fog_view)
+                .sampler(sampler)];
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(2)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&fog_info),
+            );
             unsafe {
                 device.update_descriptor_sets(&writes, &[]);
             }

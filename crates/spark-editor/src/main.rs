@@ -60,6 +60,9 @@ fn main() {
     let grid_frag_spirv = compiler.compile("assets/shaders/grid.frag", shaderc::ShaderKind::Fragment);
     engine.renderer.create_grid_pipeline(&grid_vert_spirv, &grid_frag_spirv);
 
+    let vol_spirv = compiler.compile("assets/shaders/volumetric.comp", shaderc::ShaderKind::Compute);
+    engine.renderer.create_volumetric_pipeline(&vol_spirv);
+
     let post_vert_spirv = compiler.compile("assets/shaders/fullscreen.vert", shaderc::ShaderKind::Vertex);
     let post_frag_spirv = compiler.compile("assets/shaders/tonemap_bloom.frag", shaderc::ShaderKind::Fragment);
     let bloom_frag_spirv = compiler.compile("assets/shaders/bloom_filter.frag", shaderc::ShaderKind::Fragment);

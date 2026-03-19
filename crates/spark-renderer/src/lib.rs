@@ -16,6 +16,7 @@ use crate::passes::ssao::SSAOPass;
 use crate::passes::clustered::ClusteredPass;
 use crate::passes::taa::TAAPass;
 use crate::passes::grid::GridPass;
+use crate::passes::volumetric::VolumetricPass;
 use crate::pipeline::Pipeline;
 pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT, ObjectDataSSBO, MaterialDataSSBO};
 use crate::ui::EguiRenderer;
@@ -45,6 +46,7 @@ pub struct Renderer {
     pub clustered_pass: Option<ClusteredPass>,
     pub taa_pass: Option<TAAPass>,
     pub grid_pass: Option<GridPass>,
+    pub volumetric_pass: Option<VolumetricPass>,
     pub frames: [RenderFrame; MAX_FRAMES_IN_FLIGHT],
     pub pipeline_cache: vk::PipelineCache,
     current_frame: usize,
@@ -66,11 +68,15 @@ pub struct Renderer {
     pub bindless_descriptor_set: vk::DescriptorSet,
     pub next_bindless_index: std::sync::atomic::AtomicU32,
     pub viewport_attachment: Option<Attachment>,
+    pub ibl_maps: Option<crate::vulkan::ibl::IBLMaps>,
     pub exposure: f32,
     pub gamma: f32,
     pub enable_ssao: bool,
     pub enable_taa: bool,
     pub enable_shadows: bool,
+    pub enable_volumetric: bool,
+    pub enable_grid: bool,
+    pub enable_ibl: bool,
 }
 
 fn halton(index: u32, base: u32) -> f32 {
@@ -271,6 +277,7 @@ impl Renderer {
             clustered_pass: None,
             taa_pass: None,
             grid_pass: None,
+            volumetric_pass: None,
             frames,
             pipeline_cache,
             current_frame: 0,
@@ -292,11 +299,15 @@ impl Renderer {
             bindless_descriptor_set,
             next_bindless_index: std::sync::atomic::AtomicU32::new(0),
             viewport_attachment: None,
+            ibl_maps: None,
             exposure: 1.0,
             gamma: 2.2,
             enable_ssao: true,
             enable_taa: true,
             enable_shadows: true,
+            enable_volumetric: true,
+            enable_grid: true,
+            enable_ibl: true,
         })
     }
 
@@ -317,6 +328,11 @@ impl Renderer {
     fn update_deferred_descriptor_sets(&self) {
         let light_buffers: Vec<Buffer> = self.frames.iter().filter_map(|f| f.light_buffer).collect();
         let object_buffers: Vec<Option<Buffer>> = self.frames.iter().map(|f| f.object_data_buffer).collect();
+
+        let irr_view = self.ibl_maps.as_ref().map(|m| m.irradiance_view).unwrap_or(self.shadow_pass.view);
+        let spec_view = self.ibl_maps.as_ref().map(|m| m.prefilter_view).unwrap_or(self.shadow_pass.view);
+        let brdf_view = self.ibl_maps.as_ref().map(|m| m.brdf_lut_view).unwrap_or(self.shadow_pass.view);
+
         self.deferred_pass.update_descriptor_sets(
             &self.device.device,
             &self.gbuffer.albedo,
@@ -328,8 +344,9 @@ impl Renderer {
             &light_buffers,
             &object_buffers,
             &self.gbuffer.ssao_blur,
-            self.shadow_pass.view, // TODO: Irradiance Map
-            self.shadow_pass.view, // TODO: Specular Map
+            irr_view,
+            spec_view,
+            brdf_view,
         );
     }
 
@@ -457,6 +474,13 @@ impl Renderer {
         ));
     }
 
+    pub fn create_volumetric_pipeline(&mut self, shader_code: &[u32]) {
+        let pass = VolumetricPass::new(self, shader_code);
+        pass.update_descriptor_sets(self);
+        self.volumetric_pass = Some(pass);
+        self.update_post_process_descriptor_sets();
+    }
+
     fn update_ssao_descriptor_sets(&self) {
         if let Some(pass) = &self.ssao_pass {
             pass.update_descriptor_sets(
@@ -483,11 +507,13 @@ impl Renderer {
 
     fn update_post_process_descriptor_sets(&self) {
         let taa_images = self.taa_pass.as_ref().map(|t| &t.history_images);
+        let fog_images = self.volumetric_pass.as_ref().map(|f| &f.output_images);
         self.post_process_pass.update_descriptor_sets(
             &self.device.device,
             &self.gbuffer.hdr,
             self.shadow_pass.sampler,
             taa_images,
+            fog_images,
         );
     }
 
@@ -914,7 +940,7 @@ impl Renderer {
                     || {
                         let pool = self.get_thread_command_pool(0);
                         let scb = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
-                        self.shadow_pass.record_commands(&self.device.device, scb, light_view_proj, self, object_count, true);
+                        self.shadow_pass.record_commands(&self.device.device, scb, &[light_view_proj; 4], self, object_count, true);
                         scb
                     },
                     || {
@@ -938,26 +964,25 @@ impl Renderer {
             #[derive(Copy, Clone)]
             struct GlobalUBO {
                 vp: spark_math::Mat4,
-                lvp: spark_math::Mat4,
+                lvp: [spark_math::Mat4; 4],
                 inv_vp: spark_math::Mat4,
                 camera_pos: [f32; 4],
                 frustum: [spark_math::Vec4; 6],
+                cascade_splits: [f32; 4],
             }
 
             let inv_v = self.scene_view_matrix_for_pos.inverse();
             let camera_pos = [inv_v.w_axis.x, inv_v.w_axis.y, inv_v.w_axis.z, 1.0];
 
-            // Calculate frustum planes
             let mut frustum = [spark_math::Vec4::ZERO; 6];
             let m = view_proj.transpose();
-            frustum[0] = m.w_axis + m.x_axis; // Left
-            frustum[1] = m.w_axis - m.x_axis; // Right
-            frustum[2] = m.w_axis + m.y_axis; // Bottom
-            frustum[3] = m.w_axis - m.y_axis; // Top
-            frustum[4] = m.w_axis + m.z_axis; // Near
-            frustum[5] = m.w_axis - m.z_axis; // Far
+            frustum[0] = m.w_axis + m.x_axis;
+            frustum[1] = m.w_axis - m.x_axis;
+            frustum[2] = m.w_axis + m.y_axis;
+            frustum[3] = m.w_axis - m.y_axis;
+            frustum[4] = m.w_axis + m.z_axis;
+            frustum[5] = m.w_axis - m.z_axis;
 
-            // Normalize
             for plane in &mut frustum {
                 let len = spark_math::Vec3::new(plane.x, plane.y, plane.z).length();
                 *plane /= len;
@@ -965,10 +990,11 @@ impl Renderer {
 
             let ubo = GlobalUBO {
                 vp: view_proj,
-                lvp: light_view_proj,
+                lvp: [light_view_proj; 4], // TODO: Calculate actual CSM projs
                 inv_vp: view_proj.inverse(),
                 camera_pos,
                 frustum,
+                cascade_splits: [0.1, 0.2, 0.5, 1.0], // Normalized linear depth
             };
 
             {
@@ -1138,6 +1164,7 @@ impl Renderer {
             }
 
             if let Some(grid) = &self.grid_pass {
+                if self.enable_grid {
                  let global_ds = self.frames[self.current_frame].global_descriptor_set;
                  grid.record_commands(
                     &self.device.device,
@@ -1147,6 +1174,20 @@ impl Renderer {
                     self.gbuffer.hdr[self.current_frame].view,
                     self.gbuffer.depth[self.current_frame].view,
                 );
+                }
+            }
+
+            if let Some(volumetric) = &self.volumetric_pass {
+                if self.enable_volumetric {
+                let global_ds = self.frames[self.current_frame].global_descriptor_set;
+                volumetric.record_commands(
+                    &self.device.device,
+                    command_buffer,
+                    self.current_frame,
+                    global_ds,
+                    self.swapchain.extent,
+                );
+                }
             }
 
             let target_view = self.viewport_attachment.as_ref().map(|a| a.view);

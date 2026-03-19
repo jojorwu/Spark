@@ -4,6 +4,7 @@ layout(location = 0) out vec4 outColor;
 
 layout(binding = 0) uniform sampler2D hdrSampler;
 layout(binding = 1) uniform sampler2D bloomSampler;
+layout(binding = 2) uniform sampler2D fogSampler;
 
 layout(push_constant) uniform PushConstants {
     float exposure;
@@ -13,8 +14,9 @@ layout(push_constant) uniform PushConstants {
 void main() {
     vec3 hdrColor = texture(hdrSampler, inUV).rgb;
     vec3 bloomColor = texture(bloomSampler, inUV).rgb;
+    vec3 fogColor = texture(fogSampler, inUV).rgb;
 
-    vec3 result = (hdrColor + bloomColor) * push.exposure; // Exposure adjustment
+    vec3 result = (hdrColor + bloomColor + fogColor) * push.exposure; // Exposure adjustment
 
     // Reinhard tone mapping
     vec3 mapped = result / (result + vec3(1.0));

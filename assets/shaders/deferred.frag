@@ -6,10 +6,11 @@
 
 layout (set = 0, binding = 0) uniform GlobalUBO {
     mat4 viewProj;
-    mat4 lightViewProj;
+    mat4 lightViewProj[4];
     mat4 invViewProj;
     vec4 cameraPos;
     vec4 frustum[6];
+    vec4 cascadeSplits;
 } global;
 
 #if MSAA_SAMPLES > 1
@@ -24,10 +25,11 @@ layout (set = 1, input_attachment_index = 2, binding = 2) uniform subpassInput i
 layout (set = 1, input_attachment_index = 3, binding = 3) uniform subpassInput inputDepth;
 #endif
 
-layout (set = 1, binding = 4) uniform sampler2D shadowMap;
+layout (set = 1, binding = 4) uniform sampler2DArray shadowMap;
 layout (set = 1, binding = 7) uniform sampler2D ssaoTex;
 layout (set = 1, binding = 8) uniform samplerCube irradianceMap;
 layout (set = 1, binding = 9) uniform samplerCube specularMap;
+layout (set = 1, binding = 10) uniform sampler2D brdfLUT;
 
 struct Light {
     vec4 pos;
@@ -95,23 +97,28 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 }
 
 /**
- * Percentage-Closer Filtering (PCF) for soft shadows.
+ * Percentage-Closer Filtering (PCF) for soft shadows with Cascaded Shadow Maps.
  */
-float calculateShadow(vec3 worldPos) {
-    vec4 shadowCoord = global.lightViewProj * vec4(worldPos, 1.0);
+float calculateShadow(vec3 worldPos, float linearDepth) {
+    uint cascadeIdx = 0;
+    for (uint i = 0; i < 3; ++i) {
+        if (linearDepth > global.cascadeSplits[i]) {
+            cascadeIdx = i + 1;
+        }
+    }
+
+    vec4 shadowCoord = global.lightViewProj[cascadeIdx] * vec4(worldPos, 1.0);
     shadowCoord.xyz /= shadowCoord.w;
 
-    // Convert to [0, 1] range
     shadowCoord.xy = shadowCoord.xy * 0.5 + 0.5;
 
     float shadow = 0.0;
-    vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
+    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
     float bias = 0.005;
 
-    // 3x3 PCF Kernel
     for(int x = -1; x <= 1; ++x) {
         for(int y = -1; y <= 1; ++y) {
-            float pcfDepth = texture(shadowMap, shadowCoord.xy + vec2(x, y) * texelSize).r;
+            float pcfDepth = texture(shadowMap, vec3(shadowCoord.xy + vec2(x, y) * texelSize, cascadeIdx)).r;
             shadow += shadowCoord.z - bias > pcfDepth ? 0.5 : 1.0;
         }
     }
@@ -128,7 +135,7 @@ vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metalli
     F0 = mix(F0, albedo, metallic);
 
     vec3 Lo = vec3(0.0);
-    float shadow = calculateShadow(worldPos);
+    float shadow = calculateShadow(worldPos, depth);
 
     // Clustered Light Lookup
     // 16x9x24 grid
@@ -175,9 +182,10 @@ vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metalli
     vec3 irradiance = texture(irradianceMap, N).rgb;
     vec3 diffuse = irradiance * albedo;
 
-    // Specular IBL (simplified)
-    vec3 prefilteredColor = textureLod(specularMap, R, roughness * 5.0).rgb;
-    vec3 envSpecular = prefilteredColor * F;
+    const float MAX_REFLECTION_LOD = 4.0;
+    vec3 prefilteredColor = textureLod(specularMap, R, roughness * MAX_REFLECTION_LOD).rgb;
+    vec2 brdf = texture(brdfLUT, vec2(max(dot(N, V), 0.0), roughness)).rg;
+    vec3 envSpecular = prefilteredColor * (F * brdf.x + brdf.y);
 
     vec3 ambient = (kD * diffuse + envSpecular) * ssao;
     vec3 color = ambient + Lo;

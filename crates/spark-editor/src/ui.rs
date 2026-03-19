@@ -226,6 +226,9 @@ impl EditorUI {
                     ui.checkbox(&mut renderer.enable_shadows, "Shadows");
                     ui.checkbox(&mut renderer.enable_ssao, "SSAO");
                     ui.checkbox(&mut renderer.enable_taa, "TAA");
+                    ui.checkbox(&mut renderer.enable_volumetric, "Volumetric Fog");
+                    ui.checkbox(&mut renderer.enable_grid, "Ground Grid");
+                    ui.checkbox(&mut renderer.enable_ibl, "IBL");
                     ui.checkbox(&mut true, "Bloom (TODO)");
                 }
                 BottomTab::Statistics => {
