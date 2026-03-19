@@ -22,7 +22,7 @@ pub struct MeshComponent {
     pub index_count: u32,
     pub first_index: u32,
     pub vertex_offset: i32,
-    pub texture_id: Option<u32>,
+    pub texture_handle: Option<crate::resource::Handle<spark_renderer::vulkan::texture::Texture>>,
     pub material_index: Option<u32>,
     pub bounding_radius: f32,
 }
@@ -101,9 +101,11 @@ pub struct Scene {
     pub last_view_matrix: Mat4,
 }
 
+type TextureHandle = crate::resource::Handle<spark_renderer::vulkan::texture::Texture>;
+
 struct SceneDataCollector {
-    renderables: Vec<(Mat4, u32, u32, u32, i32, Option<u32>, Option<u32>, f32)>,
-    instanced: std::collections::HashMap<(u32, u32, i32, Option<u32>, Option<u32>, u32), Vec<Mat4>>,
+    renderables: Vec<(Mat4, u32, u32, u32, i32, Option<TextureHandle>, Option<u32>, f32)>,
+    instanced: std::collections::HashMap<(u32, u32, i32, Option<TextureHandle>, Option<u32>, u32), Vec<Mat4>>,
     lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>,
 }
 
@@ -235,8 +237,8 @@ impl Scene {
         &self,
         frustum: Option<&spark_math::Frustum>,
     ) -> (
-        Vec<(Mat4, u32, u32, u32, i32, Option<u32>, Option<u32>, f32)>,
-        Vec<(u32, u32, i32, Option<u32>, Option<u32>, f32, Vec<Mat4>)>,
+        Vec<(Mat4, u32, u32, u32, i32, Option<TextureHandle>, Option<u32>, f32)>,
+        Vec<(u32, u32, i32, Option<TextureHandle>, Option<u32>, f32, Vec<Mat4>)>,
         Mat4,
         Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>
     ) {
@@ -275,7 +277,7 @@ impl Scene {
                     };
                     if visible {
                         if mesh.material_index.is_some() {
-                            data.instanced.entry((mesh.index_count, mesh.first_index, mesh.vertex_offset, mesh.texture_id, mesh.material_index, (mesh.bounding_radius).to_bits())).or_default().push(node.global_transform);
+                            data.instanced.entry((mesh.index_count, mesh.first_index, mesh.vertex_offset, mesh.texture_handle, mesh.material_index, (mesh.bounding_radius).to_bits())).or_default().push(node.global_transform);
                         } else {
                             data.renderables.push((
                                 node.global_transform,
@@ -283,7 +285,7 @@ impl Scene {
                                 mesh.index_count,
                                 mesh.first_index,
                                 mesh.vertex_offset,
-                                mesh.texture_id,
+                                mesh.texture_handle,
                                 mesh.material_index,
                                 mesh.bounding_radius,
                             ));

@@ -91,9 +91,9 @@ impl Engine {
             WindowEvent::KeyboardInput { event: input_event, .. } => {
                 if let winit::keyboard::PhysicalKey::Code(code) = input_event.physical_key {
                     if input_event.state == winit::event::ElementState::Pressed {
-                        self.event_queue.push(crate::event::EngineEvent::KeyDown { key_code: code as u32 });
+                        self.event_queue.push(crate::event::EngineEvent::KeyDown { key: code });
                     } else {
-                        self.event_queue.push(crate::event::EngineEvent::KeyUp { key_code: code as u32 });
+                        self.event_queue.push(crate::event::EngineEvent::KeyUp { key: code });
                     }
                 }
             }

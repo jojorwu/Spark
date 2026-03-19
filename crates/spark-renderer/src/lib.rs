@@ -47,6 +47,7 @@ pub struct Renderer {
     pub taa_pass: Option<TAAPass>,
     pub grid_pass: Option<GridPass>,
     pub volumetric_pass: Option<VolumetricPass>,
+    pub render_passes: Vec<Box<dyn crate::passes::RenderPass>>,
     pub frames: [RenderFrame; MAX_FRAMES_IN_FLIGHT],
     pub pipeline_cache: vk::PipelineCache,
     current_frame: usize,
@@ -291,6 +292,7 @@ impl Renderer {
             taa_pass: None,
             grid_pass: None,
             volumetric_pass: None,
+            render_passes: Vec::new(),
             frames,
             pipeline_cache,
             current_frame: 0,
@@ -1513,11 +1515,15 @@ impl Renderer {
         [x / self.swapchain.extent.width as f32, y / self.swapchain.extent.height as f32]
     }
 
-    pub fn prepare_frame(
+    pub fn add_render_pass<P: crate::passes::RenderPass + 'static>(&mut self, pass: P) {
+        self.render_passes.push(Box::new(pass));
+    }
+
+    pub fn prepare_frame<T>(
         &mut self,
         view_matrix: spark_math::Mat4,
-        renderables: &[(spark_math::Mat4, u32, u32, u32, i32, Option<u32>, Option<u32>, f32)],
-        instanced: &[(u32, u32, i32, Option<u32>, Option<u32>, f32, Vec<spark_math::Mat4>)],
+        renderables: &[(spark_math::Mat4, u32, u32, u32, i32, Option<T>, Option<u32>, f32)],
+        instanced: &[(u32, u32, i32, Option<T>, Option<u32>, f32, Vec<spark_math::Mat4>)],
         lights: &[(spark_math::Vec3, spark_math::Vec3, f32)],
     ) -> u32 {
         self.scene_view_matrix_for_pos = view_matrix;
@@ -1635,10 +1641,17 @@ impl Renderer {
         // 4. Prepare Passes
         use crate::passes::RenderPass;
         let cf = self.current_frame;
+
+        // Pass objects like SSAO are being transitioned to the pass stack.
+        // For now, call both legacy hardcoded ones and the new dynamic ones.
         if let Some(ssao) = self.ssao_pass.as_ref() { if self.enable_ssao { ssao.prepare(self, cf); } }
         if let Some(taa) = self.taa_pass.as_ref() { if self.enable_taa { taa.prepare(self, cf); } }
         if let Some(vol) = self.volumetric_pass.as_ref() { if self.enable_volumetric { vol.prepare(self, cf); } }
         if let Some(cl) = self.clustered_pass.as_ref() { cl.prepare(self, cf); }
+
+        for pass in &self.render_passes {
+            pass.prepare(self, cf);
+        }
 
         total_objects
     }

@@ -257,7 +257,7 @@ impl EditorUI {
                         index_count: 0,
                         first_index: 0,
                         vertex_offset: 0,
-                        texture_id: None,
+                        texture_handle: None,
                         material_index: None,
                         bounding_radius: 1.0,
                     }));

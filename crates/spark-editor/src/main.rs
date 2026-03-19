@@ -149,7 +149,7 @@ fn main() {
             index_count: 3,
             first_index: 0,
             vertex_offset: 0,
-            texture_id: None,
+            texture_handle: None,
             material_index: Some(0),
             bounding_radius: 1.0,
         })],
