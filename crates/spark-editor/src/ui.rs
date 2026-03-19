@@ -244,38 +244,40 @@ impl EditorUI {
 
             ui.horizontal(|ui| {
                 if ui.button("Add Mesh").clicked() {
-                    let new_node = Node {
+                    let mut new_node = Node {
                         name: "New Mesh".to_string(),
                         local_transform: spark_math::Mat4::IDENTITY,
                         global_transform: spark_math::Mat4::IDENTITY,
                         parent: None,
                         children: Vec::new(),
-                        data: spark_core::scene::NodeData::Mesh {
-                            vertex_count: 0,
-                            index_count: 0,
-                            first_index: 0,
-                            vertex_offset: 0,
-                            texture_id: None,
-                            vertex_buffer_id: None,
-                            bounding_radius: 1.0,
-                        },
+                        components: Vec::new(),
                     };
+                    new_node.components.push(Box::new(spark_core::scene::MeshComponent {
+                        vertex_count: 0,
+                        index_count: 0,
+                        first_index: 0,
+                        vertex_offset: 0,
+                        texture_id: None,
+                        material_index: None,
+                        bounding_radius: 1.0,
+                    }));
                     scene.add_node(scene.root, new_node);
                 }
                 if ui.button("Add Light").clicked() {
-                    let new_node = Node {
+                    let mut new_node = Node {
                         name: "New Light".to_string(),
                         local_transform: spark_math::Mat4::IDENTITY,
                         global_transform: spark_math::Mat4::IDENTITY,
                         parent: None,
                         children: Vec::new(),
-                        data: spark_core::scene::NodeData::Light {
-                            light_type: spark_core::scene::LightType::Point,
-                            color: spark_math::Vec3::ONE,
-                            intensity: 1.0,
-                            range: 10.0,
-                        },
+                        components: Vec::new(),
                     };
+                    new_node.components.push(Box::new(spark_core::scene::LightComponent {
+                        light_type: spark_core::scene::LightType::Point,
+                        color: spark_math::Vec3::ONE,
+                        intensity: 1.0,
+                        range: 10.0,
+                    }));
                     scene.add_node(scene.root, new_node);
                 }
             });
@@ -366,46 +368,48 @@ impl EditorUI {
                     }
 
                     ui.separator();
-                    ui.label("Node Data");
-                    match &mut node.data {
-                        spark_core::scene::NodeData::Light { light_type: _, color, intensity, range } => {
-                            ui.label("Type: Light");
-                            ui.horizontal(|ui| {
-                                ui.label("Color:");
-                                ui.color_edit_button_rgb(color.as_mut());
+                    ui.label("Components");
+
+                    for component in &mut node.components {
+                        let any = component.as_any_mut();
+                        if let Some(light) = any.downcast_mut::<spark_core::scene::LightComponent>() {
+                            ui.collapsing("Light Component", |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Color:");
+                                    ui.color_edit_button_rgb(light.color.as_mut());
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Intensity:");
+                                    ui.add(egui::DragValue::new(&mut light.intensity).speed(0.1));
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Range:");
+                                    ui.add(egui::DragValue::new(&mut light.range).speed(0.1));
+                                });
                             });
-                            ui.horizontal(|ui| {
-                                ui.label("Intensity:");
-                                ui.add(egui::DragValue::new(intensity).speed(0.1));
+                        } else if let Some(mesh) = any.downcast_mut::<spark_core::scene::MeshComponent>() {
+                            ui.collapsing("Mesh Component", |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Radius:");
+                                    ui.add(egui::DragValue::new(&mut mesh.bounding_radius).speed(0.1));
+                                });
                             });
-                            ui.horizontal(|ui| {
-                                ui.label("Range:");
-                                ui.add(egui::DragValue::new(range).speed(0.1));
+                        } else if let Some(camera) = any.downcast_mut::<spark_core::scene::CameraComponent>() {
+                            ui.collapsing("Camera Component", |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("FOV:");
+                                    ui.add(egui::DragValue::new(&mut camera.fov).speed(1.0).clamp_range(1.0..=179.0));
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Near:");
+                                    ui.add(egui::DragValue::new(&mut camera.near).speed(0.01));
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Far:");
+                                    ui.add(egui::DragValue::new(&mut camera.far).speed(1.0));
+                                });
                             });
                         }
-                        spark_core::scene::NodeData::Mesh { bounding_radius, .. } => {
-                            ui.label("Type: Mesh");
-                            ui.horizontal(|ui| {
-                                ui.label("Radius:");
-                                ui.add(egui::DragValue::new(bounding_radius).speed(0.1));
-                            });
-                        }
-                        spark_core::scene::NodeData::Camera { fov, near, far } => {
-                            ui.label("Type: Camera");
-                            ui.horizontal(|ui| {
-                                ui.label("FOV:");
-                            ui.add(egui::DragValue::new(fov).speed(1.0).clamp_range(1.0..=179.0));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Near:");
-                                ui.add(egui::DragValue::new(near).speed(0.01));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Far:");
-                                ui.add(egui::DragValue::new(far).speed(1.0));
-                            });
-                        }
-                        _ => { ui.label("No data components"); }
                     }
 
                     ui.separator();

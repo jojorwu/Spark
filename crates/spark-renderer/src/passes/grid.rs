@@ -1,6 +1,22 @@
 use ash::vk;
 use crate::Renderer;
 use crate::pipeline::Pipeline;
+use super::RenderPass;
+
+impl RenderPass for GridPass {
+    fn update_descriptor_sets(&self, _renderer: &Renderer) {}
+    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
+        let global_ds = renderer.frames[current_frame].global_descriptor_set;
+        self.record_commands(
+            &renderer.device.device,
+            command_buffer,
+            renderer.swapchain.extent,
+            global_ds,
+            renderer.gbuffer.hdr[current_frame].view,
+            renderer.gbuffer.depth[current_frame].view,
+        );
+    }
+}
 
 pub struct GridPass {
     pub pipeline: vk::Pipeline,

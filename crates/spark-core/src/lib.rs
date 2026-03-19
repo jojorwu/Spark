@@ -4,6 +4,7 @@ pub mod plugin;
 pub mod resource;
 pub mod event;
 pub mod logger;
+pub mod systems;
 
 use winit::{
     event::{Event, WindowEvent},
@@ -18,6 +19,10 @@ use crate::event::EventQueue;
 use spark_renderer::Renderer;
 use spark_math::Vec4Swizzles;
 
+pub trait System {
+    fn update(&mut self, engine: &mut Engine, delta: f32);
+}
+
 pub struct Engine {
     pub window: winit::window::Window,
     pub event_loop: Option<EventLoop<()>>,
@@ -29,6 +34,7 @@ pub struct Engine {
     pub event_queue: EventQueue,
     pub last_frame_time: instant::Instant,
     pub current_fps: f32,
+    pub systems: Vec<Box<dyn System>>,
 }
 
 impl Engine {
@@ -60,7 +66,12 @@ impl Engine {
             event_queue,
             last_frame_time: instant::Instant::now(),
             current_fps: 0.0,
+            systems: Vec::new(),
         })
+    }
+
+    pub fn add_system<S: System + 'static>(&mut self, system: S) {
+        self.systems.push(Box::new(system));
     }
 
     pub fn run<F>(mut self, mut ui_callback: F)
@@ -114,8 +125,14 @@ impl Engine {
                     self.current_fps = 0.9 * self.current_fps + 0.1 * (1.0 / delta.max(0.001));
 
                     self.plugin_manager.update_plugins(&mut self.scene, delta);
-                    self.scene.update_all_transforms();
-                    self.resource_manager.upload_global_buffers(&mut self.renderer);
+
+                    // To avoid mutable borrow of self while iterating systems, we'd need to decoupling data
+                    // For now, move systems to local and iterate.
+                    let mut systems = std::mem::take(&mut self.systems);
+                    for system in &mut systems {
+                        system.update(&mut self, delta);
+                    }
+                    self.systems = systems;
 
                     let extent = self.renderer.get_extent();
                     let jitter = self.renderer.get_jitter();
@@ -164,7 +181,7 @@ impl Engine {
                                 index_count: *ic,
                                 first_index: *fi,
                                 vertex_offset: *vo,
-                                material_index: *vb_id,
+                                material_index: vb_id.unwrap_or(0),
                             });
                             indirect_commands.push(spark_renderer::ash::vk::DrawIndexedIndirectCommand {
                                 index_count: *ic,

@@ -8,6 +8,7 @@ spark-math = { path = "../spark-math", features = ["serde"] }
 spark-renderer = { path = "../spark-renderer" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+typetag = "0.2"
 winit.workspace = true
 log.workspace = true
 log-panics = "2.1"

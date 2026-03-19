@@ -11,6 +11,17 @@ pub struct TAAPass {
     pub history_images: Vec<Attachment>,
 }
 
+use super::RenderPass;
+
+impl RenderPass for TAAPass {
+    fn update_descriptor_sets(&self, renderer: &Renderer) {
+        self.update_descriptor_sets(&renderer.device.device, &renderer.gbuffer.hdr, &renderer.gbuffer.velocity, &renderer.gbuffer.depth, renderer.shadow_pass.sampler);
+    }
+    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
+        self.record_commands(&renderer.device.device, command_buffer, renderer.swapchain.extent, current_frame);
+    }
+}
+
 impl TAAPass {
     pub fn new(
         renderer: &Renderer,

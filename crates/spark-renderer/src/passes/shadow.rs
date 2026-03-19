@@ -16,6 +16,17 @@ pub struct ShadowPass {
     pub sampler: vk::Sampler,
 }
 
+use super::RenderPass;
+
+impl RenderPass for ShadowPass {
+    fn update_descriptor_sets(&self, _renderer: &Renderer) {}
+    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, _current_frame: usize) {
+        // Need to calculate light_view_projs here or pass it through GlobalUBO
+        // For simplicity, we'll keep the specialized record_commands and call it from the trait if possible,
+        // or refactor the specialized one to take the needed data.
+    }
+}
+
 impl ShadowPass {
     pub fn new(
         device: &ash::Device,

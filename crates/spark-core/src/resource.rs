@@ -137,7 +137,7 @@ impl ResourceManager {
         renderer: &spark_renderer::Renderer,
         parent_dir: &std::path::Path,
     ) {
-        use crate::scene::{Node, NodeData};
+        use crate::scene::{Node, MeshComponent, Component};
         use spark_math::{Mat4, Vec3, Quat, Vec4};
 
         let (translation, rotation, scale) = node.transform().decomposed();
@@ -147,7 +147,7 @@ impl ResourceManager {
             Vec3::from_array(translation),
         );
 
-        let mut data = NodeData::None;
+        let mut components: Vec<Box<dyn Component>> = Vec::new();
 
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
@@ -242,15 +242,16 @@ impl ResourceManager {
 
                 let bounding_radius = max_dist_sq.sqrt();
 
-                data = NodeData::Mesh {
+                let mesh_comp = MeshComponent {
                     vertex_count: positions.len() as u32,
                     index_count,
                     first_index: i_start,
                     vertex_offset: v_offset,
-                    texture_id: None, // repurposed via material index
-                    vertex_buffer_id: Some(mat_idx), // using this as material index for now
+                    texture_id: None,
+                    material_index: Some(mat_idx),
                     bounding_radius
                 };
+                components.push(Box::new(mesh_comp) as Box<dyn Component>);
                 self.needs_upload = true;
                 break;
             }
@@ -262,7 +263,7 @@ impl ResourceManager {
             global_transform: Mat4::IDENTITY,
             parent: None,
             children: Vec::new(),
-            data,
+            components,
         };
 
         let key = scene_tree.add_node(parent, spark_node);

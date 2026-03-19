@@ -7,29 +7,60 @@ new_key_type! {
     pub struct NodeKey;
 }
 
-#[derive(Serialize, Deserialize)]
-pub enum NodeData {
-    None,
-    Mesh {
-        vertex_count: u32,
-        index_count: u32,
-        first_index: u32,
-        vertex_offset: i32,
-        texture_id: Option<u32>,
-        vertex_buffer_id: Option<u32>,
-        bounding_radius: f32,
-    },
-    Camera {
-        fov: f32,
-        near: f32,
-        far: f32,
-    },
-    Light {
-        light_type: LightType,
-        color: spark_math::Vec3,
-        intensity: f32,
-        range: f32, // For point lights
-    },
+#[typetag::serde(tag = "type")]
+pub trait Component: Send + Sync {
+    fn on_init(&mut self, _node: NodeKey, _scene: &mut Scene) {}
+    fn on_update(&mut self, _node: NodeKey, _scene: &mut Scene, _delta: f32) {}
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+    fn clone_box(&self) -> Box<dyn Component>;
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct MeshComponent {
+    pub vertex_count: u32,
+    pub index_count: u32,
+    pub first_index: u32,
+    pub vertex_offset: i32,
+    pub texture_id: Option<u32>,
+    pub material_index: Option<u32>,
+    pub bounding_radius: f32,
+}
+
+#[typetag::serde]
+impl Component for MeshComponent {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn clone_box(&self) -> Box<dyn Component> { Box::new(self.clone()) }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CameraComponent {
+    pub fov: f32,
+    pub near: f32,
+    pub far: f32,
+}
+
+#[typetag::serde]
+impl Component for CameraComponent {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn clone_box(&self) -> Box<dyn Component> { Box::new(self.clone()) }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct LightComponent {
+    pub light_type: LightType,
+    pub color: spark_math::Vec3,
+    pub intensity: f32,
+    pub range: f32,
+}
+
+#[typetag::serde]
+impl Component for LightComponent {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn clone_box(&self) -> Box<dyn Component> { Box::new(self.clone()) }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -46,7 +77,20 @@ pub struct Node {
     pub global_transform: Mat4,
     pub parent: Option<NodeKey>,
     pub children: Vec<NodeKey>,
-    pub data: NodeData,
+    pub components: Vec<Box<dyn Component>>,
+}
+
+impl Clone for Node {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            local_transform: self.local_transform,
+            global_transform: self.global_transform,
+            parent: self.parent,
+            children: self.children.clone(),
+            components: self.components.iter().map(|c| c.clone_box()).collect(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -59,7 +103,7 @@ pub struct Scene {
 
 struct SceneDataCollector {
     renderables: Vec<(Mat4, u32, u32, u32, i32, Option<u32>, Option<u32>, f32)>,
-    instanced: std::collections::HashMap<(u32, u32, i32, Option<u32>, u32, u32), Vec<Mat4>>,
+    instanced: std::collections::HashMap<(u32, u32, i32, Option<u32>, Option<u32>, u32), Vec<Mat4>>,
     lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>,
 }
 
@@ -83,7 +127,7 @@ impl Scene {
             global_transform: Mat4::IDENTITY,
             parent: None,
             children: Vec::new(),
-            data: NodeData::None,
+            components: Vec::new(),
         });
 
         Self { nodes, root, last_view_matrix: Mat4::IDENTITY }
@@ -118,8 +162,10 @@ impl Scene {
             node.global_transform = parent_global * node.local_transform;
             let current_global = node.global_transform;
 
-            if let NodeData::Camera { .. } = node.data {
-                self.last_view_matrix = current_global.inverse();
+            for component in &node.components {
+                if component.as_any().is::<CameraComponent>() {
+                    self.last_view_matrix = current_global.inverse();
+                }
             }
 
             // To avoid cloning, we'd need an iterative approach with a stack or a more complex borrow
@@ -157,12 +203,19 @@ impl Scene {
         let mut min_t = f32::MAX;
 
         for (key, node) in &self.nodes {
-            let radius = match &node.data {
-                NodeData::Mesh { bounding_radius, .. } => *bounding_radius,
-                NodeData::Light { .. } => 0.5,
-                NodeData::Camera { .. } => 0.5,
-                _ => continue,
-            };
+            let mut radius = 0.5f32;
+            let mut has_bounds = false;
+
+            for component in &node.components {
+                if let Some(mesh) = component.as_any().downcast_ref::<MeshComponent>() {
+                    radius = mesh.bounding_radius;
+                    has_bounds = true;
+                } else if component.as_any().is::<LightComponent>() || component.as_any().is::<CameraComponent>() {
+                    has_bounds = true;
+                }
+            }
+
+            if !has_bounds { continue; }
 
             let center = node.global_transform.w_axis.xyz();
             if let Some(t) = ray.intersect_sphere(center, radius) {
@@ -183,7 +236,7 @@ impl Scene {
         frustum: Option<&spark_math::Frustum>,
     ) -> (
         Vec<(Mat4, u32, u32, u32, i32, Option<u32>, Option<u32>, f32)>,
-        Vec<(u32, u32, i32, Option<u32>, u32, f32, Vec<Mat4>)>,
+        Vec<(u32, u32, i32, Option<u32>, Option<u32>, f32, Vec<Mat4>)>,
         Mat4,
         Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>
     ) {
@@ -211,43 +264,34 @@ impl Scene {
         };
 
         if let Some(node) = self.nodes.get(node_key) {
-            match &node.data {
-                NodeData::Mesh {
-                    vertex_count,
-                    index_count,
-                    first_index,
-                    vertex_offset,
-                    texture_id,
-                    vertex_buffer_id,
-                    bounding_radius,
-                } => {
+            for component in &node.components {
+                let any = component.as_any();
+                if let Some(mesh) = any.downcast_ref::<MeshComponent>() {
                     let visible = if let Some(f) = frustum {
                         let translation = node.global_transform.w_axis.xyz();
-                        f.intersects_sphere(translation, *bounding_radius)
+                        f.intersects_sphere(translation, mesh.bounding_radius)
                     } else {
                         true
                     };
                     if visible {
-                        if let Some(vb_id) = vertex_buffer_id {
-                            data.instanced.entry((*index_count, *first_index, *vertex_offset, *texture_id, *vb_id, (*bounding_radius).to_bits())).or_default().push(node.global_transform);
+                        if mesh.material_index.is_some() {
+                            data.instanced.entry((mesh.index_count, mesh.first_index, mesh.vertex_offset, mesh.texture_id, mesh.material_index, (mesh.bounding_radius).to_bits())).or_default().push(node.global_transform);
                         } else {
                             data.renderables.push((
                                 node.global_transform,
-                                *vertex_count,
-                                *index_count,
-                                *first_index,
-                                *vertex_offset,
-                                *texture_id,
-                                *vertex_buffer_id,
-                                *bounding_radius,
+                                mesh.vertex_count,
+                                mesh.index_count,
+                                mesh.first_index,
+                                mesh.vertex_offset,
+                                mesh.texture_id,
+                                mesh.material_index,
+                                mesh.bounding_radius,
                             ));
                         }
                     }
+                } else if let Some(light) = any.downcast_ref::<LightComponent>() {
+                    data.lights.push((node.global_transform, light.light_type, light.color, light.intensity, light.range));
                 }
-                NodeData::Light { light_type, color, intensity, range } => {
-                    data.lights.push((node.global_transform, *light_type, *color, *intensity, *range));
-                }
-                _ => {}
             }
 
             if !node.children.is_empty() {

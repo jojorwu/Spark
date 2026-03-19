@@ -1,6 +1,18 @@
 use ash::vk;
 use crate::resource::{Attachment, Buffer};
 use crate::{Renderer, MAX_FRAMES_IN_FLIGHT};
+use super::RenderPass;
+
+impl RenderPass for DeferredPass {
+    fn update_descriptor_sets(&self, renderer: &Renderer) {
+        renderer.update_deferred_descriptor_sets();
+    }
+
+    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
+        // This pass is split into G-Buffer and Lighting, so it doesn't fit perfectly into a single record_commands
+        // Unless we call both here.
+    }
+}
 
 pub struct DeferredPass {
     pub pipeline: Option<vk::Pipeline>,

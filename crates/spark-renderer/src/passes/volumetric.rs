@@ -10,6 +10,18 @@ pub struct VolumetricPass {
     pub output_images: Vec<Attachment>,
 }
 
+use super::RenderPass;
+
+impl RenderPass for VolumetricPass {
+    fn update_descriptor_sets(&self, renderer: &Renderer) {
+        self.update_descriptor_sets(renderer);
+    }
+    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
+        let global_ds = renderer.frames[current_frame].global_descriptor_set;
+        self.record_commands(&renderer.device.device, command_buffer, current_frame, global_ds, renderer.swapchain.extent);
+    }
+}
+
 impl VolumetricPass {
     pub fn new(
         renderer: &Renderer,

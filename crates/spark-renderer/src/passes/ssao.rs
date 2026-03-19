@@ -19,6 +19,42 @@ pub struct SSAOPass {
     pub kernel_samples: [Vec4; 64],
 }
 
+use super::RenderPass;
+
+impl RenderPass for SSAOPass {
+    fn update_descriptor_sets(&self, renderer: &Renderer) {
+        self.update_descriptor_sets(
+            &renderer.device.device,
+            &renderer.gbuffer.normal,
+            &renderer.gbuffer.depth,
+            &renderer.gbuffer.ssao,
+            renderer.shadow_pass.sampler,
+        );
+    }
+
+    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
+        let view = renderer.scene_view_matrix_for_pos;
+        let projection = spark_math::Mat4::perspective_rh(
+            45.0f32.to_radians(),
+            renderer.swapchain.extent.width as f32 / renderer.swapchain.extent.height as f32,
+            0.1,
+            100.0,
+        );
+        self.record_commands(
+            renderer,
+            command_buffer,
+            renderer.swapchain.extent,
+            current_frame,
+            renderer.gbuffer.ssao[current_frame].view,
+            renderer.gbuffer.ssao[current_frame].image,
+            renderer.gbuffer.ssao_blur[current_frame].view,
+            renderer.gbuffer.ssao_blur[current_frame].image,
+            projection,
+            view,
+        );
+    }
+}
+
 impl SSAOPass {
     pub fn new(
         renderer: &Renderer,

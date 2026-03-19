@@ -46,6 +46,9 @@ fn main() {
         Some((&ui_vert_spirv, &ui_frag_spirv))
     ).expect("Failed to initialize engine");
 
+    engine.add_system(spark_core::systems::HierarchySystem);
+    engine.add_system(spark_core::systems::ResourceSystem);
+
     let vert_spirv = compiler.compile("assets/shaders/gbuffer.vert", shaderc::ShaderKind::Vertex);
     let frag_spirv = compiler.compile("assets/shaders/gbuffer.frag", shaderc::ShaderKind::Fragment);
 
@@ -133,7 +136,7 @@ fn main() {
     engine.renderer.upload_to_buffer(&vb, &vertices);
     engine.renderer.add_vertex_buffer(vb);
 
-    use spark_core::scene::{Node, NodeData};
+    use spark_core::scene::{Node, MeshComponent, CameraComponent};
 
     let triangle_node = Node {
         name: "MyTriangle".to_string(),
@@ -141,15 +144,15 @@ fn main() {
         global_transform: Mat4::IDENTITY,
         parent: None,
         children: Vec::new(),
-        data: NodeData::Mesh {
+        components: vec![Box::new(MeshComponent {
             vertex_count: 3,
             index_count: 3,
             first_index: 0,
             vertex_offset: 0,
             texture_id: None,
-            vertex_buffer_id: Some(0),
+            material_index: Some(0),
             bounding_radius: 1.0,
-        },
+        })],
     };
 
     engine.scene.add_node(engine.scene.root, triangle_node);
@@ -160,7 +163,7 @@ fn main() {
         global_transform: Mat4::IDENTITY,
         parent: None,
         children: Vec::new(),
-        data: NodeData::Camera { fov: 45.0, near: 0.1, far: 100.0 },
+        components: vec![Box::new(CameraComponent { fov: 45.0, near: 0.1, far: 100.0 })],
     };
 
     engine.scene.add_node(engine.scene.root, _camera_node);
