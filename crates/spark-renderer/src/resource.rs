@@ -163,7 +163,7 @@ impl Attachment {
         format: vk::Format,
         usage: vk::ImageUsageFlags,
         samples: vk::SampleCountFlags,
-    ) -> Self {
+    ) -> Result<Self, crate::error::RendererError> {
 
         let (img, allocation) = device.create_image(&crate::vulkan::device::ImageCreateParams {
             width,
@@ -174,24 +174,15 @@ impl Attachment {
             usage,
             properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
             samples,
-        });
-        let aspect = if format == vk::Format::D32_SFLOAT
-            || format == vk::Format::D32_SFLOAT_S8_UINT
-            || format == vk::Format::D24_UNORM_S8_UINT
-            || format == vk::Format::D16_UNORM
-        {
-            vk::ImageAspectFlags::DEPTH
-        } else {
-            vk::ImageAspectFlags::COLOR
-        };
+        })?;
         let view = device.create_image_view(img, format, 1);
-        Self {
+        Ok(Self {
             image: img,
             allocation: Arc::new(Mutex::new(Some(allocation))),
             view,
             extent: vk::Extent2D { width, height },
             version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        }
+        })
     }
 }
 
@@ -200,7 +191,7 @@ pub fn create_frame_attachments(
     extent: vk::Extent2D,
     format: vk::Format,
     msaa: vk::SampleCountFlags,
-) -> Vec<Attachment> {
+) -> Result<Vec<Attachment>, crate::error::RendererError> {
     (0..MAX_FRAMES_IN_FLIGHT)
         .map(|_| {
             Attachment::create_image_resource(

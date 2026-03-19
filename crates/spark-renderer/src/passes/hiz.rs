@@ -68,7 +68,7 @@ impl HiZPass {
         shader_code: &[u32],
         width: u32,
         height: u32,
-    ) -> Self {
+    ) -> Result<Self, crate::error::RendererError> {
         let mip_levels = (width.max(height) as f32).log2().floor() as u32 + 1;
 
         let (image, allocation) = device.create_image(
@@ -82,7 +82,7 @@ impl HiZPass {
                 properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
                 samples: vk::SampleCountFlags::TYPE_1,
             }
-        );
+        )?;
 
         let pyramid_view = device.create_image_view(image, vk::Format::R32_SFLOAT, mip_levels);
 
@@ -119,7 +119,7 @@ impl HiZPass {
             device.device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
                 None,
-            ).unwrap()
+            )?
         };
 
         let layout = unsafe {
@@ -132,14 +132,14 @@ impl HiZPass {
                         size: 8,
                     }]),
                 None,
-            ).unwrap()
+            )?
         };
 
         let shader_module = unsafe {
             device.device.create_shader_module(
                 &vk::ShaderModuleCreateInfo::default().code(shader_code),
                 None,
-            ).unwrap()
+            )?
         };
 
         let pipeline = unsafe {
@@ -152,7 +152,7 @@ impl HiZPass {
                         .name(c"main"))
                     .layout(layout)],
                 None,
-            ).unwrap()[0]
+            ).map_err(|e| e.1)?[0]
         };
 
         unsafe { device.device.destroy_shader_module(shader_module, None); }
@@ -165,11 +165,11 @@ impl HiZPass {
                     &vk::DescriptorSetAllocateInfo::default()
                         .descriptor_pool(descriptor_pool)
                         .set_layouts(&layouts),
-                ).unwrap()
+                )?
             };
         }
 
-        Self {
+        Ok(Self {
             pipeline,
             layout,
             descriptor_set_layout,
@@ -181,7 +181,7 @@ impl HiZPass {
             width,
             height,
             mip_levels,
-        }
+        })
     }
 
     pub fn record_commands_impl(

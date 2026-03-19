@@ -382,7 +382,7 @@ impl PostProcessPass {
                 vk::Format::R16G16B16A16_SFLOAT,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
                 vk::SampleCountFlags::TYPE_1,
-            );
+            )?;
             bloom_mips.push(att);
         }
 

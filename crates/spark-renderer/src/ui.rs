@@ -434,7 +434,7 @@ impl EguiRenderer {
 
                 let texture = crate::vulkan::texture::Texture {
                     image,
-                    allocation,
+                    allocation: Some(allocation),
                     view,
                     sampler,
                     mip_levels: 1,

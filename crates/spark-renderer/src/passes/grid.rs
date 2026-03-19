@@ -45,13 +45,13 @@ impl GridPass {
         frag_spirv: &[u32],
         global_ds_layout: vk::DescriptorSetLayout,
         format: vk::Format,
-    ) -> Self {
+    ) -> Result<Self, crate::error::RendererError> {
         let layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
                     .set_layouts(&[global_ds_layout]),
                 None,
-            ).unwrap()
+            )?
         };
 
         let vert_module = Pipeline::create_shader_module(device, vert_spirv);
@@ -109,7 +109,7 @@ impl GridPass {
             .push_next(&mut rendering_info);
 
         let pipeline = unsafe {
-            device.create_graphics_pipelines(pipeline_cache, &[info], None).unwrap()[0]
+            device.create_graphics_pipelines(pipeline_cache, &[info], None).map_err(|e| e.1)?[0]
         };
 
         unsafe {
@@ -117,7 +117,7 @@ impl GridPass {
             device.destroy_shader_module(frag_module, None);
         }
 
-        Self { pipeline, layout }
+        Ok(Self { pipeline, layout })
     }
 
     pub fn record_commands_impl(

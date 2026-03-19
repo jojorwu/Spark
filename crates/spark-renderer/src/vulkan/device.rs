@@ -134,13 +134,13 @@ impl VulkanDevice {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         properties: vk::MemoryPropertyFlags,
-    ) -> Buffer {
+    ) -> Result<Buffer, RendererError> {
         let buffer_info = vk::BufferCreateInfo::default()
             .size(size)
             .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-        let handle = unsafe { self.device.create_buffer(&buffer_info, None).unwrap() };
+        let handle = unsafe { self.device.create_buffer(&buffer_info, None)? };
         let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(handle) };
 
         let location = if properties.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
@@ -155,10 +155,10 @@ impl VulkanDevice {
             location,
             linear: true,
             allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        }).unwrap();
+        }).map_err(|_| RendererError::NoSuitableDevice)?;
 
         unsafe {
-            self.device.bind_buffer_memory(handle, allocation.memory(), allocation.offset()).unwrap();
+            self.device.bind_buffer_memory(handle, allocation.memory(), allocation.offset())?;
         }
 
         let bda_info = vk::BufferDeviceAddressInfo::default().buffer(handle);
@@ -170,20 +170,20 @@ impl VulkanDevice {
 
         let ptr = allocation.mapped_ptr().map(|p| p.as_ptr()).unwrap_or(std::ptr::null_mut());
 
-        Buffer {
+        Ok(Buffer {
             handle,
             allocation: Arc::new(Mutex::new(Some(allocation))),
             size,
             ptr,
             address,
             version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        }
+        })
     }
 
     pub fn create_image(
         &self,
         params: &ImageCreateParams,
-    ) -> (vk::Image, gpu_allocator::vulkan::Allocation) {
+    ) -> Result<(vk::Image, gpu_allocator::vulkan::Allocation), RendererError> {
         let i = unsafe {
             self.device
                 .create_image(
@@ -203,8 +203,7 @@ impl VulkanDevice {
                         .samples(params.samples)
                         .sharing_mode(vk::SharingMode::EXCLUSIVE),
                     None,
-                )
-                .unwrap()
+                )?
         };
         let reqs = unsafe { self.device.get_image_memory_requirements(i) };
 
@@ -220,12 +219,12 @@ impl VulkanDevice {
             location,
             linear: false,
             allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        }).unwrap();
+        }).map_err(|_| RendererError::NoSuitableDevice)?;
 
         unsafe {
-            self.device.bind_image_memory(i, allocation.memory(), allocation.offset()).unwrap();
+            self.device.bind_image_memory(i, allocation.memory(), allocation.offset())?;
         }
-        (i, allocation)
+        Ok((i, allocation))
     }
 
     pub fn create_image_view(&self, image: vk::Image, format: vk::Format, mip_levels: u32) -> vk::ImageView {

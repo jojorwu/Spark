@@ -88,7 +88,7 @@ impl TAAPass {
                     vk::SampleCountFlags::TYPE_1,
                 )
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         let bindings = [
             vk::DescriptorSetLayoutBinding::default().binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::FRAGMENT),

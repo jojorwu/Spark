@@ -63,20 +63,20 @@ impl CullingPass {
         _descriptor_pool: vk::DescriptorPool,
         shader_code: &[u32],
         global_ub_layout: vk::DescriptorSetLayout,
-    ) -> Self {
+    ) -> Result<Self, crate::error::RendererError> {
         let layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
                     .set_layouts(&[global_ub_layout]),
                 None,
-            ).unwrap()
+            )?
         };
 
         let shader_module = unsafe {
             device.create_shader_module(
                 &vk::ShaderModuleCreateInfo::default().code(shader_code),
                 None,
-            ).unwrap()
+            )?
         };
 
         let entry_point = std::ffi::CString::new("main").unwrap();
@@ -92,15 +92,15 @@ impl CullingPass {
                     .stage(stage)
                     .layout(layout)],
                 None,
-            ).unwrap()[0]
+            ).map_err(|e| e.1)?[0]
         };
 
         unsafe { device.destroy_shader_module(shader_module, None); }
 
-        Self {
+        Ok(Self {
             pipeline,
             layout,
-        }
+        })
     }
 
     pub fn record_commands_impl(

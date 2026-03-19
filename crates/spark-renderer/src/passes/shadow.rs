@@ -343,7 +343,7 @@ impl ShadowPass {
                 );
 
                 if let Some(ref indirect_buffer) = frame.indirect_commands_buffer {
-                    if let (Some(ref vb), Some(ref ib)) = (renderer.global_vertex_buffer.as_ref(), renderer.global_index_buffer.as_ref()) {
+                    if let (Some(vb), Some(ib)) = (renderer.global_vertex_buffer.as_ref(), renderer.global_index_buffer.as_ref()) {
                         device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
                         device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
 

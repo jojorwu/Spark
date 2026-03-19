@@ -121,8 +121,9 @@ impl RenderPass for SSAOPass {
             renderer.device.device.destroy_sampler(self.noise_texture.sampler, None);
             renderer.device.device.destroy_image_view(self.noise_texture.view, None);
             renderer.device.device.destroy_image(self.noise_texture.image, None);
-            let alloc = std::mem::replace(&mut self.noise_texture.allocation, std::mem::zeroed());
-            renderer.device.allocator.lock().unwrap().free(alloc).unwrap();
+            if let Some(alloc) = self.noise_texture.allocation.take() {
+                renderer.device.allocator.lock().unwrap().free(alloc).unwrap();
+            }
         }
     }
 }
@@ -229,13 +230,13 @@ impl SSAOPass {
                 vk::Format::R8_UNORM,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
                 vk::SampleCountFlags::TYPE_1,
-            ));
+            )?);
             ssao_blur_images.push(Attachment::create_image_resource(
                 &renderer.device, extent.width, extent.height,
                 vk::Format::R8_UNORM,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
                 vk::SampleCountFlags::TYPE_1,
-            ));
+            )?);
         }
 
         Ok(Self {

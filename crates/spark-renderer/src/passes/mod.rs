@@ -20,31 +20,35 @@ pub struct RenderContext<'a> {
     pub image_index: u32,
 }
 
+/// A trait representing a modular rendering pass.
 pub trait RenderPass: Send + Sync {
+    /// Returns the unique name of the rendering pass.
     fn name(&self) -> &str;
 
+    /// Returns true if the pass is currently enabled and should be executed.
     fn is_enabled(&self, _renderer: &Renderer) -> bool {
         true
     }
 
-    /// Per-frame resource updates (e.g., uploading UBOs, updating dynamic descriptor sets)
+    /// Per-frame resource updates (e.g., uploading UBOs, updating dynamic descriptor sets).
     fn prepare(&self, _renderer: &Renderer, _current_frame: usize) {}
 
-    /// Initial or global descriptor set updates
+    /// Performs initial or global descriptor set updates for the pass.
     fn update_descriptor_sets(&self, _renderer: &Renderer) {}
 
+    /// Records Vulkan commands for this pass into the provided command buffer.
     fn record_commands(&self, ctx: &RenderContext);
 
-    /// Get a specific resource view from the pass (e.g., "output", "pyramid", "shadow_map")
+    /// Retrieves a specific image resource view from the pass for cross-pass communication.
     fn get_resource_view(&self, _name: &str, _frame_index: usize) -> Option<vk::ImageView> {
         None
     }
 
-    /// Get a specific resource buffer from the pass (e.g., "light_grid", "index_list")
+    /// Retrieves a specific buffer resource from the pass for cross-pass communication.
     fn get_resource_buffer(&self, _name: &str) -> Option<crate::resource::Buffer> {
         None
     }
 
-    /// Optional cleanup for resources not managed by the pass itself
+    /// Cleans up resources managed by this pass.
     fn destroy(&mut self, _renderer: &Renderer) {}
 }

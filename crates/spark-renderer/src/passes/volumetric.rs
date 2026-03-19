@@ -64,7 +64,7 @@ impl VolumetricPass {
     pub fn new(
         renderer: &Renderer,
         shader_code: &[u32],
-    ) -> Self {
+    ) -> Result<Self, crate::error::RendererError> {
         let device = &renderer.device.device;
         let extent = renderer.get_extent();
 
@@ -78,14 +78,14 @@ impl VolumetricPass {
             device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
                 None,
-            ).unwrap()
+            )?
         };
 
         let layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default().set_layouts(&[renderer.global_descriptor_set_layout, ds_layout]),
                 None,
-            ).unwrap()
+            )?
         };
 
         let mut output_images = Vec::new();
@@ -95,28 +95,28 @@ impl VolumetricPass {
                 vk::Format::R16G16B16A16_SFLOAT,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
                 vk::SampleCountFlags::TYPE_1,
-            ));
+            )?);
         }
 
         let shader_module = unsafe {
-            device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(shader_code), None).unwrap()
+            device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(shader_code), None)?
         };
         let entry = std::ffi::CString::new("main").unwrap();
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE).module(shader_module).name(&entry);
 
         let pipeline = unsafe {
-            device.create_compute_pipelines(vk::PipelineCache::null(), &[vk::ComputePipelineCreateInfo::default().stage(stage).layout(layout)], None).unwrap()[0]
+            device.create_compute_pipelines(vk::PipelineCache::null(), &[vk::ComputePipelineCreateInfo::default().stage(stage).layout(layout)], None).map_err(|e| e.1)?[0]
         };
 
         unsafe { device.destroy_shader_module(shader_module, None); }
 
         let layouts = vec![ds_layout; crate::MAX_FRAMES_IN_FLIGHT];
         let descriptor_sets = unsafe {
-            device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(renderer.descriptor_pool).set_layouts(&layouts)).unwrap()
+            device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(renderer.descriptor_pool).set_layouts(&layouts))?
         };
 
-        Self { pipeline, layout, descriptor_set_layout: ds_layout, descriptor_sets, output_images }
+        Ok(Self { pipeline, layout, descriptor_set_layout: ds_layout, descriptor_sets, output_images })
     }
 
     pub fn update_descriptor_sets(&self, renderer: &Renderer) {

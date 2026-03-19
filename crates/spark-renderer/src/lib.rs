@@ -19,7 +19,8 @@ pub use ash;
 use ash::vk;
 use winit::window::Window;
 
-/// The main renderer of the Spark Engine.
+/// The main renderer of the Spark Engine, responsible for managing the Vulkan context,
+/// swapchain, and executing the rendering pipeline through a modular pass system.
 pub struct Renderer {
     pub context: VulkanContext,
     pub device: VulkanDevice,
@@ -118,7 +119,7 @@ impl Renderer {
             swapchain.extent,
             device.msaa_samples,
             device.depth_format,
-        );
+        )?;
 
         let common_sampler = unsafe {
             device.device.create_sampler(
@@ -386,7 +387,7 @@ impl Renderer {
         self.ensure_global_descriptor_set();
     }
 
-    pub fn update_pass_descriptors_if_needed(&mut self, current_frame: usize) {
+    pub fn update_pass_descriptors_if_needed(&mut self, _current_frame: usize) {
         // Implement logic to only update when versions change
         // For now, this is a placeholder for the more granular per-resource tracking
     }
@@ -623,7 +624,7 @@ impl Renderer {
             sz,
             vk::BufferUsageFlags::VERTEX_BUFFER,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        );
+        ).expect("Failed to create instance buffer");
 
         let frame = &mut self.frames[frame_idx];
         if idx < frame.instance_pool.len() {
@@ -795,7 +796,7 @@ impl Renderer {
             format,
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC,
             vk::SampleCountFlags::TYPE_1,
-        );
+        ).expect("Failed to create viewport attachment");
 
         self.viewport_attachment = Some(attachment);
     }
@@ -818,7 +819,7 @@ impl Renderer {
                 self.swapchain.extent,
                 self.device.msaa_samples,
                 self.device.depth_format,
-            );
+            )?;
             self.update_all_descriptor_sets();
         }
         Ok(())
@@ -910,7 +911,7 @@ impl Renderer {
 
         Texture {
             image: i,
-            allocation: m,
+            allocation: Some(m),
             view: v,
             sampler: s,
             mip_levels: mip,
@@ -918,13 +919,15 @@ impl Renderer {
         }
     }
 
-    pub fn destroy_texture(&mut self, t: Texture) {
+    pub fn destroy_texture(&mut self, mut t: Texture) {
         self.texture_descriptor_sets.remove(&t.view);
         unsafe {
             self.device.device.destroy_sampler(t.sampler, None);
             self.device.device.destroy_image_view(t.view, None);
             self.device.device.destroy_image(t.image, None);
-            self.device.allocator.lock().unwrap().free(t.allocation).unwrap();
+            if let Some(alloc) = t.allocation.take() {
+                self.device.allocator.lock().unwrap().free(alloc).unwrap();
+            }
         }
     }
 
@@ -932,7 +935,7 @@ impl Renderer {
         &self,
         params: &crate::vulkan::device::ImageCreateParams,
     ) -> (vk::Image, gpu_allocator::vulkan::Allocation) {
-        self.device.create_image(params)
+        self.device.create_image(params).expect("Failed to create image")
     }
 
     pub fn create_texture_sampler(&self, mip: u32) -> vk::Sampler {
@@ -1250,7 +1253,7 @@ impl Renderer {
         usage: vk::BufferUsageFlags,
         properties: vk::MemoryPropertyFlags,
     ) -> Buffer {
-        self.device.create_buffer(sz, usage, properties)
+        self.device.create_buffer(sz, usage, properties).expect("Failed to create buffer")
     }
     pub fn destroy_buffer(&self, buffer: Buffer) {
         self.device.destroy_buffer(buffer);

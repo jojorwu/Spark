@@ -61,7 +61,7 @@ fn main() {
         &hiz_spirv,
         engine.renderer.get_extent().width,
         engine.renderer.get_extent().height,
-    );
+    ).expect("Failed to create HiZ pass");
     engine.renderer.set_hiz_view(hiz_pass.pyramid_view);
 
     let clustered_pass = spark_renderer::passes::clustered::ClusteredPass::new(
@@ -75,7 +75,7 @@ fn main() {
         engine.renderer.descriptor_pool,
         &culling_spirv,
         engine.renderer.global_descriptor_set_layout,
-    );
+    ).expect("Failed to create culling pass");
 
     let mut shadow_pass = spark_renderer::passes::shadow::ShadowPass::new(
         &engine.renderer.device
@@ -141,7 +141,7 @@ fn main() {
         &compiler.compile("assets/shaders/grid.frag", shaderc::ShaderKind::Fragment),
         engine.renderer.global_descriptor_set_layout,
         ash::vk::Format::R16G16B16A16_SFLOAT,
-    );
+    ).expect("Failed to create grid pass");
 
     let taa_pass = spark_renderer::passes::taa::TAAPass::new(
         &engine.renderer,
@@ -152,7 +152,7 @@ fn main() {
     let volumetric_pass = spark_renderer::passes::volumetric::VolumetricPass::new(
         &engine.renderer,
         &compiler.compile("assets/shaders/volumetric.comp", shaderc::ShaderKind::Compute),
-    );
+    ).expect("Failed to create volumetric pass");
 
     let mut post_process_pass = spark_renderer::passes::post_process::PostProcessPass::new(
         &engine.renderer,
