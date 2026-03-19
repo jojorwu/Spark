@@ -42,6 +42,15 @@ pub struct EditorUI {
     pub camera_pos: spark_math::Vec3,
     pub camera_rot: spark_math::Vec2, // Yaw, Pitch
     pub logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    pub active_bottom_tab: BottomTab,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum BottomTab {
+    Console,
+    Assets,
+    Settings,
+    Statistics,
 }
 
 impl EditorUI {
@@ -68,6 +77,7 @@ impl EditorUI {
             camera_pos: spark_math::Vec3::new(0.0, 2.0, 10.0),
             camera_rot: spark_math::Vec2::new(-90.0f32.to_radians(), 0.0),
             logs,
+            active_bottom_tab: BottomTab::Console,
         }
     }
 
@@ -139,21 +149,91 @@ impl EditorUI {
                     }
                 });
             });
+
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                ui.label("Tools:");
+                ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Translate, "⬈ Translate");
+                ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Rotate, "⟲ Rotate");
+                ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Scale, "⤢ Scale");
+
+                ui.separator();
+
+                if ui.button("⟲ Undo").clicked() {
+                    if let Some(mut cmd) = self.undo_stack.pop() {
+                        cmd.undo(scene);
+                        self.redo_stack.push(cmd);
+                    }
+                }
+                if ui.button("⟳ Redo").clicked() {
+                    if let Some(mut cmd) = self.redo_stack.pop() {
+                        cmd.execute(scene);
+                        self.undo_stack.push(cmd);
+                    }
+                }
+            });
         });
 
         egui::TopBottomPanel::bottom("bottom_panel").show(&self.egui_ctx, |ui| {
             ui.horizontal(|ui| {
-                let _ = ui.selectable_label(true, "Console");
-                let _ = ui.selectable_label(false, "Assets");
+                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Console, "Console");
+                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Assets, "Assets");
+                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Settings, "Settings");
+                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Statistics, "Statistics");
             });
             ui.separator();
 
-            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                let logs = self.logs.lock().unwrap();
-                for log in logs.iter() {
-                    ui.label(log);
+            match self.active_bottom_tab {
+                BottomTab::Console => {
+                    egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+                        let logs = self.logs.lock().unwrap();
+                        for log in logs.iter() {
+                            ui.label(log);
+                        }
+                    });
                 }
-            });
+                BottomTab::Assets => {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for entry in walkdir::WalkDir::new("assets")
+                            .into_iter()
+                            .filter_map(|e| e.ok()) {
+                            let path = entry.path();
+                            if path.is_file() {
+                                let label = path.file_name().unwrap().to_string_lossy();
+                                if ui.selectable_label(false, format!("📄 {}", label)).clicked() {
+                                    log::info!("Selected asset: {:?}", path);
+                                }
+                            } else if path.is_dir() && path != std::path::Path::new("assets") {
+                                let label = path.file_name().unwrap().to_string_lossy();
+                                ui.label(format!("📁 {}", label));
+                            }
+                        }
+                    });
+                }
+                BottomTab::Settings => {
+                    ui.heading("Renderer Settings");
+                    ui.horizontal(|ui| {
+                        ui.label("Exposure:");
+                        ui.add(egui::Slider::new(&mut renderer.exposure, 0.1..=10.0));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Gamma:");
+                        ui.add(egui::Slider::new(&mut renderer.gamma, 1.0..=3.0));
+                    });
+                    ui.separator();
+                    ui.heading("Visual Features");
+                    ui.checkbox(&mut renderer.enable_shadows, "Shadows");
+                    ui.checkbox(&mut renderer.enable_ssao, "SSAO");
+                    ui.checkbox(&mut renderer.enable_taa, "TAA");
+                    ui.checkbox(&mut true, "Bloom (TODO)");
+                }
+                BottomTab::Statistics => {
+                    ui.label("Draw Calls: TODO");
+                    ui.label("Triangles: TODO");
+                    ui.label("GPU Memory: TODO");
+                }
+            }
         });
 
         egui::SidePanel::left("hierarchy").show(&self.egui_ctx, |ui| {

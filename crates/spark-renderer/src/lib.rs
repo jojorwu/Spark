@@ -66,6 +66,11 @@ pub struct Renderer {
     pub bindless_descriptor_set: vk::DescriptorSet,
     pub next_bindless_index: std::sync::atomic::AtomicU32,
     pub viewport_attachment: Option<Attachment>,
+    pub exposure: f32,
+    pub gamma: f32,
+    pub enable_ssao: bool,
+    pub enable_taa: bool,
+    pub enable_shadows: bool,
 }
 
 fn halton(index: u32, base: u32) -> f32 {
@@ -287,6 +292,11 @@ impl Renderer {
             bindless_descriptor_set,
             next_bindless_index: std::sync::atomic::AtomicU32::new(0),
             viewport_attachment: None,
+            exposure: 1.0,
+            gamma: 2.2,
+            enable_ssao: true,
+            enable_taa: true,
+            enable_shadows: true,
         })
     }
 
@@ -979,7 +989,9 @@ impl Renderer {
             }
 
             // 2a. Execute Shadow Pass
-            self.device.device.cmd_execute_commands(command_buffer, &[scb_shadow]);
+            if self.enable_shadows {
+                self.device.device.cmd_execute_commands(command_buffer, &[scb_shadow]);
+            }
 
             // Barrier: Shadow Map to SHADER_READ_ONLY_OPTIMAL
             let shadow_barrier = vk::ImageMemoryBarrier::default()
@@ -1041,6 +1053,7 @@ impl Renderer {
 
             // 2c. Execute SSAO Pass
             if let Some(ssao) = &self.ssao_pass {
+                if self.enable_ssao {
                 let view = self.scene_view_matrix_for_pos;
                 let projection = spark_math::Mat4::perspective_rh(
                     45.0f32.to_radians(),
@@ -1060,6 +1073,7 @@ impl Renderer {
                     projection,
                     view,
                 );
+                }
             }
 
             // 2d. Execute Lighting Pass
@@ -1118,7 +1132,9 @@ impl Renderer {
             );
 
             if let Some(taa) = &self.taa_pass {
-                taa.record_commands(&self.device.device, command_buffer, self.swapchain.extent, self.current_frame);
+                if self.enable_taa {
+                    taa.record_commands(&self.device.device, command_buffer, self.swapchain.extent, self.current_frame);
+                }
             }
 
             if let Some(grid) = &self.grid_pass {
@@ -1143,6 +1159,8 @@ impl Renderer {
                 self.swapchain.images[image_index as usize],
                 self.swapchain.extent,
                 target_view,
+                self.exposure,
+                self.gamma,
             );
 
             self.device

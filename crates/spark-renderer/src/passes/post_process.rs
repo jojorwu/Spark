@@ -45,7 +45,13 @@ impl PostProcessPass {
 
         let layout = unsafe {
             device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::default().set_layouts(std::slice::from_ref(&ds_layout)),
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(std::slice::from_ref(&ds_layout))
+                    .push_constant_ranges(&[vk::PushConstantRange {
+                        stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                        offset: 0,
+                        size: 8,
+                    }]),
                 None,
             )?
         };
@@ -229,6 +235,8 @@ impl PostProcessPass {
         swapchain_image: vk::Image,
         extent: vk::Extent2D,
         target_view: Option<vk::ImageView>,
+        exposure: f32,
+        gamma: f32,
     ) {
         let pipeline = match self.pipeline {
             Some(p) => p,
@@ -290,6 +298,10 @@ impl PostProcessPass {
                 &[self.descriptor_sets[current_frame]],
                 &[],
             );
+
+            let pc = [exposure, gamma];
+            let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 8);
+            device.cmd_push_constants(command_buffer, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
 
             device.cmd_draw(command_buffer, 3, 1, 0, 0);
             device.cmd_end_rendering(command_buffer);

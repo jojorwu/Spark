@@ -17,3 +17,4 @@ egui-gizmo = "0.16"
 rfd = "0.14"
 env_logger.workspace = true
 log.workspace = true
+walkdir = "2.4"
