@@ -10,6 +10,12 @@ impl GBufferPass {
     }
 }
 
+impl Default for GBufferPass {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RenderPass for GBufferPass {
     fn name(&self) -> &str { "GBufferPass" }
 

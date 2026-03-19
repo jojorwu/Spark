@@ -13,6 +13,15 @@ impl EventQueue {
     pub fn new() -> Self {
         Self { events: Vec::new() }
     }
+}
+
+impl Default for EventQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EventQueue {
 
     pub fn push(&mut self, event: EngineEvent) {
         self.events.push(event);

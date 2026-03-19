@@ -23,7 +23,7 @@ impl VulkanSwapchain {
         height: u32,
     ) -> Result<Self, crate::error::RendererError> {
         let loader = SwapchainLoader::new(instance, device);
-        let (handle, images, views, format, extent) = Self::create_internal(
+        let SwapchainData { handle, images, image_views, format, extent } = Self::create_internal(
             pdevice,
             device,
             surface_loader,
@@ -37,7 +37,7 @@ impl VulkanSwapchain {
             loader,
             handle,
             images,
-            views,
+            views: image_views,
             format,
             extent,
         })
@@ -51,13 +51,7 @@ impl VulkanSwapchain {
         loader: &SwapchainLoader,
         width: u32,
         height: u32,
-    ) -> Result<(
-        vk::SwapchainKHR,
-        Vec<vk::Image>,
-        Vec<vk::ImageView>,
-        vk::Format,
-        vk::Extent2D,
-    ), crate::error::RendererError> {
+    ) -> Result<SwapchainData, crate::error::RendererError> {
         let formats = unsafe {
             surface_loader
                 .get_physical_device_surface_formats(pdevice, surface)?
@@ -130,8 +124,16 @@ impl VulkanSwapchain {
             views.push(view);
         }
 
-        Ok((handle, images, views, surface_format.format, extent))
+        Ok(SwapchainData { handle, images, image_views: views, format: surface_format.format, extent })
     }
+}
+
+pub struct SwapchainData {
+    pub handle: vk::SwapchainKHR,
+    pub images: Vec<vk::Image>,
+    pub image_views: Vec<vk::ImageView>,
+    pub format: vk::Format,
+    pub extent: vk::Extent2D,
 }
 
 impl Drop for VulkanSwapchain {

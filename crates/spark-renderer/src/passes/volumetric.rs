@@ -148,7 +148,7 @@ impl VolumetricPass {
 
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.pipeline);
             device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[global_ds, self.descriptor_sets[current_frame]], &[]);
-            device.cmd_dispatch(cb, (extent.width / 2 + 7) / 8, (extent.height / 2 + 7) / 8, 1);
+            device.cmd_dispatch(cb, (extent.width / 2).div_ceil(8), (extent.height / 2).div_ceil(8), 1);
 
             let barrier_read = vk::ImageMemoryBarrier::default()
                 .image(self.output_images[current_frame].image)

@@ -146,7 +146,7 @@ impl ShadowPass {
         let view = unsafe { device.create_image_view(&view_info, None)? };
 
         let mut cascade_views = [vk::ImageView::null(); SHADOW_CASCADE_COUNT];
-        for i in 0..SHADOW_CASCADE_COUNT {
+        for (i, view) in cascade_views.iter_mut().enumerate() {
              let v_info = vk::ImageViewCreateInfo::default()
                 .image(image)
                 .view_type(vk::ImageViewType::TYPE_2D)
@@ -158,7 +158,7 @@ impl ShadowPass {
                     base_array_layer: i as u32,
                     layer_count: 1,
                 });
-            cascade_views[i] = unsafe { device.create_image_view(&v_info, None)? };
+            *view = unsafe { device.create_image_view(&v_info, None)? };
         }
 
         let sampler = unsafe {
@@ -308,7 +308,7 @@ impl ShadowPass {
         }];
 
         unsafe {
-            for cascade_idx in 0..SHADOW_CASCADE_COUNT {
+            for (cascade_idx, &lvp) in light_view_projs.iter().enumerate() {
                 let depth_attachment = vk::RenderingAttachmentInfo::default()
                     .image_view(self.cascade_views[cascade_idx])
                     .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
@@ -351,7 +351,7 @@ impl ShadowPass {
                 }
                 let frame = &renderer.frames[renderer.current_frame];
                 let pc = PC {
-                    lvp: light_view_projs[cascade_idx],
+                    lvp,
                     padding: 0,
                     address: frame.object_data_buffer.map_or(0, |b| b.address),
                 };

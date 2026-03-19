@@ -399,13 +399,15 @@ impl EguiRenderer {
                 renderer.upload_to_buffer(&staging, &pixels);
 
                 let (image, memory) = renderer.create_image_basic(
-                    size[0],
-                    size[1],
-                    1,
-                    vk::Format::R8G8B8A8_UNORM,
-                    vk::ImageTiling::OPTIMAL,
-                    vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                    &crate::vulkan::device::ImageCreateParams {
+                        width: size[0],
+                        height: size[1],
+                        mip_levels: 1,
+                        format: vk::Format::R8G8B8A8_UNORM,
+                        tiling: vk::ImageTiling::OPTIMAL,
+                        usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                        properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                    }
                 );
 
                 renderer.transition_image_layout_basic(

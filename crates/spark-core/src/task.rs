@@ -13,6 +13,15 @@ impl TaskSystem {
 
         Self { pool }
     }
+}
+
+impl Default for TaskSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TaskSystem {
 
     pub fn spawn<F>(&self, job: F)
     where

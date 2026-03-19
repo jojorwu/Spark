@@ -5,6 +5,19 @@ use crate::MAX_FRAMES_IN_FLIGHT;
 use spark_math::{Vec3, Vec4, Mat4};
 use rand::Rng;
 
+pub struct SSAORecordParams<'a> {
+    pub renderer: &'a Renderer,
+    pub command_buffer: vk::CommandBuffer,
+    pub extent: vk::Extent2D,
+    pub current_frame: usize,
+    pub ssao_target_view: vk::ImageView,
+    pub ssao_target_image: vk::Image,
+    pub blur_target_view: vk::ImageView,
+    pub blur_target_image: vk::Image,
+    pub projection: Mat4,
+    pub view: Mat4,
+}
+
 pub struct SSAOPass {
     pub ssao_pipeline: vk::Pipeline,
     pub blur_pipeline: vk::Pipeline,
@@ -56,28 +69,27 @@ impl RenderPass for SSAOPass {
 
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
-        let command_buffer = ctx.command_buffer;
-        let current_frame = ctx.current_frame;
-
+        let extent = renderer.swapchain.extent;
         let view = renderer.scene_view_matrix_for_pos;
         let projection = spark_math::Mat4::perspective_rh(
             45.0f32.to_radians(),
-            renderer.swapchain.extent.width as f32 / renderer.swapchain.extent.height as f32,
+            extent.width as f32 / extent.height as f32,
             0.1,
             100.0,
         );
-        self.record_commands_impl(
+        let params = SSAORecordParams {
             renderer,
-            command_buffer,
-            renderer.swapchain.extent,
-            current_frame,
-            self.ssao_images[current_frame].view,
-            self.ssao_images[current_frame].image,
-            self.ssao_blur_images[current_frame].view,
-            self.ssao_blur_images[current_frame].image,
+            command_buffer: ctx.command_buffer,
+            extent,
+            current_frame: ctx.current_frame,
+            ssao_target_view: self.ssao_images[ctx.current_frame].view,
+            ssao_target_image: self.ssao_images[ctx.current_frame].image,
+            blur_target_view: self.ssao_blur_images[ctx.current_frame].view,
+            blur_target_image: self.ssao_blur_images[ctx.current_frame].image,
             projection,
             view,
-        );
+        };
+        self.record_commands_impl(&params);
     }
 
     fn get_resource_view(&self, name: &str, frame_index: usize) -> Option<vk::ImageView> {
@@ -124,7 +136,7 @@ impl SSAOPass {
         // 1. Generate Kernel Samples
         let mut rng = rand::thread_rng();
         let mut kernel_samples = [Vec4::ZERO; 64];
-        for i in 0..64 {
+        for (i, sample_vec) in kernel_samples.iter_mut().enumerate() {
             let mut sample = Vec3::new(
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
@@ -134,7 +146,7 @@ impl SSAOPass {
 
             let mut scale = i as f32 / 64.0;
             scale = 0.1 + scale * scale * (1.0 - 0.1); // Lerp
-            kernel_samples[i] = Vec4::new(sample.x * scale, sample.y * scale, sample.z * scale, 0.0);
+            *sample_vec = Vec4::new(sample.x * scale, sample.y * scale, sample.z * scale, 0.0);
         }
 
         // 2. Generate Noise Texture
@@ -184,7 +196,7 @@ impl SSAOPass {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(descriptor_pool)
-                    .set_layouts(&vec![ds_layout; MAX_FRAMES_IN_FLIGHT]),
+                    .set_layouts(&[ds_layout; MAX_FRAMES_IN_FLIGHT]),
             )?
         };
 
@@ -192,7 +204,7 @@ impl SSAOPass {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(descriptor_pool)
-                    .set_layouts(&vec![blur_ds_layout; MAX_FRAMES_IN_FLIGHT]),
+                    .set_layouts(&[blur_ds_layout; MAX_FRAMES_IN_FLIGHT]),
             )?
         };
 
@@ -316,17 +328,16 @@ impl SSAOPass {
 
     pub fn record_commands_impl(
         &self,
-        renderer: &Renderer,
-        command_buffer: vk::CommandBuffer,
-        extent: vk::Extent2D,
-        current_frame: usize,
-        ssao_target_view: vk::ImageView,
-        ssao_target_image: vk::Image,
-        blur_target_view: vk::ImageView,
-        blur_target_image: vk::Image,
-        _projection: Mat4,
-        _view: Mat4,
+        params: &SSAORecordParams,
     ) {
+        let renderer = params.renderer;
+        let command_buffer = params.command_buffer;
+        let extent = params.extent;
+        let current_frame = params.current_frame;
+        let ssao_target_view = params.ssao_target_view;
+        let ssao_target_image = params.ssao_target_image;
+        let blur_target_view = params.blur_target_view;
+        let blur_target_image = params.blur_target_image;
         let device = &renderer.device.device;
         unsafe {
             // 1. SSAO Pass

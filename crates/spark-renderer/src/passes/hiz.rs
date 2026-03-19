@@ -69,11 +69,15 @@ impl HiZPass {
         let mip_levels = (width.max(height) as f32).log2().floor() as u32 + 1;
 
         let (image, memory) = device.create_image(
-            width, height, mip_levels,
-            vk::Format::R32_SFLOAT,
-            vk::ImageTiling::OPTIMAL,
-            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            &crate::vulkan::device::ImageCreateParams {
+                width,
+                height,
+                mip_levels,
+                format: vk::Format::R32_SFLOAT,
+                tiling: vk::ImageTiling::OPTIMAL,
+                usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
+                properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            }
         );
 
         let pyramid_view = device.create_image_view(image, vk::Format::R32_SFLOAT, mip_levels);
@@ -141,7 +145,7 @@ impl HiZPass {
                     .stage(vk::PipelineShaderStageCreateInfo::default()
                         .stage(vk::ShaderStageFlags::COMPUTE)
                         .module(shader_module)
-                        .name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap()))
+                        .name(c"main"))
                     .layout(layout)],
                 None,
             ).unwrap()[0]
@@ -232,7 +236,7 @@ impl HiZPass {
                 let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 8);
                 device.cmd_push_constants(command_buffer, self.layout, vk::ShaderStageFlags::COMPUTE, 0, pc_bytes);
 
-                device.cmd_dispatch(command_buffer, (w + 15) / 16, (h + 15) / 16, 1);
+                device.cmd_dispatch(command_buffer, w.div_ceil(16), h.div_ceil(16), 1);
 
                 let barrier = vk::ImageMemoryBarrier::default()
                     .image(self.pyramid_image)

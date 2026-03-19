@@ -3,6 +3,15 @@ use crate::resource::Buffer;
 use crate::{Renderer, MAX_FRAMES_IN_FLIGHT};
 use super::{RenderPass, RenderContext};
 
+pub struct LightingDescriptorParams<'a> {
+    pub light_buffers: &'a [Buffer],
+    pub object_data_buffers: &'a [Option<Buffer>],
+    pub ssao_view: vk::ImageView,
+    pub irradiance_view: vk::ImageView,
+    pub specular_view: vk::ImageView,
+    pub brdf_lut_view: vk::ImageView,
+}
+
 pub struct LightingPass {
     pub pipeline: Option<vk::Pipeline>,
     pub layout: vk::PipelineLayout,
@@ -113,14 +122,16 @@ impl LightingPass {
     pub fn update_descriptor_set_for_frame(
         &self,
         renderer: &Renderer,
-        i: usize,
-        light_buffers: &[Buffer],
-        object_data_buffers: &[Option<Buffer>],
-        ssao_view: vk::ImageView,
-        irradiance_view: vk::ImageView,
-        specular_view: vk::ImageView,
-        brdf_lut_view: vk::ImageView,
+        frame_idx: usize,
+        params: &LightingDescriptorParams,
     ) {
+        let i = frame_idx;
+        let light_buffers = params.light_buffers;
+        let object_data_buffers = params.object_data_buffers;
+        let ssao_view = params.ssao_view;
+        let irradiance_view = params.irradiance_view;
+        let specular_view = params.specular_view;
+        let brdf_lut_view = params.brdf_lut_view;
         let device = &renderer.device.device;
         let shadow_view = renderer.common_shadow_view;
         let shadow_sampler = renderer.common_sampler;
@@ -279,15 +290,18 @@ impl RenderPass for LightingPass {
                 }
             }
 
+            let params = LightingDescriptorParams {
+                light_buffers: &light_buffers,
+                object_data_buffers: &object_buffers,
+                ssao_view,
+                irradiance_view: irr_view,
+                specular_view: spec_view,
+                brdf_lut_view: brdf_view,
+            };
             self.update_descriptor_set_for_frame(
                 renderer,
                 i,
-                &light_buffers,
-                &object_buffers,
-                ssao_view,
-                irr_view,
-                spec_view,
-                brdf_view,
+                &params,
             );
         }
     }

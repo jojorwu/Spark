@@ -8,24 +8,23 @@ impl RenderPass for CullingPass {
     fn name(&self) -> &str { "CullingPass" }
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
-        let command_buffer = ctx.command_buffer;
         let current_frame = ctx.current_frame;
 
         let global_ds = renderer.frames[current_frame].global_descriptor_set;
-        if let (Some(obj_buf), Some(ind_buf), Some(cnt_buf)) = (
+        if let (Some(_), Some(ind_buf), Some(cnt_buf)) = (
             renderer.frames[current_frame].object_data_buffer,
             renderer.frames[current_frame].indirect_commands_buffer,
             renderer.frames[current_frame].draw_count_buffer
         ) {
-            self.record_commands_impl(
-                &renderer.device.device,
-                command_buffer,
-                renderer.last_object_count,
+            let params = CullingRecordParams {
+                device: &renderer.device.device,
+                command_buffer: ctx.command_buffer,
+                object_count: renderer.last_object_count,
                 global_ds,
-                &obj_buf,
-                &ind_buf,
-                &cnt_buf,
-            );
+                indirect_buffer: &ind_buf,
+                count_buffer: &cnt_buf,
+            };
+            self.record_commands_impl(&params);
         }
     }
 
@@ -36,6 +35,15 @@ impl RenderPass for CullingPass {
             device.destroy_pipeline_layout(self.layout, None);
         }
     }
+}
+
+pub struct CullingRecordParams<'a> {
+    pub device: &'a ash::Device,
+    pub command_buffer: vk::CommandBuffer,
+    pub object_count: u32,
+    pub global_ds: vk::DescriptorSet,
+    pub indirect_buffer: &'a Buffer,
+    pub count_buffer: &'a Buffer,
 }
 
 pub struct CullingPass {
@@ -97,14 +105,14 @@ impl CullingPass {
 
     pub fn record_commands_impl(
         &self,
-        device: &ash::Device,
-        command_buffer: vk::CommandBuffer,
-        object_count: u32,
-        global_ds: vk::DescriptorSet,
-        _object_buffer: &Buffer,
-        indirect_buffer: &Buffer,
-        count_buffer: &Buffer,
+        params: &CullingRecordParams,
     ) {
+        let device = params.device;
+        let command_buffer = params.command_buffer;
+        let object_count = params.object_count;
+        let global_ds = params.global_ds;
+        let indirect_buffer = params.indirect_buffer;
+        let count_buffer = params.count_buffer;
         unsafe {
             // Reset count buffer
             device.cmd_fill_buffer(command_buffer, count_buffer.handle, 0, 4, 0);
@@ -135,7 +143,7 @@ impl CullingPass {
                 &[],
             );
 
-            device.cmd_dispatch(command_buffer, (object_count + 255) / 256, 1, 1);
+            device.cmd_dispatch(command_buffer, object_count.div_ceil(256), 1, 1);
 
             // Barrier to ensure compute finish before indirect draw
             let indirect_barrier = vk::BufferMemoryBarrier::default()

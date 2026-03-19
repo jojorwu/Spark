@@ -106,7 +106,7 @@ impl TAAPass {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(renderer.descriptor_pool)
-                    .set_layouts(&vec![ds_layout; MAX_FRAMES_IN_FLIGHT]),
+                    .set_layouts(&[ds_layout; MAX_FRAMES_IN_FLIGHT]),
             )?
         };
 

@@ -13,6 +13,15 @@ impl PluginManager {
     pub fn new() -> Self {
         Self { plugins: Vec::new() }
     }
+}
+
+impl Default for PluginManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PluginManager {
 
     pub fn add_plugin(&mut self, plugin: Box<dyn Plugin>) {
         self.plugins.push(plugin);

@@ -10,23 +10,20 @@ impl RenderPass for PostProcessPass {
     fn name(&self) -> &str { "PostProcessPass" }
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
-        let command_buffer = ctx.command_buffer;
-        let current_frame = ctx.current_frame;
-        let image_index = ctx.image_index;
-
         let target_view = renderer.viewport_attachment.as_ref().map(|a| a.view);
-        self.record_commands_impl(
-            &renderer.device.device,
-            command_buffer,
-            image_index,
-            current_frame,
-            renderer.swapchain.views[image_index as usize],
-            renderer.swapchain.images[image_index as usize],
-            renderer.swapchain.extent,
+        let params = PostProcessRecordParams {
+            device: &renderer.device.device,
+            command_buffer: ctx.command_buffer,
+            image_index: ctx.image_index,
+            current_frame: ctx.current_frame,
+            swapchain_image_view: renderer.swapchain.views[ctx.image_index as usize],
+            swapchain_image: renderer.swapchain.images[ctx.image_index as usize],
+            extent: renderer.swapchain.extent,
             target_view,
-            renderer.exposure,
-            renderer.gamma,
-        );
+            exposure: renderer.exposure,
+            gamma: renderer.gamma,
+        };
+        self.record_commands_impl(&params);
     }
 
     fn destroy(&mut self, renderer: &Renderer) {
@@ -52,6 +49,19 @@ impl RenderPass for PostProcessPass {
             }
         }
     }
+}
+
+pub struct PostProcessRecordParams<'a> {
+    pub device: &'a ash::Device,
+    pub command_buffer: vk::CommandBuffer,
+    pub image_index: u32,
+    pub current_frame: usize,
+    pub swapchain_image_view: vk::ImageView,
+    pub swapchain_image: vk::Image,
+    pub extent: vk::Extent2D,
+    pub target_view: Option<vk::ImageView>,
+    pub exposure: f32,
+    pub gamma: f32,
 }
 
 pub struct PostProcessPass {
@@ -152,7 +162,7 @@ impl PostProcessPass {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(descriptor_pool)
-                    .set_layouts(&vec![ds_layout; MAX_FRAMES_IN_FLIGHT]),
+                    .set_layouts(&[ds_layout; MAX_FRAMES_IN_FLIGHT]),
             )?
         };
 
@@ -262,7 +272,7 @@ impl PostProcessPass {
         }
     }
 
-    fn update_descriptor_sets(&self, renderer: &Renderer) {
+    pub fn update_descriptor_sets(&self, renderer: &Renderer) {
         let device = &renderer.device.device;
         let sampler = renderer.common_sampler;
 
@@ -324,17 +334,17 @@ impl PostProcessPass {
 
     pub fn record_commands_impl(
         &self,
-        device: &ash::Device,
-        command_buffer: vk::CommandBuffer,
-        _image_index: u32,
-        current_frame: usize,
-        swapchain_image_view: vk::ImageView,
-        swapchain_image: vk::Image,
-        extent: vk::Extent2D,
-        target_view: Option<vk::ImageView>,
-        exposure: f32,
-        gamma: f32,
+        params: &PostProcessRecordParams,
     ) {
+        let device = params.device;
+        let command_buffer = params.command_buffer;
+        let current_frame = params.current_frame;
+        let swapchain_image_view = params.swapchain_image_view;
+        let swapchain_image = params.swapchain_image;
+        let extent = params.extent;
+        let target_view = params.target_view;
+        let exposure = params.exposure;
+        let gamma = params.gamma;
         let pipeline = match self.pipeline {
             Some(p) => p,
             None => return,

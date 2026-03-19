@@ -17,7 +17,6 @@ use crate::plugin::PluginManager;
 use crate::resource::ResourceManager;
 use crate::event::EventQueue;
 use spark_renderer::Renderer;
-use spark_math::Vec4Swizzles;
 
 pub trait System {
     fn update(

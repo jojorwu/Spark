@@ -41,6 +41,15 @@ pub struct AssetStorage<T> {
 
 impl<T> AssetStorage<T> {
     pub fn new() -> Self { Self { assets: Vec::new() } }
+}
+
+impl<T> Default for AssetStorage<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> AssetStorage<T> {
     pub fn add(&mut self, asset: T) -> Handle<T> {
         let id = self.assets.len() as u32;
         self.assets.push(asset);
@@ -73,6 +82,15 @@ impl ResourceManager {
             needs_upload: false,
         }
     }
+}
+
+impl Default for ResourceManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ResourceManager {
 
     pub fn upload_global_buffers(&mut self, renderer: &mut spark_renderer::Renderer) {
         use spark_renderer::ash::vk;

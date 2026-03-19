@@ -83,9 +83,9 @@ fn halton(index: u32, base: u32) -> f32 {
     let mut f = 1.0;
     let mut i = index;
     while i > 0 {
-        f = f / base as f32;
+        f /= base as f32;
         result += f * (i % base) as f32;
-        i = i / base;
+        i /= base;
     }
     result
 }
@@ -560,7 +560,7 @@ impl Renderer {
         object_data: &[ObjectDataSSBO],
     ) {
         let frame_idx = self.current_frame;
-        let cmd_sz = (commands.len() * std::mem::size_of::<vk::DrawIndexedIndirectCommand>()) as u64;
+        let cmd_sz = std::mem::size_of_val(commands) as u64;
 
         let mut buffer = self.frames[frame_idx].indirect_commands_buffer;
         if buffer.is_none() || buffer.unwrap().size < cmd_sz {
@@ -576,7 +576,7 @@ impl Renderer {
         }
         self.upload_to_buffer(&buffer.unwrap(), commands);
 
-        let obj_sz = (object_data.len() * std::mem::size_of::<ObjectDataSSBO>()) as u64;
+        let obj_sz = std::mem::size_of_val(object_data) as u64;
         let mut obj_buffer = self.frames[frame_idx].object_data_buffer;
         if obj_buffer.is_none() || obj_buffer.unwrap().size < obj_sz {
             if let Some(old) = obj_buffer {
@@ -845,15 +845,17 @@ impl Renderer {
         );
         self.upload_to_buffer(&st, pix);
         let (i, m) = self.create_image_basic(
-            w,
-            h,
-            mip,
-            vk::Format::R8G8B8A8_SRGB,
-            vk::ImageTiling::OPTIMAL,
-            vk::ImageUsageFlags::TRANSFER_SRC
-                | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::SAMPLED,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            &crate::vulkan::device::ImageCreateParams {
+                width: w,
+                height: h,
+                mip_levels: mip,
+                format: vk::Format::R8G8B8A8_SRGB,
+                tiling: vk::ImageTiling::OPTIMAL,
+                usage: vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST
+                    | vk::ImageUsageFlags::SAMPLED,
+                properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            }
         );
         self.transition_image_layout_basic(
             i,
@@ -926,15 +928,9 @@ impl Renderer {
 
     pub fn create_image_basic(
         &self,
-        w: u32,
-        h: u32,
-        mip: u32,
-        f: vk::Format,
-        t: vk::ImageTiling,
-        u: vk::ImageUsageFlags,
-        p: vk::MemoryPropertyFlags,
+        params: &crate::vulkan::device::ImageCreateParams,
     ) -> (vk::Image, vk::DeviceMemory) {
-        self.device.create_image(w, h, mip, f, t, u, p)
+        self.device.create_image(params)
     }
 
     pub fn create_texture_sampler(&self, mip: u32) -> vk::Sampler {

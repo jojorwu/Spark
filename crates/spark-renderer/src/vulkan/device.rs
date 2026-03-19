@@ -2,6 +2,16 @@ use crate::error::RendererError;
 use crate::resource::Buffer;
 use ash::{khr::surface::Instance as Surface, vk, Device, Instance};
 
+pub struct ImageCreateParams {
+    pub width: u32,
+    pub height: u32,
+    pub mip_levels: u32,
+    pub format: vk::Format,
+    pub tiling: vk::ImageTiling,
+    pub usage: vk::ImageUsageFlags,
+    pub properties: vk::MemoryPropertyFlags,
+}
+
 pub struct VulkanDevice {
     pub pdevice: vk::PhysicalDevice,
     pub device: Device,
@@ -174,14 +184,15 @@ impl VulkanDevice {
 
     pub fn create_image(
         &self,
-        w: u32,
-        h: u32,
-        mip: u32,
-        f: vk::Format,
-        t: vk::ImageTiling,
-        u: vk::ImageUsageFlags,
-        p: vk::MemoryPropertyFlags,
+        params: &ImageCreateParams,
     ) -> (vk::Image, vk::DeviceMemory) {
+        let w = params.width;
+        let h = params.height;
+        let mip = params.mip_levels;
+        let f = params.format;
+        let t = params.tiling;
+        let u = params.usage;
+        let p = params.properties;
         let i = unsafe {
             self.device
                 .create_image(

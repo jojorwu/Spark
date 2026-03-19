@@ -17,6 +17,15 @@ impl ScriptHost {
             hostfxr,
         }
     }
+}
+
+impl Default for ScriptHost {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ScriptHost {
 
     pub fn load_rust_plugin(&mut self, path: &str) -> Box<dyn Plugin> {
         log::info!("Loading Rust plugin from: {}", path);

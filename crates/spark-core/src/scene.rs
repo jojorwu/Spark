@@ -103,9 +103,12 @@ pub struct Scene {
 
 type TextureHandle = crate::resource::Handle<spark_renderer::vulkan::texture::Texture>;
 
+pub type RenderableData = (Mat4, u32, u32, u32, i32, Option<TextureHandle>, Option<u32>, f32);
+pub type InstancedKey = (u32, u32, i32, Option<TextureHandle>, Option<u32>, u32);
+
 struct SceneDataCollector {
-    renderables: Vec<(Mat4, u32, u32, u32, i32, Option<TextureHandle>, Option<u32>, f32)>,
-    instanced: std::collections::HashMap<(u32, u32, i32, Option<TextureHandle>, Option<u32>, u32), Vec<Mat4>>,
+    renderables: Vec<RenderableData>,
+    instanced: std::collections::HashMap<InstancedKey, Vec<Mat4>>,
     lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>,
 }
 
@@ -134,6 +137,15 @@ impl Scene {
 
         Self { nodes, root, last_view_matrix: Mat4::IDENTITY }
     }
+}
+
+impl Default for Scene {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Scene {
 
     pub fn add_node(&mut self, parent: NodeKey, mut node: Node) -> NodeKey {
         node.parent = Some(parent);

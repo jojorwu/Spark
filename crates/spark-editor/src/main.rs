@@ -14,13 +14,13 @@ impl ShaderCompiler {
     }
 
     fn compile(&self, path: &str, kind: shaderc::ShaderKind) -> Vec<u32> {
-        let code = fs::read_to_string(path).expect(&format!("Failed to read shader: {}", path));
+        let code = fs::read_to_string(path).unwrap_or_else(|_| panic!("Failed to read shader: {}", path));
         let name = std::path::Path::new(path).file_name().unwrap().to_str().unwrap();
         self.compiler.compile_into_spirv(&code, kind, name, "main", None).unwrap().as_binary().to_vec()
     }
 
     fn compile_with_options(&self, path: &str, kind: shaderc::ShaderKind, options: &shaderc::CompileOptions) -> Vec<u32> {
-        let code = fs::read_to_string(path).expect(&format!("Failed to read shader: {}", path));
+        let code = fs::read_to_string(path).unwrap_or_else(|_| panic!("Failed to read shader: {}", path));
         let name = std::path::Path::new(path).file_name().unwrap().to_str().unwrap();
         self.compiler.compile_into_spirv(&code, kind, name, "main", Some(options)).unwrap().as_binary().to_vec()
     }
@@ -122,15 +122,17 @@ fn main() {
 
     let deferred_pipeline = Pipeline::new(
         engine.renderer.get_device(),
-        engine.renderer.get_extent(),
-        &compiler.compile("assets/shaders/deferred.vert", shaderc::ShaderKind::Vertex),
-        &def_frag_spirv,
-        engine.renderer.get_msaa_samples(),
-        true, // Deferred lighting
-        4,    // 4 input attachments (Albedo, Normal, PBR, Depth)
-        engine.renderer.pipeline_cache,
-        engine.renderer.global_descriptor_set_layout,
-        engine.renderer.bindless_descriptor_set_layout,
+        &spark_renderer::pipeline::PipelineCreateParams {
+            extent: engine.renderer.get_extent(),
+            vert_shader_code: &compiler.compile("assets/shaders/deferred.vert", shaderc::ShaderKind::Vertex),
+            frag_shader_code: &def_frag_spirv,
+            msaa_samples: engine.renderer.get_msaa_samples(),
+            is_deferred_lighting: true,
+            input_attachments_count: 4,
+            pipeline_cache: engine.renderer.pipeline_cache,
+            global_ds_layout: engine.renderer.global_descriptor_set_layout,
+            bindless_ds_layout: engine.renderer.bindless_descriptor_set_layout,
+        }
     );
     lighting_pass.pipeline = Some(deferred_pipeline.graphics_pipeline);
 
@@ -186,15 +188,17 @@ fn main() {
 
     let pipeline = Pipeline::new(
         engine.renderer.get_device(),
-        engine.renderer.get_extent(),
-        &vert_spirv,
-        &frag_spirv,
-        engine.renderer.get_msaa_samples(),
-        false, // Not deferred lighting
-        0,
-        engine.renderer.pipeline_cache,
-        engine.renderer.global_descriptor_set_layout,
-        engine.renderer.bindless_descriptor_set_layout,
+        &spark_renderer::pipeline::PipelineCreateParams {
+            extent: engine.renderer.get_extent(),
+            vert_shader_code: &vert_spirv,
+            frag_shader_code: &frag_spirv,
+            msaa_samples: engine.renderer.get_msaa_samples(),
+            is_deferred_lighting: false,
+            input_attachments_count: 0,
+            pipeline_cache: engine.renderer.pipeline_cache,
+            global_ds_layout: engine.renderer.global_descriptor_set_layout,
+            bindless_ds_layout: engine.renderer.bindless_descriptor_set_layout,
+        }
     );
 
     engine.renderer.set_pipeline(pipeline);
