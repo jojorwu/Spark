@@ -16,8 +16,6 @@ pub struct PostProcessPipeline {
 impl Pipeline {
     pub fn new(
         device: &Device,
-        render_pass: vk::RenderPass,
-        subpass: u32,
         _extent: vk::Extent2D,
         vert_shader_code: &[u32],
         frag_shader_code: &[u32],
@@ -25,20 +23,19 @@ impl Pipeline {
         is_deferred_lighting: bool,
         input_attachments_count: u32,
         pipeline_cache: vk::PipelineCache,
+        global_ds_layout: vk::DescriptorSetLayout, // Pass this in
+        bindless_ds_layout: vk::DescriptorSetLayout, // Pass this in
     ) -> Self {
         let vert_shader_module = Self::create_shader_module(device, vert_shader_code);
         let frag_shader_module = Self::create_shader_module(device, frag_shader_code);
 
         let main_function_name = CString::new("main").unwrap();
 
-        use crate::vertex::{InstanceData, Vertex};
+        use crate::vertex::Vertex;
         let binding_descriptions = [
             Vertex::get_binding_description(),
-            InstanceData::get_binding_description(),
         ];
-        let mut attribute_descriptions = Vec::new();
-        attribute_descriptions.extend_from_slice(&Vertex::get_attribute_descriptions());
-        attribute_descriptions.extend_from_slice(&InstanceData::get_attribute_descriptions());
+        let attribute_descriptions = Vertex::get_attribute_descriptions();
 
         let shader_stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -127,7 +124,7 @@ impl Pipeline {
         let push_constant_ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(64)];
+            .size(128)];
 
         let mut descriptor_set_layout_bindings = Vec::new();
         if is_deferred_lighting {
@@ -156,14 +153,13 @@ impl Pipeline {
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             );
-        } else {
-            // Binding for Albedo Map
+            // Binding for Object Data SSBO
             descriptor_set_layout_bindings.push(
                 vk::DescriptorSetLayoutBinding::default()
-                    .binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .binding(input_attachments_count + 2)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                    .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
             );
         }
 
@@ -176,22 +172,7 @@ impl Pipeline {
                 .expect("Failed to create descriptor set layout")
         };
 
-        let global_ds_layout = unsafe {
-            device
-                .create_descriptor_set_layout(
-                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[
-                        vk::DescriptorSetLayoutBinding::default()
-                            .binding(0)
-                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                            .descriptor_count(1)
-                            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-                    ]),
-                    None,
-                )
-                .unwrap()
-        };
-
-        let set_layouts = [global_ds_layout, descriptor_set_layout];
+        let set_layouts = [global_ds_layout, bindless_ds_layout, descriptor_set_layout];
 
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
             .push_constant_ranges(&push_constant_ranges)
@@ -201,6 +182,17 @@ impl Pipeline {
                 .create_pipeline_layout(&pipeline_layout_info, None)
                 .expect("Failed to create pipeline layout")
         };
+
+        let mut rendering_info = vk::PipelineRenderingCreateInfo::default();
+        let color_formats = if !is_deferred_lighting {
+            vec![vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::R8G8B8A8_UNORM, vk::Format::R16G16_SFLOAT]
+        } else {
+            vec![vk::Format::R16G16B16A16_SFLOAT]
+        };
+        rendering_info = rendering_info.color_attachment_formats(&color_formats);
+        if !is_deferred_lighting {
+            rendering_info = rendering_info.depth_attachment_format(vk::Format::D32_SFLOAT);
+        }
 
         let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
@@ -213,8 +205,7 @@ impl Pipeline {
             .color_blend_state(&color_blending)
             .dynamic_state(&dynamic_state_info)
             .layout(pipeline_layout)
-            .render_pass(render_pass)
-            .subpass(subpass);
+            .push_next(&mut rendering_info);
 
         let graphics_pipelines = unsafe {
             device

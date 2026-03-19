@@ -1,6 +1,18 @@
 use ash::vk;
 use crate::resource::{Attachment, Buffer};
 use crate::{Renderer, MAX_FRAMES_IN_FLIGHT};
+use super::RenderPass;
+
+impl RenderPass for DeferredPass {
+    fn update_descriptor_sets(&self, renderer: &Renderer) {
+        renderer.update_deferred_descriptor_sets();
+    }
+
+    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
+        // This pass is split into G-Buffer and Lighting, so it doesn't fit perfectly into a single record_commands
+        // Unless we call both here.
+    }
+}
 
 pub struct DeferredPass {
     pub pipeline: Option<vk::Pipeline>,
@@ -46,6 +58,31 @@ impl DeferredPass {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(6)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(7)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(8)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(9)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(10)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
 
         let ds_layout = unsafe {
@@ -62,7 +99,7 @@ impl DeferredPass {
                     .push_constant_ranges(&[vk::PushConstantRange::default()
                         .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                         .offset(0)
-                        .size(32)]),
+                        .size(128)]),
                 None,
             )?
         };
@@ -94,6 +131,11 @@ impl DeferredPass {
         shadow_view: vk::ImageView,
         shadow_sampler: vk::Sampler,
         light_buffers: &[Buffer],
+        object_data_buffers: &[Option<Buffer>],
+        ssao_attachments: &[Attachment],
+        irradiance_view: vk::ImageView,
+        specular_view: vk::ImageView,
+        brdf_lut_view: vk::ImageView,
     ) {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let alb_info = [vk::DescriptorImageInfo::default()
@@ -158,33 +200,103 @@ impl DeferredPass {
                 );
             }
 
+            let mut obj_info = Vec::new();
+            if let Some(Some(ob)) = object_data_buffers.get(i) {
+                obj_info.push(
+                    vk::DescriptorBufferInfo::default()
+                        .buffer(ob.handle)
+                        .offset(0)
+                        .range(ob.size),
+                );
+                writes.push(
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.descriptor_sets[i])
+                        .dst_binding(6)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(&obj_info),
+                );
+            }
+
+            let ssao_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(ssao_attachments[i].view)
+                .sampler(shadow_sampler)];
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(7)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&ssao_info),
+            );
+
+            let irr_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(irradiance_view)
+                .sampler(shadow_sampler)];
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(8)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&irr_info),
+            );
+
+            let spec_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(specular_view)
+                .sampler(shadow_sampler)];
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(9)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&spec_info),
+            );
+
+            let brdf_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(brdf_lut_view)
+                .sampler(shadow_sampler)];
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(10)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&brdf_info),
+            );
+
             unsafe {
                 device.update_descriptor_sets(&writes, &[]);
             }
         }
     }
 
-    pub fn record_commands(
+    pub fn record_gbuffer_commands(
         &self,
         renderer: &Renderer,
         command_buffer: vk::CommandBuffer,
-        renderables: &[(spark_math::Mat4, u32, Option<vk::ImageView>, Option<u32>)],
-        instanced_renderables: &[(u32, u32, u32, Option<vk::ImageView>)],
         pc_bytes: &[u8],
         current_frame: usize,
+        max_indirect_commands: u32,
     ) {
         let device = &renderer.device.device;
         let extent = renderer.get_extent();
         let global_ds = renderer.frames[current_frame].global_descriptor_set;
 
         unsafe {
-            // Subpass 0: G-Buffer Generation
+            let color_formats = [vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::R8G8B8A8_UNORM, vk::Format::R16G16_SFLOAT];
+            let mut inheritance_info = vk::CommandBufferInheritanceRenderingInfo::default()
+                .color_attachment_formats(&color_formats)
+                .depth_attachment_format(vk::Format::D32_SFLOAT);
+            let inherit = vk::CommandBufferInheritanceInfo::default().push_next(&mut inheritance_info);
+            let begin_info = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE | vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
+                .inheritance_info(&inherit);
+
+            device.begin_command_buffer(command_buffer, &begin_info).unwrap();
+
             if let Some(pipeline) = &renderer.pipeline {
-                device.cmd_bind_pipeline(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    pipeline.graphics_pipeline,
-                );
+                device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline.graphics_pipeline);
 
                 let viewport = vk::Viewport::default()
                     .x(0.0)
@@ -205,77 +317,125 @@ impl DeferredPass {
                     pc_bytes,
                 );
 
-                for (vb_id, ib_id, count, tex_view) in instanced_renderables {
-                    if let (Some(vb), Some(ib)) =
-                        (renderer.get_buffer(*vb_id), renderer.get_instance_buffer(*ib_id))
-                    {
-                        let ds = tex_view
-                            .and_then(|v| renderer.texture_descriptor_sets.get(&v))
-                            .unwrap_or(&renderer.default_descriptor_set);
+                let color_attachments = [
+                    vk::RenderingAttachmentInfo::default()
+                        .image_view(renderer.gbuffer.albedo[current_frame].view)
+                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                        .store_op(vk::AttachmentStoreOp::STORE)
+                        .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }),
+                    vk::RenderingAttachmentInfo::default()
+                        .image_view(renderer.gbuffer.normal[current_frame].view)
+                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                        .store_op(vk::AttachmentStoreOp::STORE)
+                        .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }),
+                    vk::RenderingAttachmentInfo::default()
+                        .image_view(renderer.gbuffer.pbr[current_frame].view)
+                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                        .store_op(vk::AttachmentStoreOp::STORE)
+                        .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }),
+                    vk::RenderingAttachmentInfo::default()
+                        .image_view(renderer.gbuffer.velocity[current_frame].view)
+                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                        .store_op(vk::AttachmentStoreOp::STORE)
+                        .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }),
+                ];
+                let depth_attachment = vk::RenderingAttachmentInfo::default()
+                    .image_view(renderer.gbuffer.depth[current_frame].view)
+                    .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .clear_value(vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 } });
 
-                        device.cmd_bind_descriptor_sets(
-                            command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            pipeline.layout,
-                            0,
-                            &[global_ds, *ds],
-                            &[],
-                        );
+                let rendering_info = vk::RenderingInfo::default()
+                    .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
+                    .layer_count(1)
+                    .color_attachments(&color_attachments)
+                    .depth_attachment(&depth_attachment);
 
-                        device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle, ib.handle], &[0, 0]);
-                        if let Some(idx_b) = renderer.index_buffer {
-                            device.cmd_bind_index_buffer(command_buffer, idx_b.handle, 0, vk::IndexType::UINT32);
-                            device.cmd_draw_indexed(command_buffer, (idx_b.size / 4) as u32, *count, 0, 0, 0);
-                        } else {
-                            device.cmd_draw(
-                                command_buffer,
-                                (vb.size / std::mem::size_of::<crate::vertex::Vertex>() as u64) as u32,
-                                *count,
-                                0,
-                                0,
-                            );
-                        }
-                    }
-                }
+                device.cmd_begin_rendering(command_buffer, &rendering_info);
 
-                for (_model, _, tex_view, vb_id) in renderables {
-                    if let Some(vb_id) = vb_id {
-                        if let Some(vb) = renderer.get_buffer(*vb_id) {
-                        let ds = tex_view
-                            .and_then(|v| renderer.texture_descriptor_sets.get(&v))
-                            .unwrap_or(&renderer.default_descriptor_set);
+                if let Some(indirect_buffer) = renderer.frames[current_frame].indirect_commands_buffer {
+                    device.cmd_bind_descriptor_sets(
+                        command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.layout,
+                        0,
+                        &[global_ds, renderer.bindless_descriptor_set],
+                        &[],
+                    );
 
-                        device.cmd_bind_descriptor_sets(
-                            command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            pipeline.layout,
-                            0,
-                            &[global_ds, *ds],
-                            &[],
-                        );
-
+                    if let (Some(vb), Some(ib)) = (renderer.global_vertex_buffer, renderer.global_index_buffer) {
                         device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
-                            if let Some(idx_b) = renderer.index_buffer {
-                                device.cmd_bind_index_buffer(command_buffer, idx_b.handle, 0, vk::IndexType::UINT32);
-                                device.cmd_draw_indexed(command_buffer, (idx_b.size / 4) as u32, 1, 0, 0, 0);
-                            } else {
-                                device.cmd_draw(
-                                    command_buffer,
-                                    (vb.size / std::mem::size_of::<crate::vertex::Vertex>() as u64) as u32,
-                                    1,
-                                    0,
-                                    0,
-                                );
-                            }
-                        }
+                        device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
+                    }
+
+                    if let Some(count_buffer) = renderer.frames[current_frame].draw_count_buffer {
+                         device.cmd_draw_indexed_indirect_count(
+                            command_buffer,
+                            indirect_buffer.handle,
+                            0,
+                            count_buffer.handle,
+                            0,
+                            max_indirect_commands,
+                            std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                        );
+                    } else {
+                        device.cmd_draw_indexed_indirect(
+                            command_buffer,
+                            indirect_buffer.handle,
+                            0,
+                            max_indirect_commands,
+                            std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                        );
                     }
                 }
-            }
 
-            // Transition to Subpass 1: Lighting resolve
-            device.cmd_next_subpass(command_buffer, vk::SubpassContents::INLINE);
+                device.cmd_end_rendering(command_buffer);
+            }
+            device.end_command_buffer(command_buffer).unwrap();
+        }
+    }
+
+    pub fn record_lighting_commands(
+        &self,
+        renderer: &Renderer,
+        command_buffer: vk::CommandBuffer,
+        pc_bytes: &[u8],
+        current_frame: usize,
+    ) {
+        let device = &renderer.device.device;
+        let extent = renderer.get_extent();
+        let global_ds = renderer.frames[current_frame].global_descriptor_set;
+
+        unsafe {
+            let color_formats = [vk::Format::R16G16B16A16_SFLOAT];
+            let mut inheritance_info = vk::CommandBufferInheritanceRenderingInfo::default()
+                .color_attachment_formats(&color_formats);
+            let inherit = vk::CommandBufferInheritanceInfo::default().push_next(&mut inheritance_info);
+            let begin_info = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE | vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
+                .inheritance_info(&inherit);
+
+            device.begin_command_buffer(command_buffer, &begin_info).unwrap();
 
             if let Some(pipeline) = self.pipeline {
+                let color_attachment = vk::RenderingAttachmentInfo::default()
+                    .image_view(renderer.gbuffer.hdr[current_frame].view)
+                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.1, 0.1, 0.1, 1.0] } });
+
+                let rendering_info = vk::RenderingInfo::default()
+                    .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
+                    .layer_count(1)
+                    .color_attachments(std::slice::from_ref(&color_attachment));
+
+                device.cmd_begin_rendering(command_buffer, &rendering_info);
                 device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
                 device.cmd_bind_descriptor_sets(
@@ -318,7 +478,9 @@ impl DeferredPass {
                 );
 
                 device.cmd_draw(command_buffer, 3, 1, 0, 0);
+                device.cmd_end_rendering(command_buffer);
             }
+            device.end_command_buffer(command_buffer).unwrap();
         }
     }
 

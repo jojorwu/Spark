@@ -29,10 +29,14 @@ use spark_script::ScriptHost;
 use crate::ui::EditorUI;
 
 fn main() {
-    env_logger::init();
+    let (logger, logs) = spark_core::logger::EditorLogger::new();
+    logger.init();
     log::info!("Spark Editor starting...");
 
     let compiler = ShaderCompiler::new();
+
+    let culling_spirv = compiler.compile("assets/shaders/culling.comp", shaderc::ShaderKind::Compute);
+    let hiz_spirv = compiler.compile("assets/shaders/hiz.comp", shaderc::ShaderKind::Compute);
 
     let ui_vert_spirv = compiler.compile("assets/shaders/ui.vert", shaderc::ShaderKind::Vertex);
     let ui_frag_spirv = compiler.compile("assets/shaders/ui.frag", shaderc::ShaderKind::Fragment);
@@ -42,6 +46,9 @@ fn main() {
         Some((&ui_vert_spirv, &ui_frag_spirv))
     ).expect("Failed to initialize engine");
 
+    engine.add_system(spark_core::systems::HierarchySystem);
+    engine.add_system(spark_core::systems::ResourceSystem);
+
     let vert_spirv = compiler.compile("assets/shaders/gbuffer.vert", shaderc::ShaderKind::Vertex);
     let frag_spirv = compiler.compile("assets/shaders/gbuffer.frag", shaderc::ShaderKind::Fragment);
 
@@ -49,6 +56,15 @@ fn main() {
     let shadow_frag_spirv = compiler.compile("assets/shaders/shadow.frag", shaderc::ShaderKind::Fragment);
 
     engine.renderer.create_shadow_pipeline(&shadow_vert_spirv, &shadow_frag_spirv);
+    engine.renderer.create_culling_pipeline(&culling_spirv);
+    engine.renderer.create_hiz_pipeline(&hiz_spirv);
+
+    let grid_vert_spirv = compiler.compile("assets/shaders/grid.vert", shaderc::ShaderKind::Vertex);
+    let grid_frag_spirv = compiler.compile("assets/shaders/grid.frag", shaderc::ShaderKind::Fragment);
+    engine.renderer.create_grid_pipeline(&grid_vert_spirv, &grid_frag_spirv);
+
+    let vol_spirv = compiler.compile("assets/shaders/volumetric.comp", shaderc::ShaderKind::Compute);
+    engine.renderer.create_volumetric_pipeline(&vol_spirv);
 
     let post_vert_spirv = compiler.compile("assets/shaders/fullscreen.vert", shaderc::ShaderKind::Vertex);
     let post_frag_spirv = compiler.compile("assets/shaders/tonemap_bloom.frag", shaderc::ShaderKind::Fragment);
@@ -58,8 +74,6 @@ fn main() {
 
     let pipeline = Pipeline::new(
         engine.renderer.get_device(),
-        engine.renderer.gbuffer.render_pass,
-        0, // Subpass 0: Geometry
         engine.renderer.get_extent(),
         &vert_spirv,
         &frag_spirv,
@@ -67,6 +81,8 @@ fn main() {
         false, // Not deferred lighting
         0,
         engine.renderer.pipeline_cache,
+        engine.renderer.global_descriptor_set_layout,
+        engine.renderer.bindless_descriptor_set_layout,
     );
 
     engine.renderer.set_pipeline(pipeline);
@@ -90,8 +106,6 @@ fn main() {
 
     let deferred_pipeline = Pipeline::new(
         engine.renderer.get_device(),
-        engine.renderer.gbuffer.render_pass,
-        1, // Subpass 1: Lighting
         engine.renderer.get_extent(),
         &def_vert_spirv,
         &def_frag_spirv,
@@ -99,6 +113,8 @@ fn main() {
         true, // Deferred lighting
         4,    // 4 input attachments (Albedo, Normal, PBR, Depth)
         engine.renderer.pipeline_cache,
+        engine.renderer.global_descriptor_set_layout,
+        engine.renderer.bindless_descriptor_set_layout,
     );
 
     engine.renderer.set_deferred_pipeline(deferred_pipeline.graphics_pipeline);
@@ -120,7 +136,7 @@ fn main() {
     engine.renderer.upload_to_buffer(&vb, &vertices);
     engine.renderer.add_vertex_buffer(vb);
 
-    use spark_core::scene::{Node, NodeData};
+    use spark_core::scene::{Node, MeshComponent, CameraComponent};
 
     let triangle_node = Node {
         name: "MyTriangle".to_string(),
@@ -128,12 +144,15 @@ fn main() {
         global_transform: Mat4::IDENTITY,
         parent: None,
         children: Vec::new(),
-        data: NodeData::Mesh {
+        components: vec![Box::new(MeshComponent {
             vertex_count: 3,
+            index_count: 3,
+            first_index: 0,
+            vertex_offset: 0,
             texture_id: None,
-            vertex_buffer_id: Some(0),
+            material_index: Some(0),
             bounding_radius: 1.0,
-        },
+        })],
     };
 
     engine.scene.add_node(engine.scene.root, triangle_node);
@@ -144,23 +163,28 @@ fn main() {
         global_transform: Mat4::IDENTITY,
         parent: None,
         children: Vec::new(),
-        data: NodeData::Camera { fov: 45.0, near: 0.1, far: 100.0 },
+        components: vec![Box::new(CameraComponent { fov: 45.0, near: 0.1, far: 100.0 })],
     };
 
     engine.scene.add_node(engine.scene.root, _camera_node);
 
     let _script_host = ScriptHost::new();
 
-    let mut ui = EditorUI::new(&engine.window);
+    let mut ui = EditorUI::new(&engine.window, logs);
+    engine.renderer.create_viewport_attachment(1280, 720);
+    let viewport_view = engine.renderer.viewport_attachment.as_ref().unwrap().view;
+    let viewport_sampler = engine.renderer.shadow_pass.sampler;
+    ui.viewport_texture_id = Some(engine.renderer.register_egui_texture(viewport_view, viewport_sampler));
 
-    engine.run(move |window, event, scene| {
+    engine.run(move |window, event, scene, rm, renderer, fps| {
         match event {
             winit::event::Event::WindowEvent { event, .. } => {
                 (ui.handle_event(window, event), None)
             }
             winit::event::Event::AboutToWait => {
                 ui.begin_frame(window);
-                ui.draw_ui(scene);
+                ui.draw_ui(scene, rm, renderer);
+                ui.draw_viewport(scene, fps);
                 let full_output = ui.end_frame(window);
                 (false, Some((full_output, ui.egui_ctx.clone())))
             }

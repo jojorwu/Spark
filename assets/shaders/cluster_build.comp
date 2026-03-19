@@ -1,0 +1,70 @@
+#version 450
+
+layout (local_size_x = 16, local_size_y = 9, local_size_z = 4) in;
+
+struct ClusterAABB {
+    vec4 min;
+    vec4 max;
+};
+
+layout (std430, set = 0, binding = 0) writeonly buffer ClusterBuffer {
+    ClusterAABB clusters[];
+};
+
+layout (push_constant) uniform PushConstants {
+    mat4 inverseProjection;
+    vec2 screenSize;
+    float zNear;
+    float zFar;
+} push;
+
+vec4 screenToView(vec4 screen) {
+    vec2 texCoord = screen.xy / push.screenSize;
+    vec4 clip = vec4(texCoord * 2.0 - 1.0, screen.z, 1.0);
+    vec4 view = push.inverseProjection * clip;
+    return view / view.w;
+}
+
+vec3 intersectPlane(vec3 a, vec3 b, float z) {
+    vec3 ab = b - a;
+    float t = (z - a.z) / ab.z;
+    return a + t * ab;
+}
+
+void main() {
+    uint clusterIndex = gl_GlobalInvocationID.x +
+                        gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x +
+                        gl_GlobalInvocationID.z * gl_NumWorkGroups.x * gl_WorkGroupSize.x * gl_NumWorkGroups.y * gl_WorkGroupSize.y;
+
+    vec2 tileSize = push.screenSize / vec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+
+    // Screen space coordinates for the tile
+    vec4 minScreen = vec4(vec2(gl_GlobalInvocationID.xy) * tileSize, 0.0, 1.0);
+    vec4 maxScreen = vec4(vec2(gl_GlobalInvocationID.xy + 1) * tileSize, 0.0, 1.0);
+
+    // View space coordinates for the four corners of the tile at the near plane
+    vec3 viewNear[4];
+    viewNear[0] = screenToView(vec4(minScreen.x, minScreen.y, 0.0, 1.0)).xyz;
+    viewNear[1] = screenToView(vec4(maxScreen.x, minScreen.y, 0.0, 1.0)).xyz;
+    viewNear[2] = screenToView(vec4(minScreen.x, maxScreen.y, 0.0, 1.0)).xyz;
+    viewNear[3] = screenToView(vec4(maxScreen.x, maxScreen.y, 0.0, 1.0)).xyz;
+
+    // Logarithmic depth splitting
+    float zNear = -push.zNear;
+    float zFar = -push.zFar;
+    float clusterNear = zNear * pow(zFar / zNear, float(gl_GlobalInvocationID.z) / float(gl_NumWorkGroups.z * gl_WorkGroupSize.z));
+    float clusterFar  = zNear * pow(zFar / zNear, float(gl_GlobalInvocationID.z + 1) / float(gl_NumWorkGroups.z * gl_WorkGroupSize.z));
+
+    vec3 minView = vec3(10000.0);
+    vec3 maxView = vec3(-10000.0);
+
+    for(int i = 0; i < 4; i++) {
+        vec3 pNear = intersectPlane(vec3(0.0), viewNear[i], clusterNear);
+        vec3 pFar  = intersectPlane(vec3(0.0), viewNear[i], clusterFar);
+        minView = min(minView, min(pNear, pFar));
+        maxView = max(maxView, max(pNear, pFar));
+    }
+
+    clusters[clusterIndex].min = vec4(minView, 0.0);
+    clusters[clusterIndex].max = vec4(maxView, 0.0);
+}

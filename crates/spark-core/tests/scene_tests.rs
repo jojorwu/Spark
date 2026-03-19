@@ -10,7 +10,7 @@ fn test_scene_node_management() {
         global_transform: Mat4::IDENTITY,
         parent: None,
         children: Vec::new(),
-        data: NodeData::None,
+        components: Vec::new(),
     };
 
     let key = scene.add_node(scene.root, node);
@@ -29,7 +29,7 @@ fn test_transform_propagation() {
         global_transform: Mat4::IDENTITY,
         parent: None,
         children: Vec::new(),
-        data: NodeData::None,
+        components: Vec::new(),
     };
     let parent_key = scene.add_node(scene.root, parent_node);
 
@@ -39,7 +39,7 @@ fn test_transform_propagation() {
         global_transform: Mat4::IDENTITY,
         parent: None,
         children: Vec::new(),
-        data: NodeData::None,
+        components: Vec::new(),
     };
     let child_key = scene.add_node(parent_key, child_node);
 

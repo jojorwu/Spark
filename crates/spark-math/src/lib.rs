@@ -38,3 +38,41 @@ impl Frustum {
         true
     }
 }
+
+pub struct Ray {
+    pub origin: Vec3,
+    pub direction: Vec3,
+}
+
+impl Ray {
+    pub fn new(origin: Vec3, direction: Vec3) -> Self {
+        Self {
+            origin,
+            direction: direction.normalize(),
+        }
+    }
+
+    pub fn intersect_sphere(&self, center: Vec3, radius: f32) -> Option<f32> {
+        let oc = self.origin - center;
+        let a = self.direction.dot(self.direction);
+        let b = 2.0 * oc.dot(self.direction);
+        let c = oc.dot(oc) - radius * radius;
+        let discriminant = b * b - 4.0 * a * c;
+
+        if discriminant < 0.0 {
+            None
+        } else {
+            let t = (-b - discriminant.sqrt()) / (2.0 * a);
+            if t > 0.0 {
+                Some(t)
+            } else {
+                let t = (-b + discriminant.sqrt()) / (2.0 * a);
+                if t > 0.0 {
+                    Some(t)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}

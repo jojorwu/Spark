@@ -16,3 +16,6 @@ egui.workspace = true
 egui-ash.workspace = true
 bytemuck.workspace = true
 image.workspace = true
+rayon.workspace = true
+num_cpus.workspace = true
+rand = "0.8"

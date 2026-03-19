@@ -4,8 +4,6 @@ use crate::MAX_FRAMES_IN_FLIGHT;
 use crate::pipeline::Pipeline;
 
 pub struct PostProcessPass {
-    pub render_pass: vk::RenderPass,
-    pub framebuffers: Vec<vk::Framebuffer>,
     pub pipeline: Option<vk::Pipeline>,
     pub bloom_pipeline: Option<vk::Pipeline>,
     pub layout: vk::PipelineLayout,
@@ -15,6 +13,7 @@ pub struct PostProcessPass {
     pub bloom_images: Vec<vk::Image>,
     pub bloom_memories: Vec<vk::DeviceMemory>,
     pub bloom_views: Vec<vk::ImageView>,
+    pub swapchain_format: vk::Format,
 }
 
 impl PostProcessPass {
@@ -25,8 +24,6 @@ impl PostProcessPass {
         format: vk::Format,
         extent: vk::Extent2D,
     ) -> Result<Self, crate::error::RendererError> {
-        let render_pass = Self::create_render_pass(device, format)?;
-
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -35,6 +32,11 @@ impl PostProcessPass {
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -48,7 +50,13 @@ impl PostProcessPass {
 
         let layout = unsafe {
             device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::default().set_layouts(std::slice::from_ref(&ds_layout)),
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(std::slice::from_ref(&ds_layout))
+                    .push_constant_ranges(&[vk::PushConstantRange {
+                        stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                        offset: 0,
+                        size: 8,
+                    }]),
                 None,
             )?
         };
@@ -56,7 +64,7 @@ impl PostProcessPass {
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32 * 2),
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32 * 3),
         ];
         let descriptor_pool = unsafe {
             device.create_descriptor_pool(
@@ -97,8 +105,6 @@ impl PostProcessPass {
         }
 
         Ok(Self {
-            render_pass,
-            framebuffers: Vec::new(),
             pipeline: None,
             bloom_pipeline: None,
             layout,
@@ -108,59 +114,8 @@ impl PostProcessPass {
             bloom_images,
             bloom_memories,
             bloom_views,
+            swapchain_format: format,
         })
-    }
-
-    fn create_render_pass(device: &ash::Device, format: vk::Format) -> Result<vk::RenderPass, crate::error::RendererError> {
-        let color_attachment = vk::AttachmentDescription::default()
-            .format(format)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
-        let color_ref = vk::AttachmentReference::default()
-            .attachment(0)
-            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        let subpass = vk::SubpassDescription::default()
-            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-            .color_attachments(std::slice::from_ref(&color_ref));
-
-        Ok(unsafe {
-            device.create_render_pass(
-                &vk::RenderPassCreateInfo::default()
-                    .attachments(std::slice::from_ref(&color_attachment))
-                    .subpasses(std::slice::from_ref(&subpass)),
-                None,
-            )?
-        })
-    }
-
-    pub fn create_framebuffers(
-        &mut self,
-        device: &ash::Device,
-        views: &[vk::ImageView],
-        extent: vk::Extent2D,
-    ) {
-        self.framebuffers = views
-            .iter()
-            .map(|&v| {
-                let attachments = [v];
-                unsafe {
-                    device
-                        .create_framebuffer(
-                            &vk::FramebufferCreateInfo::default()
-                                .render_pass(self.render_pass)
-                                .attachments(&attachments)
-                                .width(extent.width)
-                                .height(extent.height)
-                                .layers(1),
-                            None,
-                        )
-                        .expect("Failed to create post-process framebuffer")
-                }
-            })
-            .collect();
     }
 
     pub fn create_pipelines(
@@ -192,6 +147,10 @@ impl PostProcessPass {
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default().color_write_mask(vk::ColorComponentFlags::RGBA).blend_enable(false);
         let color_blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(std::slice::from_ref(&color_blend_attachment));
 
+        let color_formats = [self.swapchain_format];
+        let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
+            .color_attachment_formats(&color_formats);
+
         let info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&stages)
             .vertex_input_state(&vertex_input)
@@ -201,8 +160,7 @@ impl PostProcessPass {
             .multisample_state(&multisample)
             .color_blend_state(&color_blend)
             .layout(self.layout)
-            .render_pass(self.render_pass)
-            .subpass(0);
+            .push_next(&mut rendering_info);
 
         self.pipeline = Some(unsafe { device.create_graphics_pipelines(pipeline_cache, &[info], None).unwrap()[0] });
 
@@ -220,8 +178,7 @@ impl PostProcessPass {
             .multisample_state(&multisample)
             .color_blend_state(&color_blend)
             .layout(self.layout)
-            .render_pass(self.render_pass)
-            .subpass(0);
+            .push_next(&mut rendering_info);
 
         self.bloom_pipeline = Some(unsafe { device.create_graphics_pipelines(pipeline_cache, &[bloom_info], None).unwrap()[0] });
 
@@ -237,17 +194,24 @@ impl PostProcessPass {
         device: &ash::Device,
         hdr_attachments: &[Attachment],
         sampler: vk::Sampler,
+        taa_images: Option<&Vec<Attachment>>,
+        fog_images: Option<&Vec<Attachment>>,
     ) {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
+            let view = if let Some(taa) = taa_images {
+                taa[i].view
+            } else {
+                hdr_attachments[i].view
+            };
             let img_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(hdr_attachments[i].view)
+                .image_view(view)
                 .sampler(sampler)];
             let blm_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image_view(self.bloom_views[0])
                 .sampler(sampler)];
-            let writes = [
+            let mut writes = vec![
                 vk::WriteDescriptorSet::default()
                     .dst_set(self.descriptor_sets[i])
                     .dst_binding(0)
@@ -261,6 +225,24 @@ impl PostProcessPass {
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&blm_info),
             ];
+
+            let fog_view = if let Some(fog) = fog_images {
+                fog[i].view
+            } else {
+                taa_images.map(|t| t[i].view).unwrap_or(hdr_attachments[i].view)
+            };
+            let fog_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(fog_view)
+                .sampler(sampler)];
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(2)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&fog_info),
+            );
             unsafe {
                 device.update_descriptor_sets(&writes, &[]);
             }
@@ -271,10 +253,14 @@ impl PostProcessPass {
         &self,
         device: &ash::Device,
         command_buffer: vk::CommandBuffer,
-        image_index: u32,
+        _image_index: u32,
         current_frame: usize,
+        swapchain_image_view: vk::ImageView,
         swapchain_image: vk::Image,
         extent: vk::Extent2D,
+        target_view: Option<vk::ImageView>,
+        exposure: f32,
+        gamma: f32,
     ) {
         let pipeline = match self.pipeline {
             Some(p) => p,
@@ -303,22 +289,20 @@ impl PostProcessPass {
                 &[barrier],
             );
 
-            device.cmd_begin_render_pass(
-                command_buffer,
-                &vk::RenderPassBeginInfo::default()
-                    .render_pass(self.render_pass)
-                    .framebuffer(self.framebuffers[image_index as usize])
-                    .render_area(vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent,
-                    })
-                    .clear_values(&[vk::ClearValue {
-                        color: vk::ClearColorValue {
-                            float32: [0.0, 0.0, 0.0, 1.0],
-                        },
-                    }]),
-                vk::SubpassContents::INLINE,
-            );
+            let view = target_view.unwrap_or(swapchain_image_view);
+            let color_attachment = vk::RenderingAttachmentInfo::default()
+                .image_view(view)
+                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } });
+
+            let rendering_info = vk::RenderingInfo::default()
+                .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
+                .layer_count(1)
+                .color_attachments(std::slice::from_ref(&color_attachment));
+
+            device.cmd_begin_rendering(command_buffer, &rendering_info);
 
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
@@ -339,8 +323,12 @@ impl PostProcessPass {
                 &[],
             );
 
+            let pc = [exposure, gamma];
+            let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 8);
+            device.cmd_push_constants(command_buffer, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
+
             device.cmd_draw(command_buffer, 3, 1, 0, 0);
-            device.cmd_end_render_pass(command_buffer);
+            device.cmd_end_rendering(command_buffer);
         }
     }
 
@@ -355,10 +343,6 @@ impl PostProcessPass {
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             device.destroy_descriptor_pool(self.descriptor_pool, None);
-            for &f in &self.framebuffers {
-                device.destroy_framebuffer(f, None);
-            }
-            device.destroy_render_pass(self.render_pass, None);
             for view in self.bloom_views.drain(..) {
                 device.destroy_image_view(view, None);
             }

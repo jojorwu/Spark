@@ -3,3 +3,4 @@ pub mod device;
 pub mod gbuffer;
 pub mod swapchain;
 pub mod texture;
+pub mod ibl;

@@ -6,9 +6,11 @@
 
 layout (set = 0, binding = 0) uniform GlobalUBO {
     mat4 viewProj;
-    mat4 lightViewProj;
+    mat4 lightViewProj[4];
     mat4 invViewProj;
     vec4 cameraPos;
+    vec4 frustum[6];
+    vec4 cascadeSplits;
 } global;
 
 #if MSAA_SAMPLES > 1
@@ -23,15 +25,32 @@ layout (set = 1, input_attachment_index = 2, binding = 2) uniform subpassInput i
 layout (set = 1, input_attachment_index = 3, binding = 3) uniform subpassInput inputDepth;
 #endif
 
-layout (set = 1, binding = 4) uniform sampler2D shadowMap;
+layout (set = 1, binding = 4) uniform sampler2DArray shadowMap;
+layout (set = 1, binding = 7) uniform sampler2D ssaoTex;
+layout (set = 1, binding = 8) uniform samplerCube irradianceMap;
+layout (set = 1, binding = 9) uniform samplerCube specularMap;
+layout (set = 1, binding = 10) uniform sampler2D brdfLUT;
 
 struct Light {
     vec4 pos;
     vec4 color;
 };
 
-layout (set = 1, std430, binding = 5) buffer LightBuffer {
+layout (set = 1, std430, binding = 5) readonly buffer LightBuffer {
     Light lights[];
+};
+
+struct LightGrid {
+    uint offset;
+    uint count;
+};
+
+layout (set = 0, std430, binding = 6) readonly buffer LightGridBuffer {
+    LightGrid lightGrids[];
+};
+
+layout (set = 0, std430, binding = 7) readonly buffer GlobalIndexList {
+    uint globalIndexList[];
 };
 
 layout(push_constant) uniform PushConstants {
@@ -78,23 +97,28 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 }
 
 /**
- * Percentage-Closer Filtering (PCF) for soft shadows.
+ * Percentage-Closer Filtering (PCF) for soft shadows with Cascaded Shadow Maps.
  */
-float calculateShadow(vec3 worldPos) {
-    vec4 shadowCoord = global.lightViewProj * vec4(worldPos, 1.0);
+float calculateShadow(vec3 worldPos, float linearDepth) {
+    uint cascadeIdx = 0;
+    for (uint i = 0; i < 3; ++i) {
+        if (linearDepth > global.cascadeSplits[i]) {
+            cascadeIdx = i + 1;
+        }
+    }
+
+    vec4 shadowCoord = global.lightViewProj[cascadeIdx] * vec4(worldPos, 1.0);
     shadowCoord.xyz /= shadowCoord.w;
 
-    // Convert to [0, 1] range
     shadowCoord.xy = shadowCoord.xy * 0.5 + 0.5;
 
     float shadow = 0.0;
-    vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
+    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
     float bias = 0.005;
 
-    // 3x3 PCF Kernel
     for(int x = -1; x <= 1; ++x) {
         for(int y = -1; y <= 1; ++y) {
-            float pcfDepth = texture(shadowMap, shadowCoord.xy + vec2(x, y) * texelSize).r;
+            float pcfDepth = texture(shadowMap, vec3(shadowCoord.xy + vec2(x, y) * texelSize, cascadeIdx)).r;
             shadow += shadowCoord.z - bias > pcfDepth ? 0.5 : 1.0;
         }
     }
@@ -104,21 +128,34 @@ float calculateShadow(vec3 worldPos) {
 /**
  * Physically Based Rendering (PBR) lighting using Cook-Torrance BRDF.
  */
-vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metallic, float roughness, vec3 viewPos) {
+vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metallic, float roughness, vec3 viewPos, float ssao, vec2 uv, float depth) {
     vec3 N = normalize(normal);
     vec3 V = normalize(viewPos - worldPos);
     vec3 F0 = vec3(0.04);
     F0 = mix(F0, albedo, metallic);
 
     vec3 Lo = vec3(0.0);
-    float shadow = calculateShadow(worldPos);
+    float shadow = calculateShadow(worldPos, depth);
 
-    for (int i = 0; i < push.lightCount; i++) {
-        vec3 L = normalize(lights[i].pos.xyz - worldPos);
+    // Clustered Light Lookup
+    // 16x9x24 grid
+    uint zSlices = 24;
+    float zNear = 0.1;
+    float zFar = 100.0;
+
+    uint clusterZ = uint(max(0.0, log(depth / zNear) * float(zSlices) / log(zFar / zNear)));
+    uvec2 clusterXY = uvec2(uv * vec2(16, 9));
+    uint clusterIndex = clusterXY.x + clusterXY.y * 16 + clusterZ * 16 * 9;
+
+    LightGrid grid = lightGrids[clusterIndex];
+
+    for (uint i = 0; i < grid.count; i++) {
+        uint lightIdx = globalIndexList[grid.offset + i];
+        vec3 L = normalize(lights[lightIdx].pos.xyz - worldPos);
         vec3 H = normalize(V + L);
-        float distance = length(lights[i].pos.xyz - worldPos);
-        float attenuation = lights[i].color.a / (distance * distance);
-        vec3 radiance = lights[i].color.rgb * attenuation;
+        float distance = length(lights[lightIdx].pos.xyz - worldPos);
+        float attenuation = lights[lightIdx].color.w / (distance * distance); // Range in w
+        vec3 radiance = lights[lightIdx].color.rgb * attenuation;
 
         float NDF = DistributionGGX(N, H, roughness);
         float G = GeometrySmith(N, V, L, roughness);
@@ -136,7 +173,21 @@ vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metalli
         Lo += (kD * albedo / PI + specular) * radiance * NdotL * shadow;
     }
 
-    vec3 ambient = vec3(0.03) * albedo;
+    vec3 R = reflect(-V, N);
+    vec3 F = fresnelSchlick(max(dot(N, V), 0.0), F0);
+    vec3 kS = F;
+    vec3 kD = 1.0 - kS;
+    kD *= 1.0 - metallic;
+
+    vec3 irradiance = texture(irradianceMap, N).rgb;
+    vec3 diffuse = irradiance * albedo;
+
+    const float MAX_REFLECTION_LOD = 4.0;
+    vec3 prefilteredColor = textureLod(specularMap, R, roughness * MAX_REFLECTION_LOD).rgb;
+    vec2 brdf = texture(brdfLUT, vec2(max(dot(N, V), 0.0), roughness)).rg;
+    vec3 envSpecular = prefilteredColor * (F * brdf.x + brdf.y);
+
+    vec3 ambient = (kD * diffuse + envSpecular) * ssao;
     vec3 color = ambient + Lo;
     return color;
 }
@@ -156,20 +207,30 @@ void main()
 #if MSAA_SAMPLES > 1
     vec3 color = vec3(0.0);
     for (int i = 0; i < MSAA_SAMPLES; i++) {
+    float ssao = texture(ssaoTex, texCoord).r;
+
         vec3 albedo = subpassLoad(inputAlbedo, i).rgb;
         vec3 normal = subpassLoad(inputNormal, i).rgb * 2.0 - 1.0;
         float depth = subpassLoad(inputDepth, i).r;
         vec3 position = worldPosFromDepth(depth, texCoord);
         vec2 pbr = subpassLoad(inputPBR, i).rg;
-        color += calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos);
+
+        // linear depth for clustering
+        float linearDepth = (2.0 * 0.1) / (100.0 + 0.1 - depth * (100.0 - 0.1));
+
+        color += calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, texCoord, linearDepth);
     }
     outColor = vec4(color / float(MSAA_SAMPLES), 1.0);
 #else
+    float ssao = texture(ssaoTex, texCoord).r;
     vec3 albedo = subpassLoad(inputAlbedo).rgb;
     vec3 normal = subpassLoad(inputNormal).rgb * 2.0 - 1.0;
     float depth = subpassLoad(inputDepth).r;
     vec3 position = worldPosFromDepth(depth, texCoord);
     vec2 pbr = subpassLoad(inputPBR).rg;
-    outColor = vec4(calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos), 1.0);
+
+    float linearDepth = (2.0 * 0.1) / (100.0 + 0.1 - depth * (100.0 - 0.1));
+
+    outColor = vec4(calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, texCoord, linearDepth), 1.0);
 #endif
 }

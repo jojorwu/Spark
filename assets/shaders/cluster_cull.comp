@@ -1,0 +1,82 @@
+#version 450
+
+layout (local_size_x = 16, local_size_y = 9, local_size_z = 4) in;
+
+struct ClusterAABB {
+    vec4 min;
+    vec4 max;
+};
+
+struct Light {
+    vec4 pos;
+    vec4 color; // xyz = color, w = intensity/range
+};
+
+struct LightGrid {
+    uint offset;
+    uint count;
+};
+
+layout (std430, set = 0, binding = 0) readonly buffer ClusterBuffer {
+    ClusterAABB clusters[];
+};
+
+layout (std430, set = 0, binding = 1) readonly buffer LightBuffer {
+    Light lights[];
+};
+
+layout (std430, set = 0, binding = 2) writeonly buffer LightGridBuffer {
+    LightGrid lightGrids[];
+};
+
+layout (std430, set = 0, binding = 3) buffer GlobalIndexList {
+    uint globalIndexList[];
+};
+
+layout (std430, set = 0, binding = 4) buffer GlobalIndexCounter {
+    uint globalIndexCounter;
+};
+
+layout (push_constant) uniform PushConstants {
+    mat4 view;
+    uint lightCount;
+} push;
+
+bool intersectSphereAABB(vec3 center, float radius, vec3 minB, vec3 maxB) {
+    float sqDist = 0.0;
+    for (int i = 0; i < 3; i++) {
+        float v = center[i];
+        if (v < minB[i]) sqDist += (minB[i] - v) * (minB[i] - v);
+        if (v > maxB[i]) sqDist += (v - maxB[i]) * (v - maxB[i]);
+    }
+    return sqDist <= (radius * radius);
+}
+
+void main() {
+    uint clusterIndex = gl_GlobalInvocationID.x +
+                        gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x +
+                        gl_GlobalInvocationID.z * gl_NumWorkGroups.x * gl_WorkGroupSize.x * gl_NumWorkGroups.y * gl_WorkGroupSize.y;
+
+    ClusterAABB cluster = clusters[clusterIndex];
+    uint visibleLightCount = 0;
+    uint visibleLightIndices[128]; // Max lights per cluster
+
+    for (uint i = 0; i < push.lightCount; i++) {
+        vec3 center = (push.view * vec4(lights[i].pos.xyz, 1.0)).xyz;
+        float radius = lights[i].color.w; // Range
+
+        if (intersectSphereAABB(center, radius, cluster.min.xyz, cluster.max.xyz)) {
+            if (visibleLightCount < 128) {
+                visibleLightIndices[visibleLightCount++] = i;
+            }
+        }
+    }
+
+    uint offset = atomicAdd(globalIndexCounter, visibleLightCount);
+    for (uint i = 0; i < visibleLightCount; i++) {
+        globalIndexList[offset + i] = visibleLightIndices[i];
+    }
+
+    lightGrids[clusterIndex].offset = offset;
+    lightGrids[clusterIndex].count = visibleLightCount;
+}

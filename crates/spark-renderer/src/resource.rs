@@ -8,7 +8,12 @@ pub struct Buffer {
     pub handle: vk::Buffer,
     pub memory: vk::DeviceMemory,
     pub size: vk::DeviceSize,
+    pub ptr: *mut std::ffi::c_void,
+    pub address: u64,
 }
+
+unsafe impl Send for Buffer {}
+unsafe impl Sync for Buffer {}
 
 /// Represents a framebuffer attachment (Image, Memory, View).
 pub struct Attachment {
@@ -27,7 +32,53 @@ pub struct RenderFrame {
     pub global_buffer: Option<Buffer>,
     pub light_buffer: Option<Buffer>,
     pub global_descriptor_set: vk::DescriptorSet,
-    pub instance_buffers: Vec<Buffer>,
+    pub instance_pool: Vec<Buffer>,
+    pub instance_index: usize,
+    pub indirect_commands_buffer: Option<Buffer>,
+    pub object_data_buffer: Option<Buffer>,
+    pub draw_count_buffer: Option<Buffer>,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct ObjectDataSSBO {
+    pub model: spark_math::Mat4,
+    pub sphere: spark_math::Vec4,
+    pub index_count: u32,
+    pub first_index: u32,
+    pub vertex_offset: i32,
+    pub material_index: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct MaterialDataSSBO {
+    pub albedo_factor: spark_math::Vec4,
+    pub emissive_factor: spark_math::Vec4,
+    pub metallic_factor: f32,
+    pub roughness_factor: f32,
+    pub alpha_cutoff: f32,
+    pub flags: u32,
+    pub albedo_texture: i32,
+    pub normal_texture: i32,
+    pub metallic_roughness_texture: i32,
+    pub emissive_texture: i32,
+    pub occlusion_texture: i32,
+    pub padding: [i32; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct ClusterAABB {
+    pub min: spark_math::Vec4,
+    pub max: spark_math::Vec4,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct LightGrid {
+    pub offset: u32,
+    pub count: u32,
 }
 
 impl Attachment {

@@ -1,0 +1,59 @@
+#version 450
+layout (local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout (binding = 0, rgba16f) uniform writeonly image2D volumetricFog;
+layout (binding = 1) uniform sampler2D depthBuffer;
+layout (binding = 2) uniform sampler2DArray shadowMap;
+
+layout (set = 0, binding = 0) uniform GlobalUBO {
+    mat4 viewProj;
+    mat4 lightViewProj[4];
+    mat4 invViewProj;
+    vec4 cameraPos;
+    vec4 frustum[6];
+    vec4 cascadeSplits;
+} global;
+
+float calculateShadow(vec3 worldPos, float linearDepth) {
+    uint cascadeIdx = 0;
+    for (uint i = 0; i < 3; ++i) {
+        if (linearDepth > global.cascadeSplits[i]) {
+            cascadeIdx = i + 1;
+        }
+    }
+    vec4 shadowCoord = global.lightViewProj[cascadeIdx] * vec4(worldPos, 1.0);
+    shadowCoord.xyz /= shadowCoord.w;
+    shadowCoord.xy = shadowCoord.xy * 0.5 + 0.5;
+    float pcfDepth = texture(shadowMap, vec3(shadowCoord.xy, cascadeIdx)).r;
+    return shadowCoord.z > pcfDepth ? 0.0 : 1.0;
+}
+
+vec3 worldPosFromDepth(float depth, vec2 uv) {
+    vec4 clipSpacePos = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 worldSpacePos = global.invViewProj * clipSpacePos;
+    return worldSpacePos.xyz / worldSpacePos.w;
+}
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    vec2 size = imageSize(volumetricFog);
+    if (pos.x >= size.x || pos.y >= size.y) return;
+
+    vec2 uv = (vec2(pos) + 0.5) / size;
+    float depth = texture(depthBuffer, uv).r;
+    vec3 worldPos = worldPosFromDepth(depth, uv);
+    vec3 rayDir = normalize(worldPos - global.cameraPos.xyz);
+    float dist = length(worldPos - global.cameraPos.xyz);
+
+    float scattering = 0.0;
+    const int STEPS = 32;
+    for (int i = 0; i < STEPS; ++i) {
+        float t = float(i) / float(STEPS);
+        vec3 p = global.cameraPos.xyz + rayDir * dist * t;
+        float linearDepth = t * dist / 100.0; // Simplified
+        scattering += calculateShadow(p, linearDepth);
+    }
+    scattering /= float(STEPS);
+
+    imageStore(volumetricFog, pos, vec4(vec3(scattering * 0.1), 1.0));
+}
