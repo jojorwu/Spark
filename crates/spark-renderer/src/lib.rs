@@ -77,6 +77,19 @@ pub struct Renderer {
     pub enable_volumetric: bool,
     pub enable_grid: bool,
     pub enable_ibl: bool,
+    pub main_light_view_proj: spark_math::Mat4,
+    pub current_view_proj: spark_math::Mat4,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct GlobalUBO {
+    pub vp: spark_math::Mat4,
+    pub lvp: [spark_math::Mat4; 4],
+    pub inv_vp: spark_math::Mat4,
+    pub camera_pos: [f32; 4],
+    pub frustum: [spark_math::Vec4; 6],
+    pub cascade_splits: [f32; 4],
 }
 
 fn halton(index: u32, base: u32) -> f32 {
@@ -308,6 +321,8 @@ impl Renderer {
             enable_volumetric: true,
             enable_grid: true,
             enable_ibl: true,
+            main_light_view_proj: spark_math::Mat4::IDENTITY,
+            current_view_proj: spark_math::Mat4::IDENTITY,
         })
     }
 
@@ -751,12 +766,14 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     pub fn draw_frame(
         &mut self,
-        view_proj: spark_math::Mat4,
-        light_view_proj: spark_math::Mat4,
         window: &Window,
         egui_output: Option<(egui::FullOutput, egui::Context)>,
         object_count: u32,
     ) {
+        // Retrieve view_proj and light_view_proj from the current frame's global buffer
+        // For simplicity, we'll keep them as parameters or fetch from UBO.
+        // Since prepare_frame just uploaded them, we can use them from there or just pass them.
+        // Let's modify prepare_frame to store them in the Renderer.
         let (image_available, in_flight, command_buffer, render_finished) = {
             let frame = &self.frames[self.current_frame];
             (frame.image_available, frame.in_flight, frame.command_buffer, frame.render_finished)
@@ -800,8 +817,6 @@ impl Renderer {
             }
             self.record_command_buffer(
                 image_index,
-                view_proj,
-                light_view_proj,
                 egui_output,
                 object_count,
             );
@@ -836,7 +851,8 @@ impl Renderer {
                 }
                 Err(e) => panic!("Failed to present swapchain image: {:?}", e),
             }
-            self.prev_view_proj = view_proj;
+            let cvp = self.current_view_proj;
+            self.prev_view_proj = cvp;
             self.frame_index += 1;
             self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
         }
@@ -845,8 +861,6 @@ impl Renderer {
     fn record_command_buffer(
         &mut self,
         image_index: u32,
-        view_proj: spark_math::Mat4,
-        light_view_proj: spark_math::Mat4,
         egui_output: Option<(egui::FullOutput, egui::Context)>,
         object_count: u32,
     ) {
@@ -935,12 +949,13 @@ impl Renderer {
             };
             let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
 
+            let lvp = self.main_light_view_proj;
             let ((scb_shadow, scb_gbuffer), scb_lighting) = rayon::join(
                 || rayon::join(
                     || {
                         let pool = self.get_thread_command_pool(0);
                         let scb = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
-                        self.shadow_pass.record_commands(&self.device.device, scb, &[light_view_proj; 4], self, object_count, true);
+                        self.shadow_pass.record_commands(&self.device.device, scb, &[lvp; 4], self, object_count, true);
                         scb
                     },
                     || {
@@ -958,61 +973,7 @@ impl Renderer {
                 }
             );
 
-            // 2. Main Pass (Geometry + Lighting) Orchestration
-
-            #[repr(C)]
-            #[derive(Copy, Clone)]
-            struct GlobalUBO {
-                vp: spark_math::Mat4,
-                lvp: [spark_math::Mat4; 4],
-                inv_vp: spark_math::Mat4,
-                camera_pos: [f32; 4],
-                frustum: [spark_math::Vec4; 6],
-                cascade_splits: [f32; 4],
-            }
-
-            let inv_v = self.scene_view_matrix_for_pos.inverse();
-            let camera_pos = [inv_v.w_axis.x, inv_v.w_axis.y, inv_v.w_axis.z, 1.0];
-
-            let mut frustum = [spark_math::Vec4::ZERO; 6];
-            let m = view_proj.transpose();
-            frustum[0] = m.w_axis + m.x_axis;
-            frustum[1] = m.w_axis - m.x_axis;
-            frustum[2] = m.w_axis + m.y_axis;
-            frustum[3] = m.w_axis - m.y_axis;
-            frustum[4] = m.w_axis + m.z_axis;
-            frustum[5] = m.w_axis - m.z_axis;
-
-            for plane in &mut frustum {
-                let len = spark_math::Vec3::new(plane.x, plane.y, plane.z).length();
-                *plane /= len;
-            }
-
-            let ubo = GlobalUBO {
-                vp: view_proj,
-                lvp: [light_view_proj; 4], // TODO: Calculate actual CSM projs
-                inv_vp: view_proj.inverse(),
-                camera_pos,
-                frustum,
-                cascade_splits: [0.1, 0.2, 0.5, 1.0], // Normalized linear depth
-            };
-
-            {
-                let needs_init = self.frames[0].global_buffer.is_none();
-                if needs_init {
-                    for i in 0..MAX_FRAMES_IN_FLIGHT {
-                        let new_buffer = self.create_buffer(
-                            std::mem::size_of::<GlobalUBO>() as u64,
-                            vk::BufferUsageFlags::UNIFORM_BUFFER,
-                            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                        );
-                        self.frames[i].global_buffer = Some(new_buffer);
-                    }
-                    self.ensure_global_descriptor_set();
-                }
-                let gb = self.frames[self.current_frame].global_buffer.unwrap();
-                self.upload_to_buffer(&gb, &[ubo]);
-            }
+            // 2. Execute Shadow, G-Buffer and Lighting Passes
 
             // 2a. Execute Shadow Pass
             if self.enable_shadows {
@@ -1551,6 +1512,137 @@ impl Renderer {
         let y = halton((self.frame_index % 16) as u32 + 1, 3) - 0.5;
         [x / self.swapchain.extent.width as f32, y / self.swapchain.extent.height as f32]
     }
+
+    pub fn prepare_frame(
+        &mut self,
+        view_matrix: spark_math::Mat4,
+        renderables: &[(spark_math::Mat4, u32, u32, u32, i32, Option<u32>, Option<u32>, f32)],
+        instanced: &[(u32, u32, i32, Option<u32>, Option<u32>, f32, Vec<spark_math::Mat4>)],
+        lights: &[(spark_math::Vec3, spark_math::Vec3, f32)],
+    ) -> u32 {
+        self.scene_view_matrix_for_pos = view_matrix;
+
+        // 1. Prepare GPU Indirect and Object buffers
+        let mut indirect_commands = Vec::new();
+        let mut object_ssbos = Vec::new();
+
+        for (model, _vc, ic, fi, vo, _tex_id, vb_id, br) in renderables {
+             object_ssbos.push(ObjectDataSSBO {
+                model: *model,
+                sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, *br),
+                index_count: *ic,
+                first_index: *fi,
+                vertex_offset: *vo,
+                material_index: vb_id.unwrap_or(0),
+            });
+            indirect_commands.push(vk::DrawIndexedIndirectCommand {
+                index_count: *ic,
+                instance_count: 1,
+                first_index: *fi,
+                vertex_offset: *vo,
+                first_instance: (object_ssbos.len() - 1) as u32,
+            });
+        }
+
+        for (ic, fi, vo, _tex_id, vb_id, br, transforms) in instanced {
+            for transform in transforms {
+                 object_ssbos.push(ObjectDataSSBO {
+                    model: *transform,
+                    sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, *br),
+                    index_count: *ic,
+                    first_index: *fi,
+                    vertex_offset: *vo,
+                    material_index: vb_id.unwrap_or(0),
+                });
+                indirect_commands.push(vk::DrawIndexedIndirectCommand {
+                    index_count: *ic,
+                    instance_count: 1,
+                    first_index: *fi,
+                    vertex_offset: *vo,
+                    first_instance: (object_ssbos.len() - 1) as u32,
+                });
+            }
+        }
+        self.update_indirect_buffers(&indirect_commands, &object_ssbos);
+        let total_objects = object_ssbos.len() as u32;
+
+        // 2. Update Lights
+        self.update_lights(lights);
+
+        // 3. Update Global UBO
+        let extent = self.get_extent();
+        let jitter = self.get_jitter();
+        let mut projection = spark_math::Mat4::perspective_rh(
+            45.0f32.to_radians(),
+            extent.width as f32 / extent.height as f32,
+            0.1,
+            100.0,
+        );
+        projection.col_mut(2).x += jitter[0] * projection.col(0).x;
+        projection.col_mut(2).y += jitter[1] * projection.col(1).y;
+        let view_proj = projection * view_matrix;
+        self.current_view_proj = view_proj;
+
+        let light_pos = spark_math::Vec3::new(10.0, 10.0, 10.0);
+        let light_view = spark_math::Mat4::look_at_rh(
+            light_pos,
+            spark_math::Vec3::ZERO,
+            spark_math::Vec3::Y,
+        );
+        let light_proj = spark_math::Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 0.1, 100.0);
+        self.main_light_view_proj = light_proj * light_view;
+
+        let inv_v = view_matrix.inverse();
+        let camera_pos = [inv_v.w_axis.x, inv_v.w_axis.y, inv_v.w_axis.z, 1.0];
+
+        let mut frustum = [spark_math::Vec4::ZERO; 6];
+        let m = view_proj.transpose();
+        frustum[0] = m.w_axis + m.x_axis;
+        frustum[1] = m.w_axis - m.x_axis;
+        frustum[2] = m.w_axis + m.y_axis;
+        frustum[3] = m.w_axis - m.y_axis;
+        frustum[4] = m.w_axis + m.z_axis;
+        frustum[5] = m.w_axis - m.z_axis;
+
+        for plane in &mut frustum {
+            let len = spark_math::Vec3::new(plane.x, plane.y, plane.z).length();
+            *plane /= len;
+        }
+
+        let ubo = GlobalUBO {
+            vp: view_proj,
+            lvp: [self.main_light_view_proj; 4],
+            inv_vp: view_proj.inverse(),
+            camera_pos,
+            frustum,
+            cascade_splits: [0.1, 0.2, 0.5, 1.0],
+        };
+
+        if self.frames[0].global_buffer.is_none() {
+            for i in 0..MAX_FRAMES_IN_FLIGHT {
+                let new_buffer = self.create_buffer(
+                    std::mem::size_of::<GlobalUBO>() as u64,
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                );
+                self.frames[i].global_buffer = Some(new_buffer);
+            }
+            self.ensure_global_descriptor_set();
+        }
+        let gb = self.frames[self.current_frame].global_buffer.unwrap();
+        self.upload_to_buffer(&gb, &[ubo]);
+
+        // 4. Prepare Passes
+        use crate::passes::RenderPass;
+        let cf = self.current_frame;
+        if let Some(ssao) = self.ssao_pass.as_ref() { if self.enable_ssao { ssao.prepare(self, cf); } }
+        if let Some(taa) = self.taa_pass.as_ref() { if self.enable_taa { taa.prepare(self, cf); } }
+        if let Some(vol) = self.volumetric_pass.as_ref() { if self.enable_volumetric { vol.prepare(self, cf); } }
+        if let Some(cl) = self.clustered_pass.as_ref() { cl.prepare(self, cf); }
+
+        total_objects
+    }
+
     /// Returns the raw ash::Device.
     pub fn get_device(&self) -> &ash::Device {
         &self.device.device

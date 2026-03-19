@@ -3,6 +3,37 @@ use crate::resource::{Buffer, ClusterAABB, LightGrid};
 use crate::Renderer;
 use spark_math::Mat4;
 
+use super::RenderPass;
+
+impl RenderPass for ClusteredPass {
+    fn prepare(&self, renderer: &Renderer, _current_frame: usize) {
+        if let Some(lb) = renderer.frames[renderer.current_frame].light_buffer {
+            self.update_descriptor_sets(&renderer.device.device, &lb);
+        }
+    }
+
+    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, _current_frame: usize) {
+        let view = renderer.scene_view_matrix_for_pos;
+        let proj = spark_math::Mat4::perspective_rh(
+            45.0f32.to_radians(),
+            renderer.swapchain.extent.width as f32 / renderer.swapchain.extent.height as f32,
+            0.1,
+            100.0,
+        );
+
+        self.record_build_commands(
+            &renderer.device.device,
+            command_buffer,
+            proj.inverse(),
+            [renderer.swapchain.extent.width as f32, renderer.swapchain.extent.height as f32],
+            0.1,
+            100.0
+        );
+
+        self.record_cull_commands(&renderer.device.device, command_buffer, view, renderer.light_count);
+    }
+}
+
 pub struct ClusteredPass {
     pub build_pipeline: vk::Pipeline,
     pub cull_pipeline: vk::Pipeline,

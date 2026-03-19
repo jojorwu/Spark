@@ -14,9 +14,27 @@ pub struct TAAPass {
 use super::RenderPass;
 
 impl RenderPass for TAAPass {
-    fn update_descriptor_sets(&self, renderer: &Renderer) {
-        self.update_descriptor_sets(&renderer.device.device, &renderer.gbuffer.hdr, &renderer.gbuffer.velocity, &renderer.gbuffer.depth, renderer.shadow_pass.sampler);
+    fn prepare(&self, renderer: &Renderer, current_frame: usize) {
+        let sampler = renderer.shadow_pass.sampler;
+        let prev_idx = (current_frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+        let current_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.gbuffer.hdr[current_frame].view).sampler(sampler)];
+        let history_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(self.history_images[prev_idx].view).sampler(sampler)];
+        let velocity_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.gbuffer.velocity[current_frame].view).sampler(sampler)];
+        let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.gbuffer.depth[current_frame].view).sampler(sampler)];
+
+        let writes = [
+            vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[current_frame]).dst_binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&current_info),
+            vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[current_frame]).dst_binding(1).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&history_info),
+            vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[current_frame]).dst_binding(2).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&velocity_info),
+            vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[current_frame]).dst_binding(3).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&depth_info),
+        ];
+        unsafe { renderer.device.device.update_descriptor_sets(&writes, &[]); }
     }
+
+    fn update_descriptor_sets(&self, _renderer: &Renderer) {
+        // Handled in prepare
+    }
+
     fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
         self.record_commands(&renderer.device.device, command_buffer, renderer.swapchain.extent, current_frame);
     }

@@ -13,9 +13,23 @@ pub struct VolumetricPass {
 use super::RenderPass;
 
 impl RenderPass for VolumetricPass {
-    fn update_descriptor_sets(&self, renderer: &Renderer) {
-        self.update_descriptor_sets(renderer);
+    fn prepare(&self, renderer: &Renderer, current_frame: usize) {
+        let out_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::GENERAL).image_view(self.output_images[current_frame].view)];
+        let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.gbuffer.depth[current_frame].view).sampler(renderer.shadow_pass.sampler)];
+        let shadow_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.shadow_pass.view).sampler(renderer.shadow_pass.sampler)];
+
+        let writes = [
+            vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[current_frame]).dst_binding(0).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&out_info),
+            vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[current_frame]).dst_binding(1).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&depth_info),
+            vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[current_frame]).dst_binding(2).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&shadow_info),
+        ];
+        unsafe { renderer.device.device.update_descriptor_sets(&writes, &[]); }
     }
+
+    fn update_descriptor_sets(&self, _renderer: &Renderer) {
+        // Handled in prepare
+    }
+
     fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
         let global_ds = renderer.frames[current_frame].global_descriptor_set;
         self.record_commands(&renderer.device.device, command_buffer, current_frame, global_ds, renderer.swapchain.extent);

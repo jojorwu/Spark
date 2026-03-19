@@ -1,5 +1,4 @@
 use ash::vk;
-use crate::resource::Attachment;
 use crate::Renderer;
 use crate::vertex::Vertex;
 use crate::pipeline::Pipeline;
@@ -19,11 +18,9 @@ pub struct ShadowPass {
 use super::RenderPass;
 
 impl RenderPass for ShadowPass {
-    fn update_descriptor_sets(&self, _renderer: &Renderer) {}
-    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, _current_frame: usize) {
-        // Need to calculate light_view_projs here or pass it through GlobalUBO
-        // For simplicity, we'll keep the specialized record_commands and call it from the trait if possible,
-        // or refactor the specialized one to take the needed data.
+    fn record_commands(&self, _renderer: &Renderer, _command_buffer: vk::CommandBuffer, _current_frame: usize) {
+        // Shadow pass needs specialized parameters (light_view_projs, object_count),
+        // so it's called directly with specialized record_commands for now.
     }
 }
 

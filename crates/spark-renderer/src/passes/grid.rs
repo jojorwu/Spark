@@ -4,7 +4,6 @@ use crate::pipeline::Pipeline;
 use super::RenderPass;
 
 impl RenderPass for GridPass {
-    fn update_descriptor_sets(&self, _renderer: &Renderer) {}
     fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
         let global_ds = renderer.frames[current_frame].global_descriptor_set;
         self.record_commands(

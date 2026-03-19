@@ -8,9 +8,8 @@ impl RenderPass for DeferredPass {
         renderer.update_deferred_descriptor_sets();
     }
 
-    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
-        // This pass is split into G-Buffer and Lighting, so it doesn't fit perfectly into a single record_commands
-        // Unless we call both here.
+    fn record_commands(&self, _renderer: &Renderer, _command_buffer: vk::CommandBuffer, _current_frame: usize) {
+        // Split into G-Buffer and Lighting.
     }
 }
 

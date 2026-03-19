@@ -22,6 +22,24 @@ pub struct SSAOPass {
 use super::RenderPass;
 
 impl RenderPass for SSAOPass {
+    fn prepare(&self, renderer: &Renderer, current_frame: usize) {
+        let extent = renderer.get_extent();
+        let view = renderer.scene_view_matrix_for_pos;
+        let projection = spark_math::Mat4::perspective_rh(
+            45.0f32.to_radians(),
+            extent.width as f32 / extent.height as f32,
+            0.1,
+            100.0,
+        );
+        let params = SSAOParamsStruct {
+            samples: self.kernel_samples,
+            projection,
+            view,
+            screen_size: [extent.width as f32, extent.height as f32],
+        };
+        renderer.upload_to_buffer(&self.ssao_params_buffer[current_frame], &[params]);
+    }
+
     fn update_descriptor_sets(&self, renderer: &Renderer) {
         self.update_descriptor_sets(
             &renderer.device.device,
@@ -245,20 +263,11 @@ impl SSAOPass {
         ssao_target_image: vk::Image,
         blur_target_view: vk::ImageView,
         blur_target_image: vk::Image,
-        projection: Mat4,
-        view: Mat4,
+        _projection: Mat4,
+        _view: Mat4,
     ) {
         let device = &renderer.device.device;
         unsafe {
-            // Update params buffer
-            let params = SSAOParamsStruct {
-                samples: self.kernel_samples,
-                projection,
-                view,
-                screen_size: [extent.width as f32, extent.height as f32],
-            };
-            renderer.upload_to_buffer(&self.ssao_params_buffer[current_frame], &[params]);
-
             // 1. SSAO Pass
             let ssao_barrier = vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::UNDEFINED)

@@ -20,7 +20,13 @@ use spark_renderer::Renderer;
 use spark_math::Vec4Swizzles;
 
 pub trait System {
-    fn update(&mut self, engine: &mut Engine, delta: f32);
+    fn update(
+        &mut self,
+        scene: &mut Scene,
+        renderer: &mut Renderer,
+        resource_manager: &mut ResourceManager,
+        delta: f32,
+    );
 }
 
 pub struct Engine {
@@ -74,6 +80,30 @@ impl Engine {
         self.systems.push(Box::new(system));
     }
 
+    fn handle_window_event(&mut self, event: &WindowEvent, elwt: &winit::event_loop::EventLoopWindowTarget<()>) {
+        match event {
+            WindowEvent::CloseRequested => {
+                elwt.exit();
+            }
+            WindowEvent::Resized(size) => {
+                self.event_queue.push(crate::event::EngineEvent::WindowResized { width: size.width, height: size.height });
+            }
+            WindowEvent::KeyboardInput { event: input_event, .. } => {
+                if let winit::keyboard::PhysicalKey::Code(code) = input_event.physical_key {
+                    if input_event.state == winit::event::ElementState::Pressed {
+                        self.event_queue.push(crate::event::EngineEvent::KeyDown { key_code: code as u32 });
+                    } else {
+                        self.event_queue.push(crate::event::EngineEvent::KeyUp { key_code: code as u32 });
+                    }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.event_queue.push(crate::event::EngineEvent::MouseMoved { x: position.x, y: position.y });
+            }
+            _ => {}
+        }
+    }
+
     pub fn run<F>(mut self, mut ui_callback: F)
     where
         F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
@@ -87,38 +117,11 @@ impl Engine {
                 // UI consumed the event
             }
 
-            use crate::event::EngineEvent;
             match &event {
-                Event::WindowEvent {
-                    event: WindowEvent::CloseRequested,
-                    ..
-                } => {
-                    elwt.exit();
-                }
                 Event::WindowEvent { event, .. } => {
-                    match event {
-                        WindowEvent::Resized(size) => {
-                            self.event_queue.push(EngineEvent::WindowResized { width: size.width, height: size.height });
-                        }
-                        WindowEvent::KeyboardInput {
-                            event: input_event,
-                            ..
-                        } => {
-                            // Map to EngineEvent
-                            log::info!("Keyboard input: {:?}", input_event);
-                        }
-                        WindowEvent::CursorMoved {
-                            position,
-                            ..
-                        } => {
-                            self.event_queue.push(EngineEvent::MouseMoved { x: position.x, y: position.y });
-                        }
-                        _ => {}
-                    }
+                    self.handle_window_event(event, elwt);
                 }
                 Event::AboutToWait => {
-                    // Logic that uses event_queue would go here
-                    self.event_queue.clear();
                     let now = instant::Instant::now();
                     let delta = now.duration_since(self.last_frame_time).as_secs_f32();
                     self.last_frame_time = now;
@@ -126,114 +129,29 @@ impl Engine {
 
                     self.plugin_manager.update_plugins(&mut self.scene, delta);
 
-                    // To avoid mutable borrow of self while iterating systems, we'd need to decoupling data
-                    // For now, move systems to local and iterate.
                     let mut systems = std::mem::take(&mut self.systems);
                     for system in &mut systems {
-                        system.update(&mut self, delta);
+                        system.update(&mut self.scene, &mut self.renderer, &mut self.resource_manager, delta);
                     }
                     self.systems = systems;
 
-                    let extent = self.renderer.get_extent();
-                    let jitter = self.renderer.get_jitter();
-                    let mut projection = spark_math::Mat4::perspective_rh(
-                        45.0f32.to_radians(),
-                        extent.width as f32 / extent.height as f32,
-                        0.1,
-                        100.0,
-                    );
-                    projection.col_mut(2).x += jitter[0] * projection.col(0).x;
-                    projection.col_mut(2).y += jitter[1] * projection.col(1).y;
-
-                    // Use the cached view matrix
+                    // Rendering orchestration
                     let view_matrix = self.scene.last_view_matrix;
-
-                    // Single pass for rendering data collection (no CPU culling)
                     let (renderables_raw, instanced_raw, _, lights) = self.scene.collect_render_data(None);
-
-                    // Prepare GPU Indirect and Object buffers
-                    let mut indirect_commands = Vec::new();
-                    let mut object_ssbos = Vec::new();
-
-                    for (model, _vc, ic, fi, vo, _tex_id, vb_id, br) in &renderables_raw {
-                         object_ssbos.push(spark_renderer::ObjectDataSSBO {
-                            model: *model,
-                            sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, *br),
-                            index_count: *ic,
-                            first_index: *fi,
-                            vertex_offset: *vo,
-                            material_index: vb_id.unwrap_or(0),
-                        });
-                        indirect_commands.push(spark_renderer::ash::vk::DrawIndexedIndirectCommand {
-                            index_count: *ic,
-                            instance_count: 1,
-                            first_index: *fi,
-                            vertex_offset: *vo,
-                            first_instance: (object_ssbos.len() - 1) as u32,
-                        });
-                    }
-
-                    for (ic, fi, vo, _tex_id, vb_id, br, transforms) in &instanced_raw {
-                        for transform in transforms {
-                             object_ssbos.push(spark_renderer::ObjectDataSSBO {
-                                model: *transform,
-                                sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, *br),
-                                index_count: *ic,
-                                first_index: *fi,
-                                vertex_offset: *vo,
-                                material_index: vb_id.unwrap_or(0),
-                            });
-                            indirect_commands.push(spark_renderer::ash::vk::DrawIndexedIndirectCommand {
-                                index_count: *ic,
-                                instance_count: 1,
-                                first_index: *fi,
-                                vertex_offset: *vo,
-                                first_instance: (object_ssbos.len() - 1) as u32,
-                            });
-                        }
-                    }
-                    self.renderer.update_indirect_buffers(&indirect_commands, &object_ssbos);
-                    let total_objects = object_ssbos.len() as u32;
-
-                    let view_proj = projection * view_matrix;
-
-                    // Calculate Light View-Projection for Shadows
-                    let light_pos = spark_math::Vec3::new(10.0, 10.0, 10.0);
-                    let light_view = spark_math::Mat4::look_at_rh(
-                        light_pos,
-                        spark_math::Vec3::ZERO,
-                        spark_math::Vec3::Y,
-                    );
-                    let light_proj = spark_math::Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 0.1, 100.0);
-                    let light_view_proj = light_proj * light_view;
-
-                    let _main_light = lights.first().cloned().unwrap_or((
-                        spark_math::Mat4::IDENTITY,
-                        crate::scene::LightType::Directional,
-                        spark_math::Vec3::ONE,
-                        1.0,
-                        10.0
-                    ));
-
-                    // Convert lights for renderer
                     let renderer_lights: Vec<(spark_math::Vec3, spark_math::Vec3, f32)> = lights.iter().map(|(trans, _type, col, intensity, _range)| {
                         (trans.w_axis.xyz(), *col, *intensity)
                     }).collect();
-                    self.renderer.update_lights(&renderer_lights);
 
-                    self.renderer.scene_view_matrix_for_pos = view_matrix;
+                    let total_objects = self.renderer.prepare_frame(view_matrix, &renderables_raw, &instanced_raw, &renderer_lights);
 
                     self.renderer.draw_frame(
-                        view_proj,
-                        light_view_proj,
                         &self.window,
                         egui_output,
                         total_objects
                     );
 
-                    // Clear temporary instance buffers for next frame
-                    // In a real engine, we'd reuse them or use a ring buffer.
                     self.renderer.clear_instance_buffers();
+                    self.event_queue.clear();
                 }
                 _ => (),
             }
