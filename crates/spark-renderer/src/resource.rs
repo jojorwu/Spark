@@ -24,6 +24,29 @@ pub struct Attachment {
 
 /// Represents all resources and synchronization primitives for a single frame.
 #[derive(Debug)]
+pub struct MeshDraw {
+    pub model: spark_math::Mat4,
+    pub vertex_count: u32,
+    pub index_count: u32,
+    pub first_index: u32,
+    pub vertex_offset: i32,
+    pub material_index: u32,
+    pub bounding_radius: f32,
+}
+
+pub struct LightDraw {
+    pub position: spark_math::Vec3,
+    pub color: spark_math::Vec3,
+    pub intensity: f32,
+}
+
+pub struct FramePacket {
+    pub view_matrix: spark_math::Mat4,
+    pub meshes: Vec<MeshDraw>,
+    pub lights: Vec<LightDraw>,
+}
+
+#[derive(Debug)]
 pub struct RenderFrame {
     pub command_buffer: vk::CommandBuffer,
     pub image_available: vk::Semaphore,

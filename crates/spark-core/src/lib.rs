@@ -136,13 +136,8 @@ impl Engine {
                     self.systems = systems;
 
                     // Rendering orchestration
-                    let view_matrix = self.scene.last_view_matrix;
-                    let (renderables_raw, instanced_raw, _, lights) = self.scene.collect_render_data(None);
-                    let renderer_lights: Vec<(spark_math::Vec3, spark_math::Vec3, f32)> = lights.iter().map(|(trans, _type, col, intensity, _range)| {
-                        (trans.w_axis.xyz(), *col, *intensity)
-                    }).collect();
-
-                    let total_objects = self.renderer.prepare_frame(view_matrix, &renderables_raw, &instanced_raw, &renderer_lights);
+                    let packet = self.scene.collect_frame_packet(None);
+                    let total_objects = self.renderer.prepare_frame(packet);
 
                     self.renderer.draw_frame(
                         &self.window,

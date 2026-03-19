@@ -491,7 +491,7 @@ impl Renderer {
         }
     }
 
-    pub fn update_lights(&mut self, lights: &[(spark_math::Vec3, spark_math::Vec3, f32)]) {
+    pub fn update_lights_from_draw(&mut self, lights: &[crate::resource::LightDraw]) {
         let count = lights.len();
         if count == 0 {
             return;
@@ -505,9 +505,9 @@ impl Renderer {
         }
         let ld: Vec<LD> = lights
             .iter()
-            .map(|(p, c, i)| LD {
-                pos: [p.x, p.y, p.z, 1.0],
-                col: [c.x, c.y, c.z, *i],
+            .map(|l| LD {
+                pos: [l.position.x, l.position.y, l.position.z, 1.0],
+                col: [l.color.x, l.color.y, l.color.z, l.intensity],
             })
             .collect();
         let sz = (ld.len() * std::mem::size_of::<LD>()) as u64;
@@ -1121,61 +1121,39 @@ impl Renderer {
         self.render_passes.push(Box::new(pass));
     }
 
-    pub fn prepare_frame<T>(
+    pub fn prepare_frame(
         &mut self,
-        view_matrix: spark_math::Mat4,
-        renderables: &[(spark_math::Mat4, u32, u32, u32, i32, Option<T>, Option<u32>, f32)],
-        instanced: &[(u32, u32, i32, Option<T>, Option<u32>, f32, Vec<spark_math::Mat4>)],
-        lights: &[(spark_math::Vec3, spark_math::Vec3, f32)],
+        packet: crate::resource::FramePacket,
     ) -> u32 {
-        self.scene_view_matrix_for_pos = view_matrix;
+        self.scene_view_matrix_for_pos = packet.view_matrix;
 
         // 1. Prepare GPU Indirect and Object buffers
         let mut indirect_commands = Vec::new();
         let mut object_ssbos = Vec::new();
 
-        for (model, _vc, ic, fi, vo, _tex_id, vb_id, br) in renderables {
+        for mesh in packet.meshes {
              object_ssbos.push(ObjectDataSSBO {
-                model: *model,
-                sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, *br),
-                index_count: *ic,
-                first_index: *fi,
-                vertex_offset: *vo,
-                material_index: vb_id.unwrap_or(0),
+                model: mesh.model,
+                sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
+                index_count: mesh.index_count,
+                first_index: mesh.first_index,
+                vertex_offset: mesh.vertex_offset,
+                material_index: mesh.material_index,
             });
             indirect_commands.push(vk::DrawIndexedIndirectCommand {
-                index_count: *ic,
+                index_count: mesh.index_count,
                 instance_count: 1,
-                first_index: *fi,
-                vertex_offset: *vo,
+                first_index: mesh.first_index,
+                vertex_offset: mesh.vertex_offset,
                 first_instance: (object_ssbos.len() - 1) as u32,
             });
         }
 
-        for (ic, fi, vo, _tex_id, vb_id, br, transforms) in instanced {
-            for transform in transforms {
-                 object_ssbos.push(ObjectDataSSBO {
-                    model: *transform,
-                    sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, *br),
-                    index_count: *ic,
-                    first_index: *fi,
-                    vertex_offset: *vo,
-                    material_index: vb_id.unwrap_or(0),
-                });
-                indirect_commands.push(vk::DrawIndexedIndirectCommand {
-                    index_count: *ic,
-                    instance_count: 1,
-                    first_index: *fi,
-                    vertex_offset: *vo,
-                    first_instance: (object_ssbos.len() - 1) as u32,
-                });
-            }
-        }
         self.update_indirect_buffers(&indirect_commands, &object_ssbos);
         let total_objects = object_ssbos.len() as u32;
 
         // 2. Update Lights
-        self.update_lights(lights);
+        self.update_lights_from_draw(&packet.lights);
 
         // 3. Update Global UBO
         let extent = self.get_extent();
@@ -1188,7 +1166,7 @@ impl Renderer {
         );
         projection.col_mut(2).x += jitter[0] * projection.col(0).x;
         projection.col_mut(2).y += jitter[1] * projection.col(1).y;
-        let view_proj = projection * view_matrix;
+        let view_proj = projection * packet.view_matrix;
         self.current_view_proj = view_proj;
 
         let light_pos = spark_math::Vec3::new(10.0, 10.0, 10.0);
@@ -1200,7 +1178,7 @@ impl Renderer {
         let light_proj = spark_math::Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 0.1, 100.0);
         self.main_light_view_proj = light_proj * light_view;
 
-        let inv_v = view_matrix.inverse();
+        let inv_v = packet.view_matrix.inverse();
         let camera_pos = [inv_v.w_axis.x, inv_v.w_axis.y, inv_v.w_axis.z, 1.0];
 
         let mut frustum = [spark_math::Vec4::ZERO; 6];
