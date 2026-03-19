@@ -164,12 +164,15 @@ fn main() {
         engine.renderer.get_extent(),
     ).unwrap();
     post_process_pass.create_pipelines(
-        &engine.renderer.device.device,
-        engine.renderer.pipeline_cache,
-        engine.renderer.get_extent(),
-        &compiler.compile("assets/shaders/fullscreen.vert", shaderc::ShaderKind::Vertex),
-        &compiler.compile("assets/shaders/tonemap_bloom.frag", shaderc::ShaderKind::Fragment),
-        &compiler.compile("assets/shaders/bloom_filter.frag", shaderc::ShaderKind::Fragment),
+        spark_renderer::passes::post_process::PostProcessPipelineParams {
+            device: &engine.renderer.device.device,
+            pipeline_cache: engine.renderer.pipeline_cache,
+            extent: engine.renderer.get_extent(),
+            vert_spirv: &compiler.compile("assets/shaders/fullscreen.vert", shaderc::ShaderKind::Vertex),
+            frag_spirv: &compiler.compile("assets/shaders/tonemap_bloom.frag", shaderc::ShaderKind::Fragment),
+            downsample_spirv: &compiler.compile("assets/shaders/bloom_downsample.frag", shaderc::ShaderKind::Fragment),
+            upsample_spirv: &compiler.compile("assets/shaders/bloom_upsample.frag", shaderc::ShaderKind::Fragment),
+        }
     );
 
     engine.renderer.add_render_pass(hiz_pass);

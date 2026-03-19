@@ -17,25 +17,29 @@ layout (set = 0, binding = 3) uniform SSAOParams {
 
 layout (location = 0) out float outOcclusion;
 
-void main() {
-    vec2 texCoord = gl_FragCoord.xy / params.screenSize;
+// Reconstruct view-space position from depth more efficiently
+vec3 getViewPos(vec2 uv) {
+    float depth = texture(gDepth, uv).r;
+    vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 viewPos = inverse(params.projection) * ndc;
+    return viewPos.xyz / viewPos.w;
+}
 
-    float depth = texture(gDepth, texCoord).r;
+void main() {
+    vec2 uv = gl_FragCoord.xy / params.screenSize;
+
+    float depth = texture(gDepth, uv).r;
     if (depth == 1.0) {
         outOcclusion = 1.0;
         return;
     }
 
-    // Reconstruct view-space position
-    vec4 ndc = vec4(texCoord * 2.0 - 1.0, depth, 1.0);
-    vec4 viewPos = inverse(params.projection) * ndc;
-    viewPos /= viewPos.w;
-
-    vec3 normal = normalize(texture(gNormal, texCoord).rgb * 2.0 - 1.0);
-    normal = mat3(params.view) * normal; // Normal to view space
+    vec3 viewPos = getViewPos(uv);
+    vec3 normal = normalize(texture(gNormal, uv).rgb * 2.0 - 1.0);
+    normal = mat3(params.view) * normal;
 
     vec2 noiseScale = params.screenSize / 4.0;
-    vec3 randomVec = normalize(texture(texNoise, texCoord * noiseScale).xyz);
+    vec3 randomVec = normalize(texture(texNoise, uv * noiseScale).xyz);
 
     vec3 tangent = normalize(randomVec - normal * dot(randomVec, normal));
     vec3 bitangent = cross(normal, tangent);
@@ -44,7 +48,7 @@ void main() {
     float occlusion = 0.0;
     for (int i = 0; i < SSAO_KERNEL_SIZE; i++) {
         vec3 samplePos = TBN * params.samples[i].xyz;
-        samplePos = viewPos.xyz + samplePos * SSAO_RADIUS;
+        samplePos = viewPos + samplePos * SSAO_RADIUS;
 
         vec4 offset = vec4(samplePos, 1.0);
         offset = params.projection * offset;
@@ -52,9 +56,7 @@ void main() {
         offset.xyz = offset.xyz * 0.5 + 0.5;
 
         float sampleDepth = texture(gDepth, offset.xy).r;
-        vec4 sampleNdc = vec4(offset.xy * 2.0 - 1.0, sampleDepth, 1.0);
-        vec4 sampleViewPos = inverse(params.projection) * sampleNdc;
-        sampleViewPos /= sampleViewPos.w;
+        vec3 sampleViewPos = getViewPos(offset.xy);
 
         float rangeCheck = smoothstep(0.0, 1.0, SSAO_RADIUS / abs(viewPos.z - sampleViewPos.z));
         occlusion += (sampleViewPos.z >= samplePos.z + SSAO_BIAS ? 1.0 : 0.0) * rangeCheck;

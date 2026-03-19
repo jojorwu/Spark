@@ -20,6 +20,7 @@ pub struct Attachment {
     pub image: vk::Image,
     pub memory: vk::DeviceMemory,
     pub view: vk::ImageView,
+    pub extent: vk::Extent2D,
 }
 
 /// Represents all resources and synchronization primitives for a single frame.
@@ -190,6 +191,7 @@ impl Attachment {
             image: img,
             memory: mem,
             view,
+            extent: vk::Extent2D { width, height },
         }
     }
 }

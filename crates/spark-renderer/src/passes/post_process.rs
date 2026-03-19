@@ -6,100 +6,299 @@ use crate::pipeline::Pipeline;
 use super::{RenderPass, RenderContext};
 use crate::Renderer;
 
+pub struct PostProcessPipelineParams<'a> {
+    pub device: &'a ash::Device,
+    pub pipeline_cache: vk::PipelineCache,
+    pub extent: vk::Extent2D,
+    pub vert_spirv: &'a [u32],
+    pub frag_spirv: &'a [u32],
+    pub downsample_spirv: &'a [u32],
+    pub upsample_spirv: &'a [u32],
+}
+
+pub struct PostProcessPass {
+    pub pipeline: Option<vk::Pipeline>,
+    pub downsample_pipeline: Option<vk::Pipeline>,
+    pub upsample_pipeline: Option<vk::Pipeline>,
+    pub layout: vk::PipelineLayout,
+    pub descriptor_set_layout: vk::DescriptorSetLayout,
+    pub descriptor_pool: vk::DescriptorPool,
+    pub descriptor_sets: Vec<vk::DescriptorSet>,
+
+    // Bloom chain resources
+    pub bloom_mips: Vec<Attachment>,
+    pub bloom_descriptor_sets: Vec<vk::DescriptorSet>,
+
+    pub swapchain_format: vk::Format,
+}
+
 impl RenderPass for PostProcessPass {
     fn name(&self) -> &str { "PostProcessPass" }
+
+    fn prepare(&self, renderer: &Renderer, current_frame: usize) {
+        let device = &renderer.device.device;
+        let sampler = renderer.common_sampler;
+
+        let mut taa_view = None;
+        let mut fog_view = None;
+
+        for pass in &renderer.render_passes {
+            if pass.name() == "TAAPass" {
+                taa_view = pass.get_resource_view("history", current_frame);
+            }
+            if pass.name() == "VolumetricPass" {
+                fog_view = pass.get_resource_view("output", current_frame);
+            }
+        }
+
+        let input_view = taa_view.unwrap_or(renderer.gbuffer.hdr[current_frame].view);
+        let final_fog_view = fog_view.unwrap_or(input_view);
+
+        let img_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(input_view)
+            .sampler(sampler)];
+
+        // Final bloom result is in bloom_mips[0] after upsampling
+        let blm_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(self.bloom_mips[0].view)
+            .sampler(sampler)];
+
+        let fog_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(final_fog_view)
+            .sampler(sampler)];
+
+        let writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[current_frame])
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&img_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[current_frame])
+                .dst_binding(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&blm_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[current_frame])
+                .dst_binding(2)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&fog_info),
+        ];
+
+        unsafe {
+            device.update_descriptor_sets(&writes, &[]);
+        }
+    }
+
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
         let target_view = renderer.viewport_attachment.as_ref().map(|a| a.view);
-        let params = PostProcessRecordParams {
-            device: &renderer.device.device,
-            command_buffer: ctx.command_buffer,
-            image_index: ctx.image_index,
-            current_frame: ctx.current_frame,
-            swapchain_image_view: renderer.swapchain.views[ctx.image_index as usize],
-            swapchain_image: renderer.swapchain.images[ctx.image_index as usize],
-            extent: renderer.swapchain.extent,
-            target_view,
-            exposure: renderer.exposure,
-            gamma: renderer.gamma,
-        };
-        self.record_commands_impl(&params);
+
+        let mut taa_view = None;
+        for pass in &renderer.render_passes {
+            if pass.name() == "TAAPass" {
+                taa_view = pass.get_resource_view("history", ctx.current_frame);
+            }
+        }
+        let input_view = taa_view.unwrap_or(renderer.gbuffer.hdr[ctx.current_frame].view);
+
+        unsafe {
+            // 1. Bloom Downsampling Chain
+            let mut current_src_view = input_view;
+            let mut current_src_res = vk::Extent2D {
+                width: renderer.get_extent().width,
+                height: renderer.get_extent().height,
+            };
+
+            for i in 0..self.bloom_mips.len() {
+                let mip = &self.bloom_mips[i];
+                let ds = self.bloom_descriptor_sets[i];
+
+                // Update descriptor with current source
+                let img_info = [vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(current_src_view)
+                    .sampler(renderer.common_sampler)];
+                let write = [vk::WriteDescriptorSet::default()
+                    .dst_set(ds)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&img_info)];
+                renderer.device.device.update_descriptor_sets(&write, &[]);
+
+                let color_attachment = vk::RenderingAttachmentInfo::default()
+                    .image_view(mip.view)
+                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } });
+
+                let rendering_info = vk::RenderingInfo::default()
+                    .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent: mip.extent })
+                    .layer_count(1)
+                    .color_attachments(std::slice::from_ref(&color_attachment));
+
+                renderer.device.device.cmd_begin_rendering(ctx.command_buffer, &rendering_info);
+                renderer.device.device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.downsample_pipeline.unwrap());
+                renderer.device.device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[ds], &[]);
+
+                let res = [current_src_res.width as f32, current_src_res.height as f32];
+                let pc_bytes = std::slice::from_raw_parts(res.as_ptr() as *const u8, 8);
+                renderer.device.device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
+
+                let viewport = vk::Viewport::default().width(mip.extent.width as f32).height(mip.extent.height as f32).max_depth(1.0);
+                let scissor = vk::Rect2D::default().extent(mip.extent);
+                renderer.device.device.cmd_set_viewport(ctx.command_buffer, 0, &[viewport]);
+                renderer.device.device.cmd_set_scissor(ctx.command_buffer, 0, &[scissor]);
+
+                renderer.device.device.cmd_draw(ctx.command_buffer, 3, 1, 0, 0);
+                renderer.device.device.cmd_end_rendering(ctx.command_buffer);
+
+                // Barrier to read from this mip in next stage
+                let barrier = vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(mip.image)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        level_count: 1,
+                        layer_count: 1,
+                        ..Default::default()
+                    })
+                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ);
+                renderer.device.device.cmd_pipeline_barrier(ctx.command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+
+                current_src_view = mip.view;
+                current_src_res = mip.extent;
+            }
+
+            // 2. Bloom Upsampling Chain (Additive)
+            for i in (0..self.bloom_mips.len() - 1).rev() {
+                let dst_mip = &self.bloom_mips[i];
+                let src_mip = &self.bloom_mips[i+1];
+                let ds = self.bloom_descriptor_sets[i+1]; // Reuse DS for upsampling
+
+                let img_info = [vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(src_mip.view)
+                    .sampler(renderer.common_sampler)];
+                let write = [vk::WriteDescriptorSet::default()
+                    .dst_set(ds)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&img_info)];
+                renderer.device.device.update_descriptor_sets(&write, &[]);
+
+                let color_attachment = vk::RenderingAttachmentInfo::default()
+                    .image_view(dst_mip.view)
+                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::LOAD) // Additive blending
+                    .store_op(vk::AttachmentStoreOp::STORE);
+
+                let rendering_info = vk::RenderingInfo::default()
+                    .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent: dst_mip.extent })
+                    .layer_count(1)
+                    .color_attachments(std::slice::from_ref(&color_attachment));
+
+                renderer.device.device.cmd_begin_rendering(ctx.command_buffer, &rendering_info);
+                renderer.device.device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.upsample_pipeline.unwrap());
+                renderer.device.device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[ds], &[]);
+
+                let filter_radius = 0.005f32; // Adjustable
+                let pc_bytes = std::slice::from_raw_parts(&filter_radius as *const f32 as *const u8, 4);
+                renderer.device.device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
+
+                let viewport = vk::Viewport::default().width(dst_mip.extent.width as f32).height(dst_mip.extent.height as f32).max_depth(1.0);
+                let scissor = vk::Rect2D::default().extent(dst_mip.extent);
+                renderer.device.device.cmd_set_viewport(ctx.command_buffer, 0, &[viewport]);
+                renderer.device.device.cmd_set_scissor(ctx.command_buffer, 0, &[scissor]);
+
+                renderer.device.device.cmd_draw(ctx.command_buffer, 3, 1, 0, 0);
+                renderer.device.device.cmd_end_rendering(ctx.command_buffer);
+
+                let barrier = vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(dst_mip.image)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        level_count: 1,
+                        layer_count: 1,
+                        ..Default::default()
+                    })
+                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ);
+                renderer.device.device.cmd_pipeline_barrier(ctx.command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+            }
+
+            // 3. Final Tonemapping and UI Swapchain Write
+            let swapchain_image = renderer.swapchain.images[ctx.image_index as usize];
+            let extent = renderer.swapchain.extent;
+
+            let barrier = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .image(swapchain_image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    level_count: 1,
+                    layer_count: 1,
+                    ..Default::default()
+                });
+            renderer.device.device.cmd_pipeline_barrier(ctx.command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+
+            let view = target_view.unwrap_or(renderer.swapchain.views[ctx.image_index as usize]);
+            let color_attachment = vk::RenderingAttachmentInfo::default()
+                .image_view(view)
+                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } });
+
+            let rendering_info = vk::RenderingInfo::default()
+                .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
+                .layer_count(1)
+                .color_attachments(std::slice::from_ref(&color_attachment));
+
+            renderer.device.device.cmd_begin_rendering(ctx.command_buffer, &rendering_info);
+            renderer.device.device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.unwrap());
+            renderer.device.device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.descriptor_sets[ctx.current_frame]], &[]);
+
+            let pc = [renderer.exposure, renderer.gamma];
+            let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 8);
+            renderer.device.device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
+
+            let viewport = vk::Viewport::default().width(extent.width as f32).height(extent.height as f32).max_depth(1.0);
+            let scissor = vk::Rect2D::default().extent(extent);
+            renderer.device.device.cmd_set_viewport(ctx.command_buffer, 0, &[viewport]);
+            renderer.device.device.cmd_set_scissor(ctx.command_buffer, 0, &[scissor]);
+
+            renderer.device.device.cmd_draw(ctx.command_buffer, 3, 1, 0, 0);
+            renderer.device.device.cmd_end_rendering(ctx.command_buffer);
+        }
     }
 
     fn destroy(&mut self, renderer: &Renderer) {
         unsafe {
             let device = &renderer.device.device;
-            if let Some(p) = self.pipeline {
-                device.destroy_pipeline(p, None);
-            }
-            if let Some(p) = self.bloom_pipeline {
-                device.destroy_pipeline(p, None);
-            }
+            if let Some(p) = self.pipeline { device.destroy_pipeline(p, None); }
+            if let Some(p) = self.downsample_pipeline { device.destroy_pipeline(p, None); }
+            if let Some(p) = self.upsample_pipeline { device.destroy_pipeline(p, None); }
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             device.destroy_descriptor_pool(self.descriptor_pool, None);
-            for view in self.bloom_views.drain(..) {
-                device.destroy_image_view(view, None);
-            }
-            for img in self.bloom_images.drain(..) {
-                device.destroy_image(img, None);
-            }
-            for mem in self.bloom_memories.drain(..) {
-                device.free_memory(mem, None);
+            for mip in self.bloom_mips.drain(..) {
+                mip.destroy(device);
             }
         }
     }
-}
-
-pub struct PostProcessRecordParams<'a> {
-    pub device: &'a ash::Device,
-    pub command_buffer: vk::CommandBuffer,
-    pub image_index: u32,
-    pub current_frame: usize,
-    pub swapchain_image_view: vk::ImageView,
-    pub swapchain_image: vk::Image,
-    pub extent: vk::Extent2D,
-    pub target_view: Option<vk::ImageView>,
-    pub exposure: f32,
-    pub gamma: f32,
-}
-
-pub struct PostProcessPass {
-    pub pipeline: Option<vk::Pipeline>,
-    pub bloom_pipeline: Option<vk::Pipeline>,
-    pub layout: vk::PipelineLayout,
-    pub descriptor_set_layout: vk::DescriptorSetLayout,
-    pub descriptor_pool: vk::DescriptorPool,
-    pub descriptor_sets: Vec<vk::DescriptorSet>,
-    pub bloom_images: Vec<vk::Image>,
-    pub bloom_memories: Vec<vk::DeviceMemory>,
-    pub bloom_views: Vec<vk::ImageView>,
-    pub swapchain_format: vk::Format,
 }
 
 impl PostProcessPass {
-    pub fn destroy_impl(&mut self, device: &ash::Device) {
-        unsafe {
-            if let Some(p) = self.pipeline {
-                device.destroy_pipeline(p, None);
-            }
-            if let Some(p) = self.bloom_pipeline {
-                device.destroy_pipeline(p, None);
-            }
-            device.destroy_pipeline_layout(self.layout, None);
-            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            device.destroy_descriptor_pool(self.descriptor_pool, None);
-            for view in self.bloom_views.drain(..) {
-                device.destroy_image_view(view, None);
-            }
-            for img in self.bloom_images.drain(..) {
-                device.destroy_image(img, None);
-            }
-            for mem in self.bloom_memories.drain(..) {
-                device.free_memory(mem, None);
-            }
-        }
-    }
     pub fn new(
         device: &ash::Device,
         pdevice: vk::PhysicalDevice,
@@ -144,16 +343,17 @@ impl PostProcessPass {
             )?
         };
 
+        let num_bloom_mips = 6;
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32 * 3),
+                .descriptor_count((MAX_FRAMES_IN_FLIGHT as u32 * 3) + num_bloom_mips as u32),
         ];
         let descriptor_pool = unsafe {
             device.create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
                     .pool_sizes(&pool_sizes)
-                    .max_sets(MAX_FRAMES_IN_FLIGHT as u32),
+                    .max_sets(MAX_FRAMES_IN_FLIGHT as u32 + num_bloom_mips as u32),
                 None,
             )?
         };
@@ -166,53 +366,55 @@ impl PostProcessPass {
             )?
         };
 
-        let mut bloom_images = Vec::new();
-        let mut bloom_memories = Vec::new();
-        let mut bloom_views = Vec::new();
+        let bloom_descriptor_sets = unsafe {
+            device.allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(descriptor_pool)
+                    .set_layouts(&[ds_layout; 6]), // num_bloom_mips is 6
+            )?
+        };
+
+        let mut bloom_mips = Vec::new();
         let props = unsafe { instance.get_physical_device_memory_properties(pdevice) };
-        for i in 1..6 {
+        for i in 1..=num_bloom_mips {
             let att = Attachment::create_image_resource(
                 device,
                 &props,
                 (extent.width >> i).max(1),
                 (extent.height >> i).max(1),
                 vk::Format::R16G16B16A16_SFLOAT,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT
-                    | vk::ImageUsageFlags::SAMPLED
-                    | vk::ImageUsageFlags::INPUT_ATTACHMENT,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
                 vk::SampleCountFlags::TYPE_1,
             );
-            bloom_images.push(att.image);
-            bloom_memories.push(att.memory);
-            bloom_views.push(att.view);
+            bloom_mips.push(att);
         }
 
         Ok(Self {
             pipeline: None,
-            bloom_pipeline: None,
+            downsample_pipeline: None,
+            upsample_pipeline: None,
             layout,
             descriptor_set_layout: ds_layout,
             descriptor_pool,
             descriptor_sets,
-            bloom_images,
-            bloom_memories,
-            bloom_views,
+            bloom_mips,
+            bloom_descriptor_sets,
             swapchain_format: format,
         })
     }
 
     pub fn create_pipelines(
         &mut self,
-        device: &ash::Device,
-        pipeline_cache: vk::PipelineCache,
-        extent: vk::Extent2D,
-        vert_spirv: &[u32],
-        frag_spirv: &[u32],
-        bloom_frag_spirv: &[u32],
+        params: PostProcessPipelineParams,
     ) {
-        let vert_module = Pipeline::create_shader_module(device, vert_spirv);
-        let frag_module = Pipeline::create_shader_module(device, frag_spirv);
-        let bloom_frag_module = Pipeline::create_shader_module(device, bloom_frag_spirv);
+        let device = params.device;
+        let extent = params.extent;
+        let pipeline_cache = params.pipeline_cache;
+
+        let vert_module = Pipeline::create_shader_module(device, params.vert_spirv);
+        let frag_module = Pipeline::create_shader_module(device, params.frag_spirv);
+        let downsample_module = Pipeline::create_shader_module(device, params.downsample_spirv);
+        let upsample_module = Pipeline::create_shader_module(device, params.upsample_spirv);
         let entry_point = std::ffi::CString::new("main").unwrap();
 
         let stages = [
@@ -222,17 +424,17 @@ impl PostProcessPass {
 
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let viewport = vk::Viewport::default().width(extent.width as f32).height(extent.height as f32).max_depth(1.0);
-        let scissor = vk::Rect2D::default().extent(extent);
-        let viewport_state = vk::PipelineViewportStateCreateInfo::default().viewports(std::slice::from_ref(&viewport)).scissors(std::slice::from_ref(&scissor));
         let rasterizer = vk::PipelineRasterizationStateCreateInfo::default().cull_mode(vk::CullModeFlags::BACK).front_face(vk::FrontFace::CLOCKWISE).line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default().color_write_mask(vk::ColorComponentFlags::RGBA).blend_enable(false);
         let color_blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(std::slice::from_ref(&color_blend_attachment));
 
+        let viewport = vk::Viewport::default().width(extent.width as f32).height(extent.height as f32).max_depth(1.0);
+        let scissor = vk::Rect2D::default().extent(extent);
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default().viewports(std::slice::from_ref(&viewport)).scissors(std::slice::from_ref(&scissor));
+
         let color_formats = [self.swapchain_format];
-        let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(&color_formats);
+        let mut rendering_info = vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
 
         let info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&stages)
@@ -247,13 +449,16 @@ impl PostProcessPass {
 
         self.pipeline = Some(unsafe { device.create_graphics_pipelines(pipeline_cache, &[info], None).unwrap()[0] });
 
-        let bloom_stages = [
+        // Downsample Pipeline
+        let ds_stages = [
             vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::VERTEX).module(vert_module).name(&entry_point),
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(bloom_frag_module).name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(downsample_module).name(&entry_point),
         ];
+        let bloom_formats = [vk::Format::R16G16B16A16_SFLOAT];
+        let mut bloom_rendering = vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&bloom_formats);
 
-        let bloom_info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&bloom_stages)
+        let ds_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&ds_stages)
             .vertex_input_state(&vertex_input)
             .input_assembly_state(&input_assembly)
             .viewport_state(&viewport_state)
@@ -261,158 +466,42 @@ impl PostProcessPass {
             .multisample_state(&multisample)
             .color_blend_state(&color_blend)
             .layout(self.layout)
-            .push_next(&mut rendering_info);
+            .push_next(&mut bloom_rendering);
+        self.downsample_pipeline = Some(unsafe { device.create_graphics_pipelines(pipeline_cache, &[ds_info], None).unwrap()[0] });
 
-        self.bloom_pipeline = Some(unsafe { device.create_graphics_pipelines(pipeline_cache, &[bloom_info], None).unwrap()[0] });
+        // Upsample Pipeline (Additive)
+        let us_stages = [
+            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::VERTEX).module(vert_module).name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(upsample_module).name(&entry_point),
+        ];
+        let us_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::ONE)
+            .dst_color_blend_factor(vk::BlendFactor::ONE)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE)
+            .alpha_blend_op(vk::BlendOp::ADD);
+        let us_blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(std::slice::from_ref(&us_blend_attachment));
+
+        let us_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&us_stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisample)
+            .color_blend_state(&us_blend)
+            .layout(self.layout)
+            .push_next(&mut bloom_rendering);
+        self.upsample_pipeline = Some(unsafe { device.create_graphics_pipelines(pipeline_cache, &[us_info], None).unwrap()[0] });
 
         unsafe {
             device.destroy_shader_module(vert_module, None);
             device.destroy_shader_module(frag_module, None);
-            device.destroy_shader_module(bloom_frag_module, None);
+            device.destroy_shader_module(downsample_module, None);
+            device.destroy_shader_module(upsample_module, None);
         }
     }
-
-    pub fn update_descriptor_sets(&self, renderer: &Renderer) {
-        let device = &renderer.device.device;
-        let sampler = renderer.common_sampler;
-
-        let mut taa_view = None;
-        let mut fog_view = None;
-
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
-            for pass in &renderer.render_passes {
-                if pass.name() == "TAAPass" {
-                    taa_view = pass.get_resource_view("history", i);
-                }
-                if pass.name() == "VolumetricPass" {
-                    fog_view = pass.get_resource_view("output", i);
-                }
-            }
-
-            let view = taa_view.unwrap_or(renderer.gbuffer.hdr[i].view);
-            let img_info = [vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(view)
-                .sampler(sampler)];
-            let blm_info = [vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(self.bloom_views[0])
-                .sampler(sampler)];
-            let mut writes = vec![
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[i])
-                    .dst_binding(0)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&img_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[i])
-                    .dst_binding(1)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&blm_info),
-            ];
-
-            let final_fog_view = fog_view.unwrap_or(view);
-            let fog_info = [vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(final_fog_view)
-                .sampler(sampler)];
-            writes.push(
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[i])
-                    .dst_binding(2)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&fog_info),
-            );
-            unsafe {
-                device.update_descriptor_sets(&writes, &[]);
-            }
-        }
-    }
-
-    pub fn record_commands_impl(
-        &self,
-        params: &PostProcessRecordParams,
-    ) {
-        let device = params.device;
-        let command_buffer = params.command_buffer;
-        let current_frame = params.current_frame;
-        let swapchain_image_view = params.swapchain_image_view;
-        let swapchain_image = params.swapchain_image;
-        let extent = params.extent;
-        let target_view = params.target_view;
-        let exposure = params.exposure;
-        let gamma = params.gamma;
-        let pipeline = match self.pipeline {
-            Some(p) => p,
-            None => return,
-        };
-
-        unsafe {
-            let barrier = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .image(swapchain_image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                });
-            device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier],
-            );
-
-            let view = target_view.unwrap_or(swapchain_image_view);
-            let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(view)
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } });
-
-            let rendering_info = vk::RenderingInfo::default()
-                .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
-                .layer_count(1)
-                .color_attachments(std::slice::from_ref(&color_attachment));
-
-            device.cmd_begin_rendering(command_buffer, &rendering_info);
-
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
-
-            let viewport = vk::Viewport::default()
-                .width(extent.width as f32)
-                .height(extent.height as f32)
-                .max_depth(1.0);
-            let scissor = vk::Rect2D::default().extent(extent);
-            device.cmd_set_viewport(command_buffer, 0, &[viewport]);
-            device.cmd_set_scissor(command_buffer, 0, &[scissor]);
-
-            device.cmd_bind_descriptor_sets(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.layout,
-                0,
-                &[self.descriptor_sets[current_frame]],
-                &[],
-            );
-
-            let pc = [exposure, gamma];
-            let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 8);
-            device.cmd_push_constants(command_buffer, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
-
-            device.cmd_draw(command_buffer, 3, 1, 0, 0);
-            device.cmd_end_rendering(command_buffer);
-        }
-    }
-
 }
