@@ -42,7 +42,7 @@ impl RenderPass for GBufferPass {
             width: renderer.swapchain.extent.width as f32,
             height: renderer.swapchain.extent.height as f32,
             padding: 0,
-            object_buffer_address: renderer.frames[current_frame].object_data_buffer.map_or(0, |b| b.address),
+            object_buffer_address: renderer.frames[current_frame].object_data_buffer.as_ref().map_or(0, |b| b.address),
             prev_view_proj: renderer.prev_view_proj,
         };
         let pc_bytes = unsafe { std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>()) };
@@ -115,7 +115,7 @@ impl RenderPass for GBufferPass {
 
                 device.cmd_begin_rendering(command_buffer, &rendering_info);
 
-                if let Some(indirect_buffer) = renderer.frames[current_frame].indirect_commands_buffer {
+                if let Some(ref indirect_buffer) = renderer.frames[current_frame].indirect_commands_buffer {
                     device.cmd_bind_descriptor_sets(
                         command_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
@@ -125,12 +125,12 @@ impl RenderPass for GBufferPass {
                         &[],
                     );
 
-                    if let (Some(vb), Some(ib)) = (renderer.global_vertex_buffer, renderer.global_index_buffer) {
+                    if let (Some(ref vb), Some(ref ib)) = (renderer.global_vertex_buffer.as_ref(), renderer.global_index_buffer.as_ref()) {
                         device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
                         device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
                     }
 
-                    if let Some(count_buffer) = renderer.frames[current_frame].draw_count_buffer {
+                    if let Some(ref count_buffer) = renderer.frames[current_frame].draw_count_buffer {
                          device.cmd_draw_indexed_indirect_count(
                             command_buffer,
                             indirect_buffer.handle,

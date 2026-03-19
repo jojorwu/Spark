@@ -1,4 +1,5 @@
 use ash::vk;
+use std::sync::{Arc, Mutex};
 use crate::Renderer;
 use crate::vertex::Vertex;
 use crate::pipeline::Pipeline;
@@ -9,7 +10,7 @@ pub struct ShadowPass {
     pub pipeline: Option<vk::Pipeline>,
     pub layout: vk::PipelineLayout,
     pub image: vk::Image,
-    pub memory: vk::DeviceMemory,
+    pub allocation: Arc<Mutex<Option<gpu_allocator::vulkan::Allocation>>>,
     pub view: vk::ImageView, // View into the entire array
     pub cascade_views: [vk::ImageView; SHADOW_CASCADE_COUNT],
     pub sampler: vk::Sampler,
@@ -53,27 +54,14 @@ impl RenderPass for ShadowPass {
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            device.free_memory(self.memory, None);
+            if let Some(alloc) = self.allocation.lock().unwrap().take() {
+                renderer.device.allocator.lock().unwrap().free(alloc).unwrap();
+            }
         }
     }
 }
 
 impl ShadowPass {
-    pub fn destroy_impl(&mut self, device: &ash::Device) {
-        unsafe {
-            for i in 0..SHADOW_CASCADE_COUNT {
-                device.destroy_image_view(self.cascade_views[i], None);
-            }
-            if let Some(p) = self.pipeline {
-                device.destroy_pipeline(p, None);
-            }
-            device.destroy_pipeline_layout(self.layout, None);
-            device.destroy_sampler(self.sampler, None);
-            device.destroy_image_view(self.view, None);
-            device.destroy_image(self.image, None);
-            device.free_memory(self.memory, None);
-        }
-    }
     pub fn record_commands_internal(
         &self,
         device: &ash::Device,
@@ -87,11 +75,9 @@ impl ShadowPass {
     }
 
     pub fn new(
-        device: &ash::Device,
-        pdevice: vk::PhysicalDevice,
-        instance: &ash::Instance,
+        device_wrapper: &crate::vulkan::device::VulkanDevice,
     ) -> Result<Self, crate::error::RendererError> {
-        let props = unsafe { instance.get_physical_device_memory_properties(pdevice) };
+        let device = &device_wrapper.device;
         let extent = vk::Extent3D {
             width: Renderer::SHADOW_MAP_CASCADE_SIZE,
             height: Renderer::SHADOW_MAP_CASCADE_SIZE,
@@ -112,25 +98,16 @@ impl ShadowPass {
 
         let image = unsafe { device.create_image(&image_info, None)? };
         let reqs = unsafe { device.get_image_memory_requirements(image) };
-        let mut type_idx = 0;
-        for i in 0..props.memory_type_count {
-            if (reqs.memory_type_bits & (1 << i)) != 0
-                && (props.memory_types[i as usize].property_flags & vk::MemoryPropertyFlags::DEVICE_LOCAL) == vk::MemoryPropertyFlags::DEVICE_LOCAL
-            {
-                type_idx = i;
-                break;
-            }
-        }
 
-        let memory = unsafe {
-            device.allocate_memory(
-                &vk::MemoryAllocateInfo::default()
-                    .allocation_size(reqs.size)
-                    .memory_type_index(type_idx),
-                None,
-            )?
-        };
-        unsafe { device.bind_image_memory(image, memory, 0)? };
+        let allocation = device_wrapper.allocator.lock().unwrap().allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+            name: "Shadow Map",
+            requirements: reqs,
+            location: gpu_allocator::MemoryLocation::GpuOnly,
+            linear: false,
+            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+        }).map_err(|_| crate::error::RendererError::NoSuitableDevice)?;
+
+        unsafe { device.bind_image_memory(image, allocation.memory(), allocation.offset())? };
 
         let view_info = vk::ImageViewCreateInfo::default()
             .image(image)
@@ -191,7 +168,7 @@ impl ShadowPass {
             pipeline: None,
             layout,
             image,
-            memory,
+            allocation: Arc::new(Mutex::new(Some(allocation))),
             view,
             cascade_views,
             sampler,
@@ -353,7 +330,7 @@ impl ShadowPass {
                 let pc = PC {
                     lvp,
                     padding: 0,
-                    address: frame.object_data_buffer.map_or(0, |b| b.address),
+                    address: frame.object_data_buffer.as_ref().map_or(0, |b| b.address),
                 };
                 let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
 
@@ -365,12 +342,12 @@ impl ShadowPass {
                     pc_bytes,
                 );
 
-                if let Some(indirect_buffer) = frame.indirect_commands_buffer {
-                    if let (Some(vb), Some(ib)) = (renderer.global_vertex_buffer, renderer.global_index_buffer) {
+                if let Some(ref indirect_buffer) = frame.indirect_commands_buffer {
+                    if let (Some(ref vb), Some(ref ib)) = (renderer.global_vertex_buffer.as_ref(), renderer.global_index_buffer.as_ref()) {
                         device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
                         device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
 
-                        if let Some(count_buffer) = frame.draw_count_buffer {
+                        if let Some(ref count_buffer) = frame.draw_count_buffer {
                             device.cmd_draw_indexed_indirect_count(
                                 command_buffer,
                                 indirect_buffer.handle,

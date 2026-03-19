@@ -52,7 +52,7 @@ impl RenderPass for VolumetricPass {
     fn destroy(&mut self, renderer: &Renderer) {
         let device = &renderer.device.device;
         unsafe {
-            for a in &self.output_images { a.destroy(device); }
+            for a in self.output_images.drain(..) { a.destroy(device, &renderer.device.allocator); }
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
@@ -66,7 +66,6 @@ impl VolumetricPass {
         shader_code: &[u32],
     ) -> Self {
         let device = &renderer.device.device;
-        let props = &renderer.device.memory_properties;
         let extent = renderer.get_extent();
 
         let bindings = [
@@ -92,7 +91,7 @@ impl VolumetricPass {
         let mut output_images = Vec::new();
         for _ in 0..crate::MAX_FRAMES_IN_FLIGHT {
             output_images.push(Attachment::create_image_resource(
-                device, props, extent.width / 2, extent.height / 2,
+                &renderer.device, extent.width / 2, extent.height / 2,
                 vk::Format::R16G16B16A16_SFLOAT,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
                 vk::SampleCountFlags::TYPE_1,

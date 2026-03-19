@@ -292,7 +292,7 @@ impl RenderPass for PostProcessPass {
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             device.destroy_descriptor_pool(self.descriptor_pool, None);
             for mip in self.bloom_mips.drain(..) {
-                mip.destroy(device);
+                mip.destroy(device, &renderer.device.allocator);
             }
         }
     }
@@ -300,12 +300,11 @@ impl RenderPass for PostProcessPass {
 
 impl PostProcessPass {
     pub fn new(
-        device: &ash::Device,
-        pdevice: vk::PhysicalDevice,
-        instance: &ash::Instance,
+        renderer: &crate::Renderer,
         format: vk::Format,
         extent: vk::Extent2D,
     ) -> Result<Self, crate::error::RendererError> {
+        let device = &renderer.device.device;
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -375,11 +374,9 @@ impl PostProcessPass {
         };
 
         let mut bloom_mips = Vec::new();
-        let props = unsafe { instance.get_physical_device_memory_properties(pdevice) };
         for i in 1..=num_bloom_mips {
             let att = Attachment::create_image_resource(
-                device,
-                &props,
+                &renderer.device,
                 (extent.width >> i).max(1),
                 (extent.height >> i).max(1),
                 vk::Format::R16G16B16A16_SFLOAT,

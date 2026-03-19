@@ -273,8 +273,8 @@ impl RenderPass for LightingPass {
     fn name(&self) -> &str { "LightingPass" }
 
     fn update_descriptor_sets(&self, renderer: &Renderer) {
-        let light_buffers: Vec<Buffer> = renderer.frames.iter().filter_map(|f| f.light_buffer).collect();
-        let object_buffers: Vec<Option<Buffer>> = renderer.frames.iter().map(|f| f.object_data_buffer).collect();
+        let light_buffers: Vec<Buffer> = renderer.frames.iter().filter_map(|f| f.light_buffer.clone()).collect();
+        let object_buffers: Vec<Option<Buffer>> = renderer.frames.iter().map(|f| f.object_data_buffer.clone()).collect();
 
         let irr_view = renderer.ibl_maps.as_ref().map(|m| m.irradiance_view).unwrap_or(renderer.common_shadow_view);
         let spec_view = renderer.ibl_maps.as_ref().map(|m| m.prefilter_view).unwrap_or(renderer.common_shadow_view);
@@ -331,7 +331,7 @@ impl RenderPass for LightingPass {
             width: extent.width as f32,
             height: extent.height as f32,
             padding: 0,
-            object_buffer_address: renderer.frames[current_frame].object_data_buffer.map_or(0, |b| b.address),
+            object_buffer_address: renderer.frames[current_frame].object_data_buffer.as_ref().map_or(0, |b| b.address),
             prev_view_proj: renderer.prev_view_proj,
         };
         let pc_bytes = unsafe { std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>()) };

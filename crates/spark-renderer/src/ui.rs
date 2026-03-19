@@ -398,7 +398,7 @@ impl EguiRenderer {
                 );
                 renderer.upload_to_buffer(&staging, &pixels);
 
-                let (image, memory) = renderer.create_image_basic(
+                let (image, _old_alloc) = renderer.create_image_basic(
                     &crate::vulkan::device::ImageCreateParams {
                         width: size[0],
                         height: size[1],
@@ -407,6 +407,7 @@ impl EguiRenderer {
                         tiling: vk::ImageTiling::OPTIMAL,
                         usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
                         properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                        samples: vk::SampleCountFlags::TYPE_1,
                     }
                 );
 
@@ -429,9 +430,11 @@ impl EguiRenderer {
 
                 renderer.destroy_buffer(staging);
 
+                let allocation = _old_alloc;
+
                 let texture = crate::vulkan::texture::Texture {
                     image,
-                    memory,
+                    allocation,
                     view,
                     sampler,
                     mip_levels: 1,

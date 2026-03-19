@@ -1,4 +1,5 @@
 use ash::vk;
+use std::sync::{Arc, Mutex};
 use crate::vulkan::device::VulkanDevice;
 
 pub struct HiZPass {
@@ -7,7 +8,7 @@ pub struct HiZPass {
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     pub pyramid_view: vk::ImageView,
     pub pyramid_image: vk::Image,
-    pub pyramid_memory: vk::DeviceMemory,
+    pub pyramid_allocation: Arc<Mutex<Option<gpu_allocator::vulkan::Allocation>>>,
     pub mip_views: Vec<vk::ImageView>,
     pub descriptor_sets: Vec<vk::DescriptorSet>,
     pub width: u32,
@@ -50,7 +51,9 @@ impl RenderPass for HiZPass {
             }
             device.destroy_image_view(self.pyramid_view, None);
             device.destroy_image(self.pyramid_image, None);
-            device.free_memory(self.pyramid_memory, None);
+            if let Some(alloc) = self.pyramid_allocation.lock().unwrap().take() {
+                renderer.device.allocator.lock().unwrap().free(alloc).unwrap();
+            }
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
@@ -68,7 +71,7 @@ impl HiZPass {
     ) -> Self {
         let mip_levels = (width.max(height) as f32).log2().floor() as u32 + 1;
 
-        let (image, memory) = device.create_image(
+        let (image, allocation) = device.create_image(
             &crate::vulkan::device::ImageCreateParams {
                 width,
                 height,
@@ -77,6 +80,7 @@ impl HiZPass {
                 tiling: vk::ImageTiling::OPTIMAL,
                 usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
                 properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                samples: vk::SampleCountFlags::TYPE_1,
             }
         );
 
@@ -171,7 +175,7 @@ impl HiZPass {
             descriptor_set_layout,
             pyramid_view,
             pyramid_image: image,
-            pyramid_memory: memory,
+            pyramid_allocation: Arc::new(Mutex::new(Some(allocation))),
             mip_views,
             descriptor_sets,
             width,

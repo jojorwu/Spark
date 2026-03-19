@@ -119,7 +119,7 @@ impl ResourceManager {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
         renderer.upload_to_buffer(&staging_v, &self.all_vertices);
-        self.copy_buffer(renderer, staging_v, vb);
+        self.copy_buffer(renderer, staging_v.clone(), vb.clone());
         renderer.destroy_buffer(staging_v);
 
         let i_sz = (self.all_indices.len() * 4) as u64;
@@ -134,7 +134,7 @@ impl ResourceManager {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
         renderer.upload_to_buffer(&staging_i, &self.all_indices);
-        self.copy_buffer(renderer, staging_i, ib);
+        self.copy_buffer(renderer, staging_i.clone(), ib.clone());
         renderer.destroy_buffer(staging_i);
 
         let m_sz = (self.all_materials.len() * std::mem::size_of::<spark_renderer::MaterialDataSSBO>()) as u64;
@@ -149,7 +149,7 @@ impl ResourceManager {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
         renderer.upload_to_buffer(&staging_m, &self.all_materials);
-        self.copy_buffer(renderer, staging_m, mb);
+        self.copy_buffer(renderer, staging_m.clone(), mb.clone());
         renderer.destroy_buffer(staging_m);
 
         renderer.set_global_buffers(vb, ib);

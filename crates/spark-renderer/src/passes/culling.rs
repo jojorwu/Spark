@@ -12,17 +12,17 @@ impl RenderPass for CullingPass {
 
         let global_ds = renderer.frames[current_frame].global_descriptor_set;
         if let (Some(_), Some(ind_buf), Some(cnt_buf)) = (
-            renderer.frames[current_frame].object_data_buffer,
-            renderer.frames[current_frame].indirect_commands_buffer,
-            renderer.frames[current_frame].draw_count_buffer
+            renderer.frames[current_frame].object_data_buffer.as_ref(),
+            renderer.frames[current_frame].indirect_commands_buffer.as_ref(),
+            renderer.frames[current_frame].draw_count_buffer.as_ref()
         ) {
             let params = CullingRecordParams {
                 device: &renderer.device.device,
                 command_buffer: ctx.command_buffer,
                 object_count: renderer.last_object_count,
                 global_ds,
-                indirect_buffer: &ind_buf,
-                count_buffer: &cnt_buf,
+                indirect_buffer: ind_buf,
+                count_buffer: cnt_buf,
             };
             self.record_commands_impl(&params);
         }

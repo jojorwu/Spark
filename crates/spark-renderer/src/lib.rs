@@ -65,6 +65,7 @@ pub struct Renderer {
     pub current_view_proj: spark_math::Mat4,
     pub last_object_count: u32,
     pub current_image_index: u32,
+    pub pass_descriptor_versions: Vec<std::collections::HashMap<String, u64>>,
 }
 
 #[repr(C)]
@@ -113,9 +114,7 @@ impl Renderer {
         )?;
 
         let gbuffer = GBuffer::new(
-            &device.device,
-            device.pdevice,
-            &context.instance,
+            &device,
             swapchain.extent,
             device.msaa_samples,
             device.depth_format,
@@ -306,6 +305,7 @@ impl Renderer {
             current_view_proj: spark_math::Mat4::IDENTITY,
             last_object_count: 0,
             current_image_index: 0,
+            pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::collections::HashMap::new()).collect(),
         })
     }
 
@@ -386,6 +386,11 @@ impl Renderer {
         self.ensure_global_descriptor_set();
     }
 
+    pub fn update_pass_descriptors_if_needed(&mut self, current_frame: usize) {
+        // Implement logic to only update when versions change
+        // For now, this is a placeholder for the more granular per-resource tracking
+    }
+
     pub fn ensure_global_descriptor_set(&mut self) {
         let hiz_view = if self.hiz_view != vk::ImageView::null() {
             self.hiz_view
@@ -410,7 +415,7 @@ impl Renderer {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let frame = &self.frames[i];
             if let (Some(global_buffer), Some(obj_buf), Some(ind_buf), Some(cnt_buf)) =
-                (frame.global_buffer, frame.object_data_buffer, frame.indirect_commands_buffer, frame.draw_count_buffer) {
+                (frame.global_buffer.as_ref(), frame.object_data_buffer.as_ref(), frame.indirect_commands_buffer.as_ref(), frame.draw_count_buffer.as_ref()) {
                 let ds = frame.global_descriptor_set;
                 let buf_info = [vk::DescriptorBufferInfo::default().buffer(global_buffer.handle).range(global_buffer.size)];
                 let obj_info = [vk::DescriptorBufferInfo::default().buffer(obj_buf.handle).range(obj_buf.size)];
@@ -431,19 +436,19 @@ impl Renderer {
                 ];
 
                 let mat_info;
-                if let Some(mat_buf) = self.global_material_buffer {
+                if let Some(ref mat_buf) = self.global_material_buffer {
                     mat_info = [vk::DescriptorBufferInfo::default().buffer(mat_buf.handle).range(mat_buf.size)];
                     writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(5).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&mat_info));
                 }
 
                 let grid_info;
-                if let Some(gb) = grid_buf {
+                if let Some(ref gb) = grid_buf {
                     grid_info = [vk::DescriptorBufferInfo::default().buffer(gb.handle).range(gb.size)];
                     writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(6).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&grid_info));
                 }
 
                 let idx_info;
-                if let Some(ib) = index_buf {
+                if let Some(ref ib) = index_buf {
                     idx_info = [vk::DescriptorBufferInfo::default().buffer(ib.handle).range(ib.size)];
                     writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(7).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&idx_info));
                 }
@@ -516,7 +521,7 @@ impl Renderer {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let needs_new_buffer = {
                 let frame = &self.frames[i];
-                frame.light_buffer.is_none() || frame.light_buffer.unwrap().size < sz
+                frame.light_buffer.is_none() || frame.light_buffer.as_ref().unwrap().size < sz
             };
 
             if needs_new_buffer {
@@ -527,7 +532,7 @@ impl Renderer {
                 );
 
                 let frame = &mut self.frames[i];
-                if let Some(old) = frame.light_buffer {
+                if let Some(old) = frame.light_buffer.take() {
                     self.device.destroy_buffer(old);
                 }
                 frame.light_buffer = Some(new_buffer);
@@ -539,7 +544,7 @@ impl Renderer {
             self.update_all_descriptor_sets();
         }
 
-        let lb = self.frames[self.current_frame].light_buffer.unwrap();
+        let lb = self.frames[self.current_frame].light_buffer.as_ref().cloned().unwrap();
         self.upload_to_buffer(&lb, &ld);
     }
 
@@ -562,9 +567,9 @@ impl Renderer {
         let frame_idx = self.current_frame;
         let cmd_sz = std::mem::size_of_val(commands) as u64;
 
-        let mut buffer = self.frames[frame_idx].indirect_commands_buffer;
-        if buffer.is_none() || buffer.unwrap().size < cmd_sz {
-            if let Some(old) = buffer {
+        let mut buffer = self.frames[frame_idx].indirect_commands_buffer.clone();
+        if buffer.is_none() || buffer.as_ref().unwrap().size < cmd_sz {
+            if let Some(old) = self.frames[frame_idx].indirect_commands_buffer.take() {
                 self.device.destroy_buffer(old);
             }
             buffer = Some(self.create_buffer(
@@ -572,14 +577,14 @@ impl Renderer {
                 vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             ));
-            self.frames[frame_idx].indirect_commands_buffer = buffer;
+            self.frames[frame_idx].indirect_commands_buffer = buffer.clone();
         }
         self.upload_to_buffer(&buffer.unwrap(), commands);
 
         let obj_sz = std::mem::size_of_val(object_data) as u64;
-        let mut obj_buffer = self.frames[frame_idx].object_data_buffer;
-        if obj_buffer.is_none() || obj_buffer.unwrap().size < obj_sz {
-            if let Some(old) = obj_buffer {
+        let mut obj_buffer = self.frames[frame_idx].object_data_buffer.clone();
+        if obj_buffer.is_none() || obj_buffer.as_ref().unwrap().size < obj_sz {
+            if let Some(old) = self.frames[frame_idx].object_data_buffer.take() {
                 self.device.destroy_buffer(old);
             }
             obj_buffer = Some(self.create_buffer(
@@ -587,7 +592,7 @@ impl Renderer {
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             ));
-            self.frames[frame_idx].object_data_buffer = obj_buffer;
+            self.frames[frame_idx].object_data_buffer = obj_buffer.clone();
         }
         self.upload_to_buffer(&obj_buffer.unwrap(), object_data);
 
@@ -610,7 +615,7 @@ impl Renderer {
             if self.frames[frame_idx].instance_pool[idx].size >= sz {
                 return idx as u32;
             }
-            let old = self.frames[frame_idx].instance_pool[idx];
+            let old = self.frames[frame_idx].instance_pool[idx].clone();
             self.device.destroy_buffer(old);
         }
 
@@ -752,6 +757,8 @@ impl Renderer {
 
             use crate::passes::RenderContext;
 
+            // Record passes sequentially for now to avoid complex borrowing/Vulkan state issues
+            // while maintaining the modular architecture.
             let ctx = RenderContext {
                 renderer: self,
                 command_buffer,
@@ -759,9 +766,6 @@ impl Renderer {
                 image_index,
             };
 
-            // Rendering Passes
-
-            // Final dynamic passes
             for pass in &self.render_passes {
                 pass.record_commands(&ctx);
             }
@@ -780,13 +784,12 @@ impl Renderer {
 
     pub fn create_viewport_attachment(&mut self, width: u32, height: u32) {
         if let Some(old) = self.viewport_attachment.take() {
-            old.destroy(&self.device.device);
+            old.destroy(&self.device.device, &self.device.allocator);
         }
 
         let format = vk::Format::R16G16B16A16_SFLOAT;
         let attachment = Attachment::create_image_resource(
-            &self.device.device,
-            &self.device.memory_properties,
+            &self.device,
             width,
             height,
             format,
@@ -811,9 +814,7 @@ impl Renderer {
                 window.inner_size().height,
             )?;
             self.gbuffer.recreate(
-                &self.device.device,
-                self.device.pdevice,
-                &self.context.instance,
+                &self.device,
                 self.swapchain.extent,
                 self.device.msaa_samples,
                 self.device.depth_format,
@@ -825,7 +826,7 @@ impl Renderer {
 
     fn cleanup_swapchain(&mut self) {
         unsafe {
-            self.gbuffer.destroy(&self.device.device);
+            self.gbuffer.destroy(&self.device.device, &self.device.allocator);
             self.swapchain
                 .loader
                 .destroy_swapchain(self.swapchain.handle, None);
@@ -855,6 +856,7 @@ impl Renderer {
                     | vk::ImageUsageFlags::TRANSFER_DST
                     | vk::ImageUsageFlags::SAMPLED,
                 properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                samples: vk::SampleCountFlags::TYPE_1,
             }
         );
         self.transition_image_layout_basic(
@@ -908,7 +910,7 @@ impl Renderer {
 
         Texture {
             image: i,
-            memory: m,
+            allocation: m,
             view: v,
             sampler: s,
             mip_levels: mip,
@@ -922,14 +924,14 @@ impl Renderer {
             self.device.device.destroy_sampler(t.sampler, None);
             self.device.device.destroy_image_view(t.view, None);
             self.device.device.destroy_image(t.image, None);
-            self.device.device.free_memory(t.memory, None);
+            self.device.allocator.lock().unwrap().free(t.allocation).unwrap();
         }
     }
 
     pub fn create_image_basic(
         &self,
         params: &crate::vulkan::device::ImageCreateParams,
-    ) -> (vk::Image, vk::DeviceMemory) {
+    ) -> (vk::Image, gpu_allocator::vulkan::Allocation) {
         self.device.create_image(params)
     }
 
@@ -1211,7 +1213,7 @@ impl Renderer {
             }
             self.ensure_global_descriptor_set();
         }
-        let gb = self.frames[self.current_frame].global_buffer.unwrap();
+        let gb = self.frames[self.current_frame].global_buffer.as_ref().cloned().unwrap();
         self.upload_to_buffer(&gb, &[ubo]);
 
         // 4. Prepare Passes

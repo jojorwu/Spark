@@ -1,15 +1,41 @@
 use ash::vk;
+use std::sync::{Arc, Mutex};
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 /// Represents a Vulkan buffer with its associated memory and size.
-#[derive(Debug, Copy, Clone)]
 pub struct Buffer {
     pub handle: vk::Buffer,
-    pub memory: vk::DeviceMemory,
+    pub allocation: Arc<Mutex<Option<gpu_allocator::vulkan::Allocation>>>,
     pub size: vk::DeviceSize,
     pub ptr: *mut std::ffi::c_void,
     pub address: u64,
+    pub version: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Clone for Buffer {
+    fn clone(&self) -> Self {
+        Self {
+            handle: self.handle,
+            allocation: self.allocation.clone(),
+            size: self.size,
+            ptr: self.ptr,
+            address: self.address,
+            version: self.version.clone(),
+        }
+    }
+}
+
+
+impl std::fmt::Debug for Buffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Buffer")
+            .field("handle", &self.handle)
+            .field("size", &self.size)
+            .field("address", &self.address)
+            .field("version", &self.version)
+            .finish()
+    }
 }
 
 unsafe impl Send for Buffer {}
@@ -18,9 +44,22 @@ unsafe impl Sync for Buffer {}
 /// Represents a framebuffer attachment (Image, Memory, View).
 pub struct Attachment {
     pub image: vk::Image,
-    pub memory: vk::DeviceMemory,
+    pub allocation: Arc<Mutex<Option<gpu_allocator::vulkan::Allocation>>>,
     pub view: vk::ImageView,
     pub extent: vk::Extent2D,
+    pub version: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Clone for Attachment {
+    fn clone(&self) -> Self {
+        Self {
+            image: self.image,
+            allocation: self.allocation.clone(),
+            view: self.view,
+            extent: self.extent,
+            version: self.version.clone(),
+        }
+    }
 }
 
 /// Represents all resources and synchronization primitives for a single frame.
@@ -107,65 +146,35 @@ pub struct LightGrid {
 
 impl Attachment {
     /// Destroys the attachment resources.
-    pub fn destroy(&self, device: &ash::Device) {
+    pub fn destroy(&self, device: &ash::Device, allocator: &std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>) {
         unsafe {
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            device.free_memory(self.memory, None);
+            if let Some(alloc) = self.allocation.lock().unwrap().take() {
+                allocator.lock().unwrap().free(alloc).unwrap();
+            }
         }
     }
 
     pub fn create_image_resource(
-        device: &ash::Device,
-        mem_props: &vk::PhysicalDeviceMemoryProperties,
+        device: &crate::vulkan::device::VulkanDevice,
         width: u32,
         height: u32,
         format: vk::Format,
         usage: vk::ImageUsageFlags,
         samples: vk::SampleCountFlags,
     ) -> Self {
-        let img_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(format)
-            .extent(vk::Extent3D {
-                width,
-                height,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(samples)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
 
-        let img = unsafe { device.create_image(&img_info, None).unwrap() };
-        let reqs = unsafe { device.get_image_memory_requirements(img) };
-        let mut type_idx = 0;
-        for i in 0..mem_props.memory_type_count {
-            if (reqs.memory_type_bits & (1 << i)) != 0
-                && (mem_props.memory_types[i as usize].property_flags
-                    & vk::MemoryPropertyFlags::DEVICE_LOCAL)
-                    == vk::MemoryPropertyFlags::DEVICE_LOCAL
-            {
-                type_idx = i;
-                break;
-            }
-        }
-        let mem = unsafe {
-            device
-                .allocate_memory(
-                    &vk::MemoryAllocateInfo::default()
-                        .allocation_size(reqs.size)
-                        .memory_type_index(type_idx),
-                    None,
-                )
-                .unwrap()
-        };
-        unsafe {
-            device.bind_image_memory(img, mem, 0).unwrap();
-        }
+        let (img, allocation) = device.create_image(&crate::vulkan::device::ImageCreateParams {
+            width,
+            height,
+            mip_levels: 1,
+            format,
+            tiling: vk::ImageTiling::OPTIMAL,
+            usage,
+            properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            samples,
+        });
         let aspect = if format == vk::Format::D32_SFLOAT
             || format == vk::Format::D32_SFLOAT_S8_UINT
             || format == vk::Format::D24_UNORM_S8_UINT
@@ -175,30 +184,19 @@ impl Attachment {
         } else {
             vk::ImageAspectFlags::COLOR
         };
-        let v_info = vk::ImageViewCreateInfo::default()
-            .image(img)
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(format)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: aspect,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
-        let view = unsafe { device.create_image_view(&v_info, None).unwrap() };
+        let view = device.create_image_view(img, format, 1);
         Self {
             image: img,
-            memory: mem,
+            allocation: Arc::new(Mutex::new(Some(allocation))),
             view,
             extent: vk::Extent2D { width, height },
+            version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 }
 
 pub fn create_frame_attachments(
-    device: &ash::Device,
-    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    device: &crate::vulkan::device::VulkanDevice,
     extent: vk::Extent2D,
     format: vk::Format,
     msaa: vk::SampleCountFlags,
@@ -207,7 +205,6 @@ pub fn create_frame_attachments(
         .map(|_| {
             Attachment::create_image_resource(
                 device,
-                mem_props,
                 extent.width,
                 extent.height,
                 format,

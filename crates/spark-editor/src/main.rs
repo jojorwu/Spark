@@ -78,9 +78,7 @@ fn main() {
     );
 
     let mut shadow_pass = spark_renderer::passes::shadow::ShadowPass::new(
-        &engine.renderer.device.device,
-        engine.renderer.device.pdevice,
-        &engine.renderer.context.instance
+        &engine.renderer.device
     ).unwrap();
     shadow_pass.create_pipeline(&engine.renderer.device.device, engine.renderer.pipeline_cache, &shadow_vert_spirv, &shadow_frag_spirv);
     engine.renderer.set_common_shadow_view(shadow_pass.view);
@@ -157,9 +155,7 @@ fn main() {
     );
 
     let mut post_process_pass = spark_renderer::passes::post_process::PostProcessPass::new(
-        &engine.renderer.device.device,
-        engine.renderer.device.pdevice,
-        &engine.renderer.context.instance,
+        &engine.renderer,
         ash::vk::Format::B8G8R8A8_UNORM, // TODO: Dynamic
         engine.renderer.get_extent(),
     ).unwrap();

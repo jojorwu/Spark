@@ -62,7 +62,7 @@ impl RenderPass for TAAPass {
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             for img in self.history_images.drain(..) {
-                img.destroy(device);
+                img.destroy(device, &renderer.device.allocator);
             }
         }
     }
@@ -76,13 +76,11 @@ impl TAAPass {
     ) -> Result<Self, crate::error::RendererError> {
         let device = &renderer.device.device;
         let extent = renderer.get_extent();
-        let props = unsafe { renderer.context.instance.get_physical_device_memory_properties(renderer.device.pdevice) };
 
         let history_images = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|_| {
                 Attachment::create_image_resource(
-                    device,
-                    &props,
+                    &renderer.device,
                     extent.width,
                     extent.height,
                     vk::Format::R16G16B16A16_SFLOAT,
@@ -226,15 +224,4 @@ impl TAAPass {
         }
     }
 
-    pub fn destroy(&mut self, renderer: &Renderer) {
-        let device = &renderer.device.device;
-        unsafe {
-            device.destroy_pipeline(self.pipeline, None);
-            device.destroy_pipeline_layout(self.layout, None);
-            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            for img in self.history_images.drain(..) {
-                img.destroy(device);
-            }
-        }
-    }
 }

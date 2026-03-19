@@ -113,15 +113,16 @@ impl RenderPass for SSAOPass {
                 renderer.destroy_buffer(buffer);
             }
             for img in self.ssao_images.drain(..) {
-                img.destroy(device);
+                img.destroy(device, &renderer.device.allocator);
             }
             for img in self.ssao_blur_images.drain(..) {
-                img.destroy(device);
+                img.destroy(device, &renderer.device.allocator);
             }
             renderer.device.device.destroy_sampler(self.noise_texture.sampler, None);
             renderer.device.device.destroy_image_view(self.noise_texture.view, None);
             renderer.device.device.destroy_image(self.noise_texture.image, None);
-            renderer.device.device.free_memory(self.noise_texture.memory, None);
+            let alloc = std::mem::replace(&mut self.noise_texture.allocation, std::mem::zeroed());
+            renderer.device.allocator.lock().unwrap().free(alloc).unwrap();
         }
     }
 }
@@ -224,13 +225,13 @@ impl SSAOPass {
         let extent = renderer.get_extent();
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
              ssao_images.push(Attachment::create_image_resource(
-                device, &renderer.device.memory_properties, extent.width, extent.height,
+                &renderer.device, extent.width, extent.height,
                 vk::Format::R8_UNORM,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
                 vk::SampleCountFlags::TYPE_1,
             ));
             ssao_blur_images.push(Attachment::create_image_resource(
-                device, &renderer.device.memory_properties, extent.width, extent.height,
+                &renderer.device, extent.width, extent.height,
                 vk::Format::R8_UNORM,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
                 vk::SampleCountFlags::TYPE_1,
