@@ -15,6 +15,49 @@ pub struct HiZPass {
     pub mip_levels: u32,
 }
 
+use super::{RenderPass, RenderContext};
+use crate::Renderer;
+
+impl RenderPass for HiZPass {
+    fn name(&self) -> &str { "HiZPass" }
+    fn record_commands(&self, ctx: &RenderContext) {
+        let renderer = ctx.renderer;
+        let command_buffer = ctx.command_buffer;
+        let current_frame = ctx.current_frame;
+
+        let prev_frame = (current_frame + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT;
+        self.record_commands_impl(
+            &renderer.device.device,
+            command_buffer,
+            renderer.gbuffer.depth[prev_frame].view,
+            renderer.common_sampler,
+        );
+    }
+
+    fn get_resource_view(&self, name: &str, _frame_index: usize) -> Option<vk::ImageView> {
+        if name == "pyramid" {
+            Some(self.pyramid_view)
+        } else {
+            None
+        }
+    }
+
+    fn destroy(&mut self, renderer: &Renderer) {
+        unsafe {
+            let device = &renderer.device.device;
+            for view in &self.mip_views {
+                device.destroy_image_view(*view, None);
+            }
+            device.destroy_image_view(self.pyramid_view, None);
+            device.destroy_image(self.pyramid_image, None);
+            device.free_memory(self.pyramid_memory, None);
+            device.destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline_layout(self.layout, None);
+            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+        }
+    }
+}
+
 impl HiZPass {
     pub fn new(
         device: &VulkanDevice,
@@ -133,7 +176,7 @@ impl HiZPass {
         }
     }
 
-    pub fn record_commands(
+    pub fn record_commands_impl(
         &self,
         device: &ash::Device,
         command_buffer: vk::CommandBuffer,
@@ -215,17 +258,4 @@ impl HiZPass {
         }
     }
 
-    pub fn destroy(&self, device: &ash::Device) {
-        unsafe {
-            for view in &self.mip_views {
-                device.destroy_image_view(*view, None);
-            }
-            device.destroy_image_view(self.pyramid_view, None);
-            device.destroy_image(self.pyramid_image, None);
-            device.free_memory(self.pyramid_memory, None);
-            device.destroy_pipeline(self.pipeline, None);
-            device.destroy_pipeline_layout(self.layout, None);
-            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-        }
-    }
 }

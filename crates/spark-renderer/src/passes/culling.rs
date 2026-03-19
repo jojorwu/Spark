@@ -1,12 +1,55 @@
 use ash::vk;
 use crate::resource::Buffer;
 
+use super::{RenderPass, RenderContext};
+use crate::Renderer;
+
+impl RenderPass for CullingPass {
+    fn name(&self) -> &str { "CullingPass" }
+    fn record_commands(&self, ctx: &RenderContext) {
+        let renderer = ctx.renderer;
+        let command_buffer = ctx.command_buffer;
+        let current_frame = ctx.current_frame;
+
+        let global_ds = renderer.frames[current_frame].global_descriptor_set;
+        if let (Some(obj_buf), Some(ind_buf), Some(cnt_buf)) = (
+            renderer.frames[current_frame].object_data_buffer,
+            renderer.frames[current_frame].indirect_commands_buffer,
+            renderer.frames[current_frame].draw_count_buffer
+        ) {
+            self.record_commands_impl(
+                &renderer.device.device,
+                command_buffer,
+                renderer.last_object_count,
+                global_ds,
+                &obj_buf,
+                &ind_buf,
+                &cnt_buf,
+            );
+        }
+    }
+
+    fn destroy(&mut self, renderer: &Renderer) {
+        unsafe {
+            let device = &renderer.device.device;
+            device.destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline_layout(self.layout, None);
+        }
+    }
+}
+
 pub struct CullingPass {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
 }
 
 impl CullingPass {
+    pub fn destroy_impl(&self, device: &ash::Device) {
+        unsafe {
+            device.destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline_layout(self.layout, None);
+        }
+    }
     pub fn new(
         device: &ash::Device,
         _descriptor_pool: vk::DescriptorPool,
@@ -52,7 +95,7 @@ impl CullingPass {
         }
     }
 
-    pub fn record_commands(
+    pub fn record_commands_impl(
         &self,
         device: &ash::Device,
         command_buffer: vk::CommandBuffer,
@@ -112,10 +155,4 @@ impl CullingPass {
         }
     }
 
-    pub fn destroy(&self, device: &ash::Device) {
-        unsafe {
-            device.destroy_pipeline(self.pipeline, None);
-            device.destroy_pipeline_layout(self.layout, None);
-        }
-    }
 }

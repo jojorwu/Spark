@@ -3,16 +3,19 @@ use crate::resource::{Buffer, ClusterAABB, LightGrid};
 use crate::Renderer;
 use spark_math::Mat4;
 
-use super::RenderPass;
+use super::{RenderPass, RenderContext};
 
 impl RenderPass for ClusteredPass {
+    fn name(&self) -> &str { "ClusteredPass" }
     fn prepare(&self, renderer: &Renderer, _current_frame: usize) {
         if let Some(lb) = renderer.frames[renderer.current_frame].light_buffer {
             self.update_descriptor_sets(&renderer.device.device, &lb);
         }
     }
 
-    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, _current_frame: usize) {
+    fn record_commands(&self, ctx: &RenderContext) {
+        let renderer = ctx.renderer;
+        let command_buffer = ctx.command_buffer;
         let view = renderer.scene_view_matrix_for_pos;
         let proj = spark_math::Mat4::perspective_rh(
             45.0f32.to_radians(),
@@ -31,6 +34,28 @@ impl RenderPass for ClusteredPass {
         );
 
         self.record_cull_commands(&renderer.device.device, command_buffer, view, renderer.light_count);
+    }
+
+    fn get_resource_buffer(&self, name: &str) -> Option<crate::resource::Buffer> {
+        match name {
+            "light_grid" => Some(self.light_grid_buffer),
+            "index_list" => Some(self.global_index_list),
+            _ => None,
+        }
+    }
+
+    fn destroy(&mut self, renderer: &Renderer) {
+        let device = &renderer.device.device;
+        unsafe {
+            device.destroy_pipeline(self.build_pipeline, None);
+            device.destroy_pipeline(self.cull_pipeline, None);
+            device.destroy_pipeline_layout(self.layout, None);
+            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            renderer.destroy_buffer(self.cluster_buffer);
+            renderer.destroy_buffer(self.light_grid_buffer);
+            renderer.destroy_buffer(self.global_index_list);
+            renderer.destroy_buffer(self.index_counter);
+        }
     }
 }
 
@@ -253,17 +278,4 @@ impl ClusteredPass {
         }
     }
 
-    pub fn destroy(&self, renderer: &Renderer) {
-        let device = &renderer.device.device;
-        unsafe {
-            device.destroy_pipeline(self.build_pipeline, None);
-            device.destroy_pipeline(self.cull_pipeline, None);
-            device.destroy_pipeline_layout(self.layout, None);
-            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            renderer.destroy_buffer(self.cluster_buffer);
-            renderer.destroy_buffer(self.light_grid_buffer);
-            renderer.destroy_buffer(self.global_index_list);
-            renderer.destroy_buffer(self.index_counter);
-        }
-    }
 }

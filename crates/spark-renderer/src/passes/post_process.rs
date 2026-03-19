@@ -3,6 +3,57 @@ use crate::resource::Attachment;
 use crate::MAX_FRAMES_IN_FLIGHT;
 use crate::pipeline::Pipeline;
 
+use super::{RenderPass, RenderContext};
+use crate::Renderer;
+
+impl RenderPass for PostProcessPass {
+    fn name(&self) -> &str { "PostProcessPass" }
+    fn record_commands(&self, ctx: &RenderContext) {
+        let renderer = ctx.renderer;
+        let command_buffer = ctx.command_buffer;
+        let current_frame = ctx.current_frame;
+        let image_index = ctx.image_index;
+
+        let target_view = renderer.viewport_attachment.as_ref().map(|a| a.view);
+        self.record_commands_impl(
+            &renderer.device.device,
+            command_buffer,
+            image_index,
+            current_frame,
+            renderer.swapchain.views[image_index as usize],
+            renderer.swapchain.images[image_index as usize],
+            renderer.swapchain.extent,
+            target_view,
+            renderer.exposure,
+            renderer.gamma,
+        );
+    }
+
+    fn destroy(&mut self, renderer: &Renderer) {
+        unsafe {
+            let device = &renderer.device.device;
+            if let Some(p) = self.pipeline {
+                device.destroy_pipeline(p, None);
+            }
+            if let Some(p) = self.bloom_pipeline {
+                device.destroy_pipeline(p, None);
+            }
+            device.destroy_pipeline_layout(self.layout, None);
+            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            device.destroy_descriptor_pool(self.descriptor_pool, None);
+            for view in self.bloom_views.drain(..) {
+                device.destroy_image_view(view, None);
+            }
+            for img in self.bloom_images.drain(..) {
+                device.destroy_image(img, None);
+            }
+            for mem in self.bloom_memories.drain(..) {
+                device.free_memory(mem, None);
+            }
+        }
+    }
+}
+
 pub struct PostProcessPass {
     pub pipeline: Option<vk::Pipeline>,
     pub bloom_pipeline: Option<vk::Pipeline>,
@@ -17,6 +68,28 @@ pub struct PostProcessPass {
 }
 
 impl PostProcessPass {
+    pub fn destroy_impl(&mut self, device: &ash::Device) {
+        unsafe {
+            if let Some(p) = self.pipeline {
+                device.destroy_pipeline(p, None);
+            }
+            if let Some(p) = self.bloom_pipeline {
+                device.destroy_pipeline(p, None);
+            }
+            device.destroy_pipeline_layout(self.layout, None);
+            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            device.destroy_descriptor_pool(self.descriptor_pool, None);
+            for view in self.bloom_views.drain(..) {
+                device.destroy_image_view(view, None);
+            }
+            for img in self.bloom_images.drain(..) {
+                device.destroy_image(img, None);
+            }
+            for mem in self.bloom_memories.drain(..) {
+                device.free_memory(mem, None);
+            }
+        }
+    }
     pub fn new(
         device: &ash::Device,
         pdevice: vk::PhysicalDevice,
@@ -189,20 +262,24 @@ impl PostProcessPass {
         }
     }
 
-    pub fn update_descriptor_sets(
-        &self,
-        device: &ash::Device,
-        hdr_attachments: &[Attachment],
-        sampler: vk::Sampler,
-        taa_images: Option<&Vec<Attachment>>,
-        fog_images: Option<&Vec<Attachment>>,
-    ) {
+    fn update_descriptor_sets(&self, renderer: &Renderer) {
+        let device = &renderer.device.device;
+        let sampler = renderer.common_sampler;
+
+        let mut taa_view = None;
+        let mut fog_view = None;
+
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let view = if let Some(taa) = taa_images {
-                taa[i].view
-            } else {
-                hdr_attachments[i].view
-            };
+            for pass in &renderer.render_passes {
+                if pass.name() == "TAAPass" {
+                    taa_view = pass.get_resource_view("history", i);
+                }
+                if pass.name() == "VolumetricPass" {
+                    fog_view = pass.get_resource_view("output", i);
+                }
+            }
+
+            let view = taa_view.unwrap_or(renderer.gbuffer.hdr[i].view);
             let img_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image_view(view)
@@ -226,14 +303,10 @@ impl PostProcessPass {
                     .image_info(&blm_info),
             ];
 
-            let fog_view = if let Some(fog) = fog_images {
-                fog[i].view
-            } else {
-                taa_images.map(|t| t[i].view).unwrap_or(hdr_attachments[i].view)
-            };
+            let final_fog_view = fog_view.unwrap_or(view);
             let fog_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(fog_view)
+                .image_view(final_fog_view)
                 .sampler(sampler)];
             writes.push(
                 vk::WriteDescriptorSet::default()
@@ -249,7 +322,7 @@ impl PostProcessPass {
         }
     }
 
-    pub fn record_commands(
+    pub fn record_commands_impl(
         &self,
         device: &ash::Device,
         command_buffer: vk::CommandBuffer,
@@ -332,26 +405,4 @@ impl PostProcessPass {
         }
     }
 
-    pub fn destroy(&mut self, device: &ash::Device) {
-        unsafe {
-            if let Some(p) = self.pipeline {
-                device.destroy_pipeline(p, None);
-            }
-            if let Some(p) = self.bloom_pipeline {
-                device.destroy_pipeline(p, None);
-            }
-            device.destroy_pipeline_layout(self.layout, None);
-            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            device.destroy_descriptor_pool(self.descriptor_pool, None);
-            for view in self.bloom_views.drain(..) {
-                device.destroy_image_view(view, None);
-            }
-            for img in self.bloom_images.drain(..) {
-                device.destroy_image(img, None);
-            }
-            for mem in self.bloom_memories.drain(..) {
-                device.free_memory(mem, None);
-            }
-        }
-    }
 }

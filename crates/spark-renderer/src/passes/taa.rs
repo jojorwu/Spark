@@ -2,6 +2,7 @@ use ash::vk;
 use crate::resource::Attachment;
 use crate::Renderer;
 use crate::MAX_FRAMES_IN_FLIGHT;
+use super::RenderContext;
 
 pub struct TAAPass {
     pub pipeline: vk::Pipeline,
@@ -14,8 +15,10 @@ pub struct TAAPass {
 use super::RenderPass;
 
 impl RenderPass for TAAPass {
+    fn name(&self) -> &str { "TAAPass" }
+    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_taa }
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
-        let sampler = renderer.shadow_pass.sampler;
+        let sampler = renderer.common_sampler;
         let prev_idx = (current_frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
         let current_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.gbuffer.hdr[current_frame].view).sampler(sampler)];
         let history_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(self.history_images[prev_idx].view).sampler(sampler)];
@@ -35,8 +38,33 @@ impl RenderPass for TAAPass {
         // Handled in prepare
     }
 
-    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
-        self.record_commands(&renderer.device.device, command_buffer, renderer.swapchain.extent, current_frame);
+    fn record_commands(&self, ctx: &RenderContext) {
+        self.record_commands_impl(
+            &ctx.renderer.device.device,
+            ctx.command_buffer,
+            ctx.renderer.swapchain.extent,
+            ctx.current_frame,
+        );
+    }
+
+    fn get_resource_view(&self, name: &str, frame_index: usize) -> Option<vk::ImageView> {
+        if name == "history" {
+            Some(self.history_images[frame_index].view)
+        } else {
+            None
+        }
+    }
+
+    fn destroy(&mut self, renderer: &Renderer) {
+        let device = &renderer.device.device;
+        unsafe {
+            device.destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline_layout(self.layout, None);
+            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            for img in self.history_images.drain(..) {
+                img.destroy(device);
+            }
+        }
     }
 }
 
@@ -156,7 +184,7 @@ impl TAAPass {
         }
     }
 
-    pub fn record_commands(
+    pub fn record_commands_impl(
         &self,
         device: &ash::Device,
         command_buffer: vk::CommandBuffer,

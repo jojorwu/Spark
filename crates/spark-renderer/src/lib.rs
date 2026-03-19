@@ -7,16 +7,6 @@ pub mod vertex;
 pub mod vulkan;
 
 use crate::error::RendererError;
-use crate::passes::deferred::DeferredPass;
-use crate::passes::post_process::PostProcessPass;
-use crate::passes::shadow::ShadowPass;
-use crate::passes::culling::CullingPass;
-use crate::passes::hiz::HiZPass;
-use crate::passes::ssao::SSAOPass;
-use crate::passes::clustered::ClusteredPass;
-use crate::passes::taa::TAAPass;
-use crate::passes::grid::GridPass;
-use crate::passes::volumetric::VolumetricPass;
 use crate::pipeline::Pipeline;
 pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT, ObjectDataSSBO, MaterialDataSSBO};
 use crate::ui::EguiRenderer;
@@ -31,22 +21,12 @@ use winit::window::Window;
 
 /// The main renderer of the Spark Engine.
 pub struct Renderer {
-    context: VulkanContext,
+    pub context: VulkanContext,
     pub device: VulkanDevice,
     swapchain: VulkanSwapchain,
     pub gbuffer: GBuffer,
     pub global_descriptor_set_layout: vk::DescriptorSetLayout,
     pub light_count: u32,
-    pub shadow_pass: ShadowPass,
-    pub deferred_pass: DeferredPass,
-    pub post_process_pass: PostProcessPass,
-    pub culling_pass: Option<CullingPass>,
-    pub hiz_pass: Option<HiZPass>,
-    pub ssao_pass: Option<SSAOPass>,
-    pub clustered_pass: Option<ClusteredPass>,
-    pub taa_pass: Option<TAAPass>,
-    pub grid_pass: Option<GridPass>,
-    pub volumetric_pass: Option<VolumetricPass>,
     pub render_passes: Vec<Box<dyn crate::passes::RenderPass>>,
     pub frames: [RenderFrame; MAX_FRAMES_IN_FLIGHT],
     pub pipeline_cache: vk::PipelineCache,
@@ -64,6 +44,9 @@ pub struct Renderer {
     pub scene_view_matrix_for_pos: spark_math::Mat4,
     pub prev_view_proj: spark_math::Mat4,
     pub frame_index: u64,
+    pub common_sampler: vk::Sampler,
+    pub common_shadow_view: vk::ImageView,
+    pub hiz_view: vk::ImageView,
     egui_renderer: Option<EguiRenderer>,
     pub bindless_descriptor_set_layout: vk::DescriptorSetLayout,
     pub bindless_descriptor_set: vk::DescriptorSet,
@@ -80,6 +63,8 @@ pub struct Renderer {
     pub enable_ibl: bool,
     pub main_light_view_proj: spark_math::Mat4,
     pub current_view_proj: spark_math::Mat4,
+    pub last_object_count: u32,
+    pub current_image_index: u32,
 }
 
 #[repr(C)]
@@ -127,8 +112,6 @@ impl Renderer {
             window.inner_size().height,
         )?;
 
-        let shadow_pass = ShadowPass::new(&device.device, device.pdevice, &context.instance)?;
-
         let gbuffer = GBuffer::new(
             &device.device,
             device.pdevice,
@@ -138,13 +121,19 @@ impl Renderer {
             device.depth_format,
         );
 
-        let post_process_pass = PostProcessPass::new(
-            &device.device,
-            device.pdevice,
-            &context.instance,
-            swapchain.format,
-            swapchain.extent,
-        )?;
+        let common_sampler = unsafe {
+            device.device.create_sampler(
+                &vk::SamplerCreateInfo::default()
+                    .mag_filter(vk::Filter::LINEAR)
+                    .min_filter(vk::Filter::LINEAR)
+                    .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                    .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                    .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                    .border_color(vk::BorderColor::FLOAT_OPAQUE_WHITE)
+                    .mipmap_mode(vk::SamplerMipmapMode::LINEAR),
+                None,
+            )?
+        };
 
         let (av, fi, in_f) = Self::create_sync_objects_impl(&device.device);
         let pipeline_cache = unsafe {
@@ -262,9 +251,6 @@ impl Renderer {
             .try_into()
             .unwrap();
 
-        let deferred_pass =
-            DeferredPass::new(&device.device, descriptor_pool, global_descriptor_set_layout)?;
-
         let egui_renderer = ui_shaders.map(|(v, f)| {
             EguiRenderer::new(
                 &device.device,
@@ -282,16 +268,6 @@ impl Renderer {
             gbuffer,
             global_descriptor_set_layout,
             light_count: 0,
-            shadow_pass,
-            deferred_pass,
-            post_process_pass,
-            culling_pass: None,
-            hiz_pass: None,
-            ssao_pass: None,
-            clustered_pass: None,
-            taa_pass: None,
-            grid_pass: None,
-            volumetric_pass: None,
             render_passes: Vec::new(),
             frames,
             pipeline_cache,
@@ -309,6 +285,9 @@ impl Renderer {
             scene_view_matrix_for_pos: spark_math::Mat4::IDENTITY,
             prev_view_proj: spark_math::Mat4::IDENTITY,
             frame_index: 0,
+            common_sampler,
+            common_shadow_view: vk::ImageView::null(),
+            hiz_view: vk::ImageView::null(),
             egui_renderer,
             bindless_descriptor_set_layout,
             bindless_descriptor_set,
@@ -325,6 +304,8 @@ impl Renderer {
             enable_ibl: true,
             main_light_view_proj: spark_math::Mat4::IDENTITY,
             current_view_proj: spark_math::Mat4::IDENTITY,
+            last_object_count: 0,
+            current_image_index: 0,
         })
     }
 
@@ -335,36 +316,6 @@ impl Renderer {
 
     pub fn set_material_buffer(&mut self, buffer: Buffer) {
         self.global_material_buffer = Some(buffer);
-    }
-
-    pub fn set_deferred_pipeline(&mut self, pipeline: vk::Pipeline) {
-        self.deferred_pass.pipeline = Some(pipeline);
-        self.update_deferred_descriptor_sets();
-    }
-
-    fn update_deferred_descriptor_sets(&self) {
-        let light_buffers: Vec<Buffer> = self.frames.iter().filter_map(|f| f.light_buffer).collect();
-        let object_buffers: Vec<Option<Buffer>> = self.frames.iter().map(|f| f.object_data_buffer).collect();
-
-        let irr_view = self.ibl_maps.as_ref().map(|m| m.irradiance_view).unwrap_or(self.shadow_pass.view);
-        let spec_view = self.ibl_maps.as_ref().map(|m| m.prefilter_view).unwrap_or(self.shadow_pass.view);
-        let brdf_view = self.ibl_maps.as_ref().map(|m| m.brdf_lut_view).unwrap_or(self.shadow_pass.view);
-
-        self.deferred_pass.update_descriptor_sets(
-            &self.device.device,
-            &self.gbuffer.albedo,
-            &self.gbuffer.normal,
-            &self.gbuffer.pbr,
-            &self.gbuffer.depth,
-            self.shadow_pass.view,
-            self.shadow_pass.sampler,
-            &light_buffers,
-            &object_buffers,
-            &self.gbuffer.ssao_blur,
-            irr_view,
-            spec_view,
-            brdf_view,
-        );
     }
 
     pub fn set_pipeline(&mut self, pipeline: Pipeline) {
@@ -427,120 +378,33 @@ impl Renderer {
         self.default_descriptor_set = ds;
     }
 
-    pub fn create_shadow_pipeline(&mut self, vert_spirv: &[u32], frag_spirv: &[u32]) {
-        self.shadow_pass.create_pipeline(
-            &self.device.device,
-            self.pipeline_cache,
-            vert_spirv,
-            frag_spirv,
-        );
-    }
 
-    pub fn create_culling_pipeline(&mut self, shader_code: &[u32]) {
-        self.culling_pass = Some(CullingPass::new(
-            &self.device.device,
-            self.descriptor_pool,
-            shader_code,
-            self.global_descriptor_set_layout,
-        ));
-    }
-
-    pub fn create_hiz_pipeline(&mut self, shader_code: &[u32]) {
-        self.hiz_pass = Some(HiZPass::new(
-            &self.device,
-            self.descriptor_pool,
-            shader_code,
-            self.swapchain.extent.width,
-            self.swapchain.extent.height,
-        ));
-    }
-
-    pub fn create_ssao_pipeline(&mut self, vert: &[u32], ssao: &[u32], blur: &[u32]) {
-        let mut pass = SSAOPass::new(self, self.descriptor_pool).unwrap();
-        pass.create_pipelines(&self.device.device, self.pipeline_cache, self.swapchain.extent, vert, ssao, blur);
-        self.ssao_pass = Some(pass);
-        self.update_ssao_descriptor_sets();
-    }
-
-    pub fn create_clustered_pipeline(&mut self, build: &[u32], cull: &[u32]) {
-        let pass = ClusteredPass::new(self, build, cull).unwrap();
-        self.clustered_pass = Some(pass);
-        self.update_clustered_descriptor_sets();
-    }
-
-    fn update_clustered_descriptor_sets(&self) {
-        if let (Some(pass), Some(lb)) = (&self.clustered_pass, self.frames[self.current_frame].light_buffer) {
-            pass.update_descriptor_sets(&self.device.device, &lb);
+    pub fn update_all_descriptor_sets(&mut self) {
+        for pass in &self.render_passes {
+            pass.update_descriptor_sets(self);
         }
-    }
-
-    pub fn create_taa_pipeline(&mut self, vert: &[u32], frag: &[u32]) {
-        let pass = TAAPass::new(self, frag, vert).unwrap();
-        pass.update_descriptor_sets(&self.device.device, &self.gbuffer.hdr, &self.gbuffer.velocity, &self.gbuffer.depth, self.shadow_pass.sampler);
-        self.taa_pass = Some(pass);
-    }
-
-    pub fn create_grid_pipeline(&mut self, vert: &[u32], frag: &[u32]) {
-        self.grid_pass = Some(GridPass::new(
-            &self.device.device,
-            self.pipeline_cache,
-            vert,
-            frag,
-            self.global_descriptor_set_layout,
-            vk::Format::R16G16B16A16_SFLOAT,
-        ));
-    }
-
-    pub fn create_volumetric_pipeline(&mut self, shader_code: &[u32]) {
-        let pass = VolumetricPass::new(self, shader_code);
-        pass.update_descriptor_sets(self);
-        self.volumetric_pass = Some(pass);
-        self.update_post_process_descriptor_sets();
-    }
-
-    fn update_ssao_descriptor_sets(&self) {
-        if let Some(pass) = &self.ssao_pass {
-            pass.update_descriptor_sets(
-                &self.device.device,
-                &self.gbuffer.normal,
-                &self.gbuffer.depth,
-                &self.gbuffer.ssao,
-                self.shadow_pass.sampler,
-            );
-        }
-    }
-
-    pub fn create_post_process_pipeline(&mut self, vert_spirv: &[u32], frag_spirv: &[u32], bloom_frag_spirv: &[u32]) {
-        self.post_process_pass.create_pipelines(
-            &self.device.device,
-            self.pipeline_cache,
-            self.swapchain.extent,
-            vert_spirv,
-            frag_spirv,
-            bloom_frag_spirv,
-        );
-        self.update_post_process_descriptor_sets();
-    }
-
-    fn update_post_process_descriptor_sets(&self) {
-        let taa_images = self.taa_pass.as_ref().map(|t| &t.history_images);
-        let fog_images = self.volumetric_pass.as_ref().map(|f| &f.output_images);
-        self.post_process_pass.update_descriptor_sets(
-            &self.device.device,
-            &self.gbuffer.hdr,
-            self.shadow_pass.sampler,
-            taa_images,
-            fog_images,
-        );
+        self.ensure_global_descriptor_set();
     }
 
     pub fn ensure_global_descriptor_set(&mut self) {
-        let hiz_view = self.hiz_pass.as_ref().map(|h| h.pyramid_view).unwrap_or(self.shadow_pass.view); // Placeholder if no hiz
-
-        let (grid_buf, index_buf) = if let Some(pass) = &self.clustered_pass {
-            (Some(pass.light_grid_buffer), Some(pass.global_index_list))
+        let hiz_view = if self.hiz_view != vk::ImageView::null() {
+            self.hiz_view
         } else {
-            (None, None)
+            self.common_shadow_view
+        };
+
+        let (grid_buf, index_buf) = {
+            let mut g = None;
+            let mut idx = None;
+            for pass in &self.render_passes {
+                if let Some(b) = pass.get_resource_buffer("light_grid") {
+                    g = Some(b);
+                }
+                if let Some(b) = pass.get_resource_buffer("index_list") {
+                    idx = Some(b);
+                }
+            }
+            (g, idx)
         };
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
@@ -556,7 +420,7 @@ impl Renderer {
                 let hiz_info = [vk::DescriptorImageInfo::default()
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .image_view(hiz_view)
-                    .sampler(self.shadow_pass.sampler)];
+                    .sampler(self.common_sampler)];
 
                 let mut writes = vec![
                     vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(0).descriptor_type(vk::DescriptorType::UNIFORM_BUFFER).buffer_info(&buf_info),
@@ -583,6 +447,7 @@ impl Renderer {
                     idx_info = [vk::DescriptorBufferInfo::default().buffer(ib.handle).range(ib.size)];
                     writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(7).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&idx_info));
                 }
+
                 unsafe {
                     self.device.device.update_descriptor_sets(&writes, &[]);
                 }
@@ -671,8 +536,7 @@ impl Renderer {
         }
 
         if needs_reupdate {
-            self.update_deferred_descriptor_sets();
-                self.update_clustered_descriptor_sets();
+            self.update_all_descriptor_sets();
         }
 
         let lb = self.frames[self.current_frame].light_buffer.unwrap();
@@ -770,7 +634,7 @@ impl Renderer {
         &mut self,
         window: &Window,
         egui_output: Option<(egui::FullOutput, egui::Context)>,
-        object_count: u32,
+        _object_count: u32,
     ) {
         // Retrieve view_proj and light_view_proj from the current frame's global buffer
         // For simplicity, we'll keep them as parameters or fetch from UBO.
@@ -793,7 +657,10 @@ impl Renderer {
                 vk::Fence::null(),
             );
             let image_index = match result {
-                Ok((index, _)) => index,
+                Ok((index, _)) => {
+                    self.current_image_index = index;
+                    index
+                },
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                     let _ = self.recreate_swapchain(window);
                     return;
@@ -820,7 +687,6 @@ impl Renderer {
             self.record_command_buffer(
                 image_index,
                 egui_output,
-                object_count,
             );
             let s_available = [image_available];
             let s_finished = [render_finished];
@@ -860,317 +726,55 @@ impl Renderer {
         }
     }
 
+    pub fn set_common_shadow_view(&mut self, view: vk::ImageView) {
+        self.common_shadow_view = view;
+        self.update_all_descriptor_sets();
+    }
+
+    pub fn set_hiz_view(&mut self, view: vk::ImageView) {
+        self.hiz_view = view;
+        self.update_all_descriptor_sets();
+    }
+
     fn record_command_buffer(
         &mut self,
         image_index: u32,
         egui_output: Option<(egui::FullOutput, egui::Context)>,
-        object_count: u32,
     ) {
         let command_buffer = self.frames[self.current_frame].command_buffer;
+        let cf = self.current_frame;
+
         unsafe {
             self.device
                 .device
                 .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
                 .unwrap();
 
-            // 0a. Hi-Z Pyramid Generation (Using previous frame depth)
-            if let Some(hiz) = &self.hiz_pass {
-                hiz.record_commands(
-                    &self.device.device,
-                    command_buffer,
-                    self.gbuffer.depth[(self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT].view,
-                    self.shadow_pass.sampler,
-                );
-            }
+            use crate::passes::RenderContext;
 
-            // 0b. Clustered Shading: Light Culling
-            if let Some(clustered) = &self.clustered_pass {
-                let view = self.scene_view_matrix_for_pos;
-                let proj = spark_math::Mat4::perspective_rh(
-                    45.0f32.to_radians(),
-                    self.swapchain.extent.width as f32 / self.swapchain.extent.height as f32,
-                    0.1,
-                    100.0,
-                );
-
-                clustered.record_build_commands(
-                    &self.device.device,
-                    command_buffer,
-                    proj.inverse(),
-                    [self.swapchain.extent.width as f32, self.swapchain.extent.height as f32],
-                    0.1,
-                    100.0
-                );
-
-                clustered.record_cull_commands(&self.device.device, command_buffer, view, self.light_count);
-            }
-
-            // 0c. Culling Pass (GPU-Driven)
-            if let Some(culling) = &self.culling_pass {
-                let global_ds = self.frames[self.current_frame].global_descriptor_set;
-                if let (Some(obj_buf), Some(ind_buf), Some(cnt_buf)) = (
-                    self.frames[self.current_frame].object_data_buffer,
-                    self.frames[self.current_frame].indirect_commands_buffer,
-                    self.frames[self.current_frame].draw_count_buffer
-                ) {
-                    culling.record_commands(
-                        &self.device.device,
-                        command_buffer,
-                        object_count,
-                        global_ds,
-                        &obj_buf,
-                        &ind_buf,
-                        &cnt_buf,
-                    );
-                }
-            }
-
-            // 1. Parallel Record Shadow, G-Buffer and Lighting Passes
-            let current_frame_idx = self.current_frame;
-
-            #[repr(C)]
-            struct PC {
-                count: u32,
-                metallic: f32,
-                roughness: f32,
-                width: f32,
-                height: f32,
-                padding: u32,
-                object_buffer_address: u64,
-                prev_view_proj: spark_math::Mat4,
-            }
-            let pc = PC {
-                count: self.light_count,
-                metallic: 0.5,
-                roughness: 0.5,
-                width: self.swapchain.extent.width as f32,
-                height: self.swapchain.extent.height as f32,
-                padding: 0,
-                object_buffer_address: self.frames[self.current_frame].object_data_buffer.map_or(0, |b| b.address),
-                prev_view_proj: self.prev_view_proj,
+            let ctx = RenderContext {
+                renderer: self,
+                command_buffer,
+                current_frame: cf,
+                image_index,
             };
-            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
 
-            let lvp = self.main_light_view_proj;
-            let ((scb_shadow, scb_gbuffer), scb_lighting) = rayon::join(
-                || rayon::join(
-                    || {
-                        let pool = self.get_thread_command_pool(0);
-                        let scb = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
-                        self.shadow_pass.record_commands(&self.device.device, scb, &[lvp; 4], self, object_count, true);
-                        scb
-                    },
-                    || {
-                        let pool = self.get_thread_command_pool(1);
-                        let scb = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
-                        self.deferred_pass.record_gbuffer_commands(self, scb, pc_bytes, current_frame_idx, object_count);
-                        scb
-                    }
-                ),
-                || {
-                    let pool = self.get_thread_command_pool(2);
-                    let scb = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
-                    self.deferred_pass.record_lighting_commands(self, scb, pc_bytes, current_frame_idx);
-                    scb
-                }
-            );
+            // Rendering Passes
 
-            // 2. Execute Shadow, G-Buffer and Lighting Passes
-
-            // 2a. Execute Shadow Pass
-            if self.enable_shadows {
-                self.device.device.cmd_execute_commands(command_buffer, &[scb_shadow]);
+            // Final dynamic passes
+            for pass in &self.render_passes {
+                pass.record_commands(&ctx);
             }
 
-            // Barrier: Shadow Map to SHADER_READ_ONLY_OPTIMAL
-            let shadow_barrier = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(self.shadow_pass.image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::DEPTH,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                });
-            self.device.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[shadow_barrier],
-            );
-
-            // 2b. Execute G-Buffer Pass
-            self.device.device.cmd_execute_commands(command_buffer, &[scb_gbuffer]);
-
-            // Barrier: G-Buffer to SHADER_READ_ONLY_OPTIMAL
-            let gbuffer_barriers = [
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(self.gbuffer.albedo[self.current_frame].image)
-                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(self.gbuffer.normal[self.current_frame].image)
-                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(self.gbuffer.pbr[self.current_frame].image)
-                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(self.gbuffer.depth[self.current_frame].image)
-                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::DEPTH, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-            ];
-            self.device.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &gbuffer_barriers,
-            );
-
-            // 2c. Execute SSAO Pass
-            if let Some(ssao) = &self.ssao_pass {
-                if self.enable_ssao {
-                let view = self.scene_view_matrix_for_pos;
-                let projection = spark_math::Mat4::perspective_rh(
-                    45.0f32.to_radians(),
-                    self.swapchain.extent.width as f32 / self.swapchain.extent.height as f32,
-                    0.1,
-                    100.0,
-                );
-                ssao.record_commands(
-                    self,
-                    command_buffer,
-                    self.swapchain.extent,
-                    self.current_frame,
-                    self.gbuffer.ssao[self.current_frame].view,
-                    self.gbuffer.ssao[self.current_frame].image,
-                    self.gbuffer.ssao_blur[self.current_frame].view,
-                    self.gbuffer.ssao_blur[self.current_frame].image,
-                    projection,
-                    view,
-                );
-                }
-            }
-
-            // 2d. Execute Lighting Pass
-            self.device.device.cmd_execute_commands(command_buffer, &[scb_lighting]);
-
-            // Barrier: HDR to SHADER_READ_ONLY_OPTIMAL (lighting pass recorded into secondary might not do this transition on primary)
-            let hdr_to_shader_barrier = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(self.gbuffer.hdr[self.current_frame].image)
-                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-            self.device.device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &[hdr_to_shader_barrier]);
-
-            // Barrier: HDR Image to COLOR_ATTACHMENT_OPTIMAL for Egui
-            let hdr_barrier = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .image(self.gbuffer.hdr[self.current_frame].image)
-                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-            self.device.device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::DependencyFlags::empty(), &[], &[], &[hdr_barrier]);
-
-            if let Some((output, ctx)) = egui_output {
+            if let Some((output, egui_ctx)) = egui_output {
                 let ext = self.swapchain.extent;
                 if let Some(mut egui) = self.egui_renderer.take() {
-                    egui.draw(
-                        self,
-                        command_buffer,
-                        output,
-                        [ext.width as f32, ext.height as f32],
-                        &ctx,
-                    );
+                    egui.draw(self, command_buffer, output, [ext.width as f32, ext.height as f32], &egui_ctx);
                     self.egui_renderer = Some(egui);
                 }
             }
 
-            // Transition HDR image for post processing (after Egui)
-            let hdr_barrier = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(self.gbuffer.hdr[self.current_frame].image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1
-                });
-            self.device.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[hdr_barrier]
-            );
-
-            if let Some(taa) = &self.taa_pass {
-                if self.enable_taa {
-                    taa.record_commands(&self.device.device, command_buffer, self.swapchain.extent, self.current_frame);
-                }
-            }
-
-            if let Some(grid) = &self.grid_pass {
-                if self.enable_grid {
-                 let global_ds = self.frames[self.current_frame].global_descriptor_set;
-                 grid.record_commands(
-                    &self.device.device,
-                    command_buffer,
-                    self.swapchain.extent,
-                    global_ds,
-                    self.gbuffer.hdr[self.current_frame].view,
-                    self.gbuffer.depth[self.current_frame].view,
-                );
-                }
-            }
-
-            if let Some(volumetric) = &self.volumetric_pass {
-                if self.enable_volumetric {
-                let global_ds = self.frames[self.current_frame].global_descriptor_set;
-                volumetric.record_commands(
-                    &self.device.device,
-                    command_buffer,
-                    self.current_frame,
-                    global_ds,
-                    self.swapchain.extent,
-                );
-                }
-            }
-
-            let target_view = self.viewport_attachment.as_ref().map(|a| a.view);
-            self.post_process_pass.record_commands(
-                &self.device.device,
-                command_buffer,
-                image_index,
-                self.current_frame,
-                self.swapchain.views[image_index as usize],
-                self.swapchain.images[image_index as usize],
-                self.swapchain.extent,
-                target_view,
-                self.exposure,
-                self.gamma,
-            );
-
-            self.device
-                .device
-                .end_command_buffer(command_buffer)
-                .unwrap();
+            self.device.device.end_command_buffer(command_buffer).unwrap();
         }
     }
 
@@ -1214,9 +818,7 @@ impl Renderer {
                 self.device.msaa_samples,
                 self.device.depth_format,
             );
-            self.update_deferred_descriptor_sets();
-            self.update_ssao_descriptor_sets();
-            self.update_post_process_descriptor_sets();
+            self.update_all_descriptor_sets();
         }
         Ok(())
     }
@@ -1639,20 +1241,13 @@ impl Renderer {
         self.upload_to_buffer(&gb, &[ubo]);
 
         // 4. Prepare Passes
-        use crate::passes::RenderPass;
         let cf = self.current_frame;
-
-        // Pass objects like SSAO are being transitioned to the pass stack.
-        // For now, call both legacy hardcoded ones and the new dynamic ones.
-        if let Some(ssao) = self.ssao_pass.as_ref() { if self.enable_ssao { ssao.prepare(self, cf); } }
-        if let Some(taa) = self.taa_pass.as_ref() { if self.enable_taa { taa.prepare(self, cf); } }
-        if let Some(vol) = self.volumetric_pass.as_ref() { if self.enable_volumetric { vol.prepare(self, cf); } }
-        if let Some(cl) = self.clustered_pass.as_ref() { cl.prepare(self, cf); }
 
         for pass in &self.render_passes {
             pass.prepare(self, cf);
         }
 
+        self.last_object_count = total_objects;
         total_objects
     }
 
@@ -1814,6 +1409,11 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
             self.device.device.device_wait_idle().ok();
+
+            for mut pass in std::mem::take(&mut self.render_passes) {
+                pass.destroy(self);
+            }
+
             self.cleanup_swapchain();
 
             for frame in &mut self.frames {
@@ -1840,10 +1440,6 @@ impl Drop for Renderer {
                 self.device.device.destroy_fence(frame.in_flight, None);
             }
 
-            self.shadow_pass.destroy(&self.device.device);
-            self.deferred_pass.destroy(&self.device.device);
-            self.post_process_pass.destroy(&self.device.device);
-
             if let Some(p) = self.pipeline.take() {
                 self.device
                     .device
@@ -1862,9 +1458,6 @@ impl Drop for Renderer {
                 .destroy_descriptor_pool(self.descriptor_pool, None);
             if let Some(mut e) = self.egui_renderer.take() {
                 e.destroy(self);
-            }
-            if let Some(cp) = self.culling_pass.take() {
-                cp.destroy(&self.device.device);
             }
             if let Some(t) = self.default_texture.take() {
                 self.destroy_texture(t);

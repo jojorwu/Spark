@@ -173,7 +173,10 @@ impl ResourceManager {
             return handle;
         }
         log::info!("Loading and uploading texture: {:?}", path);
-        let img = image::open(path).expect("Failed to load texture");
+        let img = image::open(path).unwrap_or_else(|e| {
+            log::warn!("Failed to load texture {:?}: {}. Using fallback.", path, e);
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 255, 255])))
+        });
         let texture = renderer.create_texture_from_image(&img);
         let handle = self.gpu_textures.add(texture);
         self.texture_path_map.insert(path.to_path_buf(), handle);
@@ -193,8 +196,9 @@ impl GltfLoader {
         log::info!("Loading glTF scene: {:?}", path);
         let (doc, buffers, _) = gltf::import(&path).expect("Failed to load glTF");
         let parent_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
-        for gltf_scene in doc.scenes() {
-            for node in gltf_scene.nodes() {
+        let default_scene = doc.default_scene().or(doc.scenes().next());
+        if let Some(scene) = default_scene {
+            for node in scene.nodes() {
                 Self::process_node(rm, node, &buffers, scene_tree, scene_tree.root, renderer, &parent_dir);
             }
         }
@@ -225,7 +229,10 @@ impl GltfLoader {
             for primitive in mesh.primitives() {
                 use spark_renderer::vertex::Vertex;
                 let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-                let positions = reader.read_positions().unwrap().collect::<Vec<_>>();
+                let positions = match reader.read_positions() {
+                    Some(p) => p.collect::<Vec<_>>(),
+                    None => continue,
+                };
                 let v_offset = rm.all_vertices.len() as i32;
                 let i_start = rm.all_indices.len() as u32;
 

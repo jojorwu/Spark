@@ -9,8 +9,6 @@ pub struct GBuffer {
     pub pbr: Vec<Attachment>,
     pub velocity: Vec<Attachment>,
     pub depth: Vec<Attachment>,
-    pub ssao: Vec<Attachment>,
-    pub ssao_blur: Vec<Attachment>,
 }
 
 impl GBuffer {
@@ -68,20 +66,6 @@ impl GBuffer {
             vk::Format::R8G8B8A8_UNORM,
             msaa_samples,
         );
-        let ssao = crate::resource::create_frame_attachments(
-            device,
-            &props,
-            extent,
-            vk::Format::R8_UNORM,
-            vk::SampleCountFlags::TYPE_1,
-        );
-        let ssao_blur = crate::resource::create_frame_attachments(
-            device,
-            &props,
-            extent,
-            vk::Format::R8_UNORM,
-            vk::SampleCountFlags::TYPE_1,
-        );
 
         let depth: Vec<Attachment> = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|_| {
@@ -106,8 +90,6 @@ impl GBuffer {
             pbr,
             velocity,
             depth,
-            ssao,
-            ssao_blur,
         }
     }
 
@@ -132,7 +114,5 @@ impl GBuffer {
         for a in self.pbr.drain(..) { a.destroy(device); }
         for a in self.velocity.drain(..) { a.destroy(device); }
         for a in self.depth.drain(..) { a.destroy(device); }
-        for a in self.ssao.drain(..) { a.destroy(device); }
-        for a in self.ssao_blur.drain(..) { a.destroy(device); }
     }
 }

@@ -15,16 +15,77 @@ pub struct ShadowPass {
     pub sampler: vk::Sampler,
 }
 
-use super::RenderPass;
+use super::{RenderPass, RenderContext};
 
 impl RenderPass for ShadowPass {
-    fn record_commands(&self, _renderer: &Renderer, _command_buffer: vk::CommandBuffer, _current_frame: usize) {
-        // Shadow pass needs specialized parameters (light_view_projs, object_count),
-        // so it's called directly with specialized record_commands for now.
+    fn name(&self) -> &str { "ShadowPass" }
+    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_shadows }
+    fn record_commands(&self, ctx: &RenderContext) {
+        let lvp = ctx.renderer.main_light_view_proj;
+        self.record_commands_impl(
+            &ctx.renderer.device.device,
+            ctx.command_buffer,
+            &[lvp; 4],
+            ctx.renderer,
+            ctx.renderer.last_object_count,
+            false // Not secondary if called this way
+        );
+    }
+
+    fn get_resource_view(&self, name: &str, _frame_index: usize) -> Option<vk::ImageView> {
+        if name == "shadow_map" {
+            Some(self.view)
+        } else {
+            None
+        }
+    }
+
+    fn destroy(&mut self, renderer: &Renderer) {
+        unsafe {
+            let device = &renderer.device.device;
+            for i in 0..SHADOW_CASCADE_COUNT {
+                device.destroy_image_view(self.cascade_views[i], None);
+            }
+            if let Some(p) = self.pipeline {
+                device.destroy_pipeline(p, None);
+            }
+            device.destroy_pipeline_layout(self.layout, None);
+            device.destroy_sampler(self.sampler, None);
+            device.destroy_image_view(self.view, None);
+            device.destroy_image(self.image, None);
+            device.free_memory(self.memory, None);
+        }
     }
 }
 
 impl ShadowPass {
+    pub fn destroy_impl(&mut self, device: &ash::Device) {
+        unsafe {
+            for i in 0..SHADOW_CASCADE_COUNT {
+                device.destroy_image_view(self.cascade_views[i], None);
+            }
+            if let Some(p) = self.pipeline {
+                device.destroy_pipeline(p, None);
+            }
+            device.destroy_pipeline_layout(self.layout, None);
+            device.destroy_sampler(self.sampler, None);
+            device.destroy_image_view(self.view, None);
+            device.destroy_image(self.image, None);
+            device.free_memory(self.memory, None);
+        }
+    }
+    pub fn record_commands_internal(
+        &self,
+        device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        light_view_projs: &[spark_math::Mat4; SHADOW_CASCADE_COUNT],
+        renderer: &Renderer,
+        object_count: u32,
+        is_secondary: bool,
+    ) {
+        self.record_commands_impl(device, command_buffer, light_view_projs, renderer, object_count, is_secondary);
+    }
+
     pub fn new(
         device: &ash::Device,
         pdevice: vk::PhysicalDevice,
@@ -225,14 +286,14 @@ impl ShadowPass {
         }
     }
 
-    pub fn record_commands(
+    fn record_commands_impl(
         &self,
         device: &ash::Device,
         command_buffer: vk::CommandBuffer,
         light_view_projs: &[spark_math::Mat4; SHADOW_CASCADE_COUNT],
         renderer: &Renderer,
         object_count: u32,
-        is_secondary: bool,
+        _is_secondary: bool,
     ) {
         let pipeline = match self.pipeline {
             Some(p) => p,
@@ -247,19 +308,6 @@ impl ShadowPass {
         }];
 
         unsafe {
-            let mut inheritance_info = vk::CommandBufferInheritanceRenderingInfo::default()
-                .depth_attachment_format(vk::Format::D32_SFLOAT);
-            let inherit = vk::CommandBufferInheritanceInfo::default().push_next(&mut inheritance_info);
-            let begin_info = vk::CommandBufferBeginInfo::default()
-                .flags(if is_secondary {
-                    vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE | vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
-                } else {
-                    vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
-                })
-                .inheritance_info(&inherit);
-
-            device.begin_command_buffer(command_buffer, &begin_info).unwrap();
-
             for cascade_idx in 0..SHADOW_CASCADE_COUNT {
                 let depth_attachment = vk::RenderingAttachmentInfo::default()
                     .image_view(self.cascade_views[cascade_idx])
@@ -346,20 +394,7 @@ impl ShadowPass {
 
                 device.cmd_end_rendering(command_buffer);
             }
-            device.end_command_buffer(command_buffer).unwrap();
         }
     }
 
-    pub fn destroy(&mut self, device: &ash::Device) {
-        unsafe {
-            if let Some(p) = self.pipeline {
-                device.destroy_pipeline(p, None);
-            }
-            device.destroy_pipeline_layout(self.layout, None);
-            device.destroy_sampler(self.sampler, None);
-            device.destroy_image_view(self.view, None);
-            device.destroy_image(self.image, None);
-            device.free_memory(self.memory, None);
-        }
-    }
 }

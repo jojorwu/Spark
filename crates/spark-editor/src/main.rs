@@ -55,40 +55,56 @@ fn main() {
     let shadow_vert_spirv = compiler.compile("assets/shaders/shadow.vert", shaderc::ShaderKind::Vertex);
     let shadow_frag_spirv = compiler.compile("assets/shaders/shadow.frag", shaderc::ShaderKind::Fragment);
 
-    engine.renderer.create_shadow_pipeline(&shadow_vert_spirv, &shadow_frag_spirv);
-    engine.renderer.create_culling_pipeline(&culling_spirv);
-    engine.renderer.create_hiz_pipeline(&hiz_spirv);
+    let hiz_pass = spark_renderer::passes::hiz::HiZPass::new(
+        &engine.renderer.device,
+        engine.renderer.descriptor_pool,
+        &hiz_spirv,
+        engine.renderer.get_extent().width,
+        engine.renderer.get_extent().height,
+    );
+    engine.renderer.set_hiz_view(hiz_pass.pyramid_view);
 
-    let grid_vert_spirv = compiler.compile("assets/shaders/grid.vert", shaderc::ShaderKind::Vertex);
-    let grid_frag_spirv = compiler.compile("assets/shaders/grid.frag", shaderc::ShaderKind::Fragment);
-    engine.renderer.create_grid_pipeline(&grid_vert_spirv, &grid_frag_spirv);
+    let clustered_pass = spark_renderer::passes::clustered::ClusteredPass::new(
+        &engine.renderer,
+        &compiler.compile("assets/shaders/cluster_build.comp", shaderc::ShaderKind::Compute),
+        &compiler.compile("assets/shaders/cluster_cull.comp", shaderc::ShaderKind::Compute),
+    ).unwrap();
 
-    let vol_spirv = compiler.compile("assets/shaders/volumetric.comp", shaderc::ShaderKind::Compute);
-    engine.renderer.create_volumetric_pipeline(&vol_spirv);
-
-    let post_vert_spirv = compiler.compile("assets/shaders/fullscreen.vert", shaderc::ShaderKind::Vertex);
-    let post_frag_spirv = compiler.compile("assets/shaders/tonemap_bloom.frag", shaderc::ShaderKind::Fragment);
-    let bloom_frag_spirv = compiler.compile("assets/shaders/bloom_filter.frag", shaderc::ShaderKind::Fragment);
-
-    engine.renderer.create_post_process_pipeline(&post_vert_spirv, &post_frag_spirv, &bloom_frag_spirv);
-
-    let pipeline = Pipeline::new(
-        engine.renderer.get_device(),
-        engine.renderer.get_extent(),
-        &vert_spirv,
-        &frag_spirv,
-        engine.renderer.get_msaa_samples(),
-        false, // Not deferred lighting
-        0,
-        engine.renderer.pipeline_cache,
+    let culling_pass = spark_renderer::passes::culling::CullingPass::new(
+        &engine.renderer.device.device,
+        engine.renderer.descriptor_pool,
+        &culling_spirv,
         engine.renderer.global_descriptor_set_layout,
-        engine.renderer.bindless_descriptor_set_layout,
     );
 
-    engine.renderer.set_pipeline(pipeline);
+    let mut shadow_pass = spark_renderer::passes::shadow::ShadowPass::new(
+        &engine.renderer.device.device,
+        engine.renderer.device.pdevice,
+        &engine.renderer.context.instance
+    ).unwrap();
+    shadow_pass.create_pipeline(&engine.renderer.device.device, engine.renderer.pipeline_cache, &shadow_vert_spirv, &shadow_frag_spirv);
+    engine.renderer.set_common_shadow_view(shadow_pass.view);
 
-    // Initialize Deferred Pipeline
-    let def_vert_spirv = compiler.compile("assets/shaders/deferred.vert", shaderc::ShaderKind::Vertex);
+    let gbuffer_pass = spark_renderer::passes::gbuffer::GBufferPass::new();
+
+    let mut ssao_pass = spark_renderer::passes::ssao::SSAOPass::new(
+        &engine.renderer,
+        engine.renderer.descriptor_pool,
+    ).unwrap();
+    ssao_pass.create_pipelines(
+        &engine.renderer.device.device,
+        engine.renderer.pipeline_cache,
+        engine.renderer.get_extent(),
+        &compiler.compile("assets/shaders/ssao.vert", shaderc::ShaderKind::Vertex),
+        &compiler.compile("assets/shaders/ssao.frag", shaderc::ShaderKind::Fragment),
+        &compiler.compile("assets/shaders/ssao_blur.frag", shaderc::ShaderKind::Fragment),
+    );
+
+    let mut lighting_pass = spark_renderer::passes::lighting::LightingPass::new(
+        &engine.renderer.device.device,
+        engine.renderer.descriptor_pool,
+        engine.renderer.global_descriptor_set_layout,
+    ).unwrap();
 
     let mut def_options = shaderc::CompileOptions::new().unwrap();
     let msaa_count = match engine.renderer.get_msaa_samples() {
@@ -107,7 +123,7 @@ fn main() {
     let deferred_pipeline = Pipeline::new(
         engine.renderer.get_device(),
         engine.renderer.get_extent(),
-        &def_vert_spirv,
+        &compiler.compile("assets/shaders/deferred.vert", shaderc::ShaderKind::Vertex),
         &def_frag_spirv,
         engine.renderer.get_msaa_samples(),
         true, // Deferred lighting
@@ -116,8 +132,73 @@ fn main() {
         engine.renderer.global_descriptor_set_layout,
         engine.renderer.bindless_descriptor_set_layout,
     );
+    lighting_pass.pipeline = Some(deferred_pipeline.graphics_pipeline);
 
-    engine.renderer.set_deferred_pipeline(deferred_pipeline.graphics_pipeline);
+    let grid_pass = spark_renderer::passes::grid::GridPass::new(
+        &engine.renderer.device.device,
+        engine.renderer.pipeline_cache,
+        &compiler.compile("assets/shaders/grid.vert", shaderc::ShaderKind::Vertex),
+        &compiler.compile("assets/shaders/grid.frag", shaderc::ShaderKind::Fragment),
+        engine.renderer.global_descriptor_set_layout,
+        ash::vk::Format::R16G16B16A16_SFLOAT,
+    );
+
+    let taa_pass = spark_renderer::passes::taa::TAAPass::new(
+        &engine.renderer,
+        &compiler.compile("assets/shaders/taa.frag", shaderc::ShaderKind::Fragment),
+        &compiler.compile("assets/shaders/taa.vert", shaderc::ShaderKind::Vertex),
+    ).unwrap();
+
+    let volumetric_pass = spark_renderer::passes::volumetric::VolumetricPass::new(
+        &engine.renderer,
+        &compiler.compile("assets/shaders/volumetric.comp", shaderc::ShaderKind::Compute),
+    );
+
+    let mut post_process_pass = spark_renderer::passes::post_process::PostProcessPass::new(
+        &engine.renderer.device.device,
+        engine.renderer.device.pdevice,
+        &engine.renderer.context.instance,
+        ash::vk::Format::B8G8R8A8_UNORM, // TODO: Dynamic
+        engine.renderer.get_extent(),
+    ).unwrap();
+    post_process_pass.create_pipelines(
+        &engine.renderer.device.device,
+        engine.renderer.pipeline_cache,
+        engine.renderer.get_extent(),
+        &compiler.compile("assets/shaders/fullscreen.vert", shaderc::ShaderKind::Vertex),
+        &compiler.compile("assets/shaders/tonemap_bloom.frag", shaderc::ShaderKind::Fragment),
+        &compiler.compile("assets/shaders/bloom_filter.frag", shaderc::ShaderKind::Fragment),
+    );
+
+    engine.renderer.add_render_pass(hiz_pass);
+    engine.renderer.add_render_pass(clustered_pass);
+    engine.renderer.add_render_pass(culling_pass);
+    engine.renderer.add_render_pass(shadow_pass);
+    engine.renderer.add_render_pass(gbuffer_pass);
+    engine.renderer.add_render_pass(ssao_pass);
+    engine.renderer.add_render_pass(lighting_pass);
+    engine.renderer.add_render_pass(grid_pass);
+    engine.renderer.add_render_pass(volumetric_pass);
+    engine.renderer.add_render_pass(taa_pass);
+    engine.renderer.add_render_pass(post_process_pass);
+
+    engine.renderer.update_all_descriptor_sets();
+
+    let pipeline = Pipeline::new(
+        engine.renderer.get_device(),
+        engine.renderer.get_extent(),
+        &vert_spirv,
+        &frag_spirv,
+        engine.renderer.get_msaa_samples(),
+        false, // Not deferred lighting
+        0,
+        engine.renderer.pipeline_cache,
+        engine.renderer.global_descriptor_set_layout,
+        engine.renderer.bindless_descriptor_set_layout,
+    );
+
+    engine.renderer.set_pipeline(pipeline);
+
 
     use spark_renderer::vertex::Vertex;
     use spark_math::{Vec2, Vec3, Mat4};
@@ -173,7 +254,7 @@ fn main() {
     let mut ui = EditorUI::new(&engine.window, logs);
     engine.renderer.create_viewport_attachment(1280, 720);
     let viewport_view = engine.renderer.viewport_attachment.as_ref().unwrap().view;
-    let viewport_sampler = engine.renderer.shadow_pass.sampler;
+    let viewport_sampler = engine.renderer.common_sampler;
     ui.viewport_texture_id = Some(engine.renderer.register_egui_texture(viewport_view, viewport_sampler));
 
     engine.run(move |window, event, scene, rm, renderer, fps| {

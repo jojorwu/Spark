@@ -17,11 +17,15 @@ pub struct SSAOPass {
     pub noise_texture: crate::vulkan::texture::Texture,
     pub ssao_params_buffer: Vec<Buffer>,
     pub kernel_samples: [Vec4; 64],
+    pub ssao_images: Vec<Attachment>,
+    pub ssao_blur_images: Vec<Attachment>,
 }
 
-use super::RenderPass;
+use super::{RenderPass, RenderContext};
 
 impl RenderPass for SSAOPass {
+    fn name(&self) -> &str { "SSAOPass" }
+    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_ssao }
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let extent = renderer.get_extent();
         let view = renderer.scene_view_matrix_for_pos;
@@ -41,16 +45,20 @@ impl RenderPass for SSAOPass {
     }
 
     fn update_descriptor_sets(&self, renderer: &Renderer) {
-        self.update_descriptor_sets(
+        self.update_descriptor_sets_impl(
             &renderer.device.device,
             &renderer.gbuffer.normal,
             &renderer.gbuffer.depth,
-            &renderer.gbuffer.ssao,
-            renderer.shadow_pass.sampler,
+            &self.ssao_images,
+            renderer.common_sampler,
         );
     }
 
-    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
+    fn record_commands(&self, ctx: &RenderContext) {
+        let renderer = ctx.renderer;
+        let command_buffer = ctx.command_buffer;
+        let current_frame = ctx.current_frame;
+
         let view = renderer.scene_view_matrix_for_pos;
         let projection = spark_math::Mat4::perspective_rh(
             45.0f32.to_radians(),
@@ -58,18 +66,51 @@ impl RenderPass for SSAOPass {
             0.1,
             100.0,
         );
-        self.record_commands(
+        self.record_commands_impl(
             renderer,
             command_buffer,
             renderer.swapchain.extent,
             current_frame,
-            renderer.gbuffer.ssao[current_frame].view,
-            renderer.gbuffer.ssao[current_frame].image,
-            renderer.gbuffer.ssao_blur[current_frame].view,
-            renderer.gbuffer.ssao_blur[current_frame].image,
+            self.ssao_images[current_frame].view,
+            self.ssao_images[current_frame].image,
+            self.ssao_blur_images[current_frame].view,
+            self.ssao_blur_images[current_frame].image,
             projection,
             view,
         );
+    }
+
+    fn get_resource_view(&self, name: &str, frame_index: usize) -> Option<vk::ImageView> {
+        if name == "ssao" {
+            Some(self.ssao_blur_images[frame_index].view)
+        } else {
+            None
+        }
+    }
+
+    fn destroy(&mut self, renderer: &Renderer) {
+        let device = &renderer.device.device;
+        unsafe {
+            device.destroy_pipeline(self.ssao_pipeline, None);
+            device.destroy_pipeline(self.blur_pipeline, None);
+            device.destroy_pipeline_layout(self.layout, None);
+            device.destroy_pipeline_layout(self.blur_layout, None);
+            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            device.destroy_descriptor_set_layout(self.blur_descriptor_set_layout, None);
+            for buffer in self.ssao_params_buffer.drain(..) {
+                renderer.destroy_buffer(buffer);
+            }
+            for img in self.ssao_images.drain(..) {
+                img.destroy(device);
+            }
+            for img in self.ssao_blur_images.drain(..) {
+                img.destroy(device);
+            }
+            renderer.device.device.destroy_sampler(self.noise_texture.sampler, None);
+            renderer.device.device.destroy_image_view(self.noise_texture.view, None);
+            renderer.device.device.destroy_image(self.noise_texture.image, None);
+            renderer.device.device.free_memory(self.noise_texture.memory, None);
+        }
     }
 }
 
@@ -165,6 +206,24 @@ impl SSAOPass {
             ssao_params_buffer.push(buffer);
         }
 
+        let mut ssao_images = Vec::new();
+        let mut ssao_blur_images = Vec::new();
+        let extent = renderer.get_extent();
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+             ssao_images.push(Attachment::create_image_resource(
+                device, &renderer.device.memory_properties, extent.width, extent.height,
+                vk::Format::R8_UNORM,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                vk::SampleCountFlags::TYPE_1,
+            ));
+            ssao_blur_images.push(Attachment::create_image_resource(
+                device, &renderer.device.memory_properties, extent.width, extent.height,
+                vk::Format::R8_UNORM,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                vk::SampleCountFlags::TYPE_1,
+            ));
+        }
+
         Ok(Self {
             ssao_pipeline: vk::Pipeline::null(),
             blur_pipeline: vk::Pipeline::null(),
@@ -177,6 +236,8 @@ impl SSAOPass {
             noise_texture,
             ssao_params_buffer,
             kernel_samples,
+            ssao_images,
+            ssao_blur_images,
         })
     }
 
@@ -253,7 +314,7 @@ impl SSAOPass {
         }
     }
 
-    pub fn record_commands(
+    pub fn record_commands_impl(
         &self,
         renderer: &Renderer,
         command_buffer: vk::CommandBuffer,
@@ -334,7 +395,7 @@ impl SSAOPass {
         }
     }
 
-    pub fn update_descriptor_sets(
+    pub fn update_descriptor_sets_impl(
         &self,
         device: &ash::Device,
         normal_attachments: &[Attachment],
@@ -378,24 +439,6 @@ impl SSAOPass {
         }
     }
 
-    pub fn destroy(&mut self, renderer: &Renderer) {
-        let device = &renderer.device.device;
-        unsafe {
-            device.destroy_pipeline(self.ssao_pipeline, None);
-            device.destroy_pipeline(self.blur_pipeline, None);
-            device.destroy_pipeline_layout(self.layout, None);
-            device.destroy_pipeline_layout(self.blur_layout, None);
-            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            device.destroy_descriptor_set_layout(self.blur_descriptor_set_layout, None);
-            for buffer in self.ssao_params_buffer.drain(..) {
-                renderer.destroy_buffer(buffer);
-            }
-            renderer.device.device.destroy_sampler(self.noise_texture.sampler, None);
-            renderer.device.device.destroy_image_view(self.noise_texture.view, None);
-            renderer.device.device.destroy_image(self.noise_texture.image, None);
-            renderer.device.device.free_memory(self.noise_texture.memory, None);
-        }
-    }
 }
 
 #[repr(C)]

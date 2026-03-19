@@ -1,12 +1,19 @@
 use ash::vk;
 use crate::Renderer;
 use crate::pipeline::Pipeline;
-use super::RenderPass;
+
+use super::{RenderPass, RenderContext};
 
 impl RenderPass for GridPass {
-    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
+    fn name(&self) -> &str { "GridPass" }
+    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_grid }
+    fn record_commands(&self, ctx: &RenderContext) {
+        let renderer = ctx.renderer;
+        let command_buffer = ctx.command_buffer;
+        let current_frame = ctx.current_frame;
+
         let global_ds = renderer.frames[current_frame].global_descriptor_set;
-        self.record_commands(
+        self.record_commands_impl(
             &renderer.device.device,
             command_buffer,
             renderer.swapchain.extent,
@@ -14,6 +21,14 @@ impl RenderPass for GridPass {
             renderer.gbuffer.hdr[current_frame].view,
             renderer.gbuffer.depth[current_frame].view,
         );
+    }
+
+    fn destroy(&mut self, renderer: &Renderer) {
+        unsafe {
+            let device = &renderer.device.device;
+            device.destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline_layout(self.layout, None);
+        }
     }
 }
 
@@ -105,7 +120,7 @@ impl GridPass {
         Self { pipeline, layout }
     }
 
-    pub fn record_commands(
+    pub fn record_commands_impl(
         &self,
         device: &ash::Device,
         command_buffer: vk::CommandBuffer,
@@ -147,10 +162,4 @@ impl GridPass {
         }
     }
 
-    pub fn destroy(&self, device: &ash::Device) {
-        unsafe {
-            device.destroy_pipeline(self.pipeline, None);
-            device.destroy_pipeline_layout(self.layout, None);
-        }
-    }
 }

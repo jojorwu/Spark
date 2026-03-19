@@ -1,6 +1,4 @@
 use ash::vk;
-use crate::vulkan::device::VulkanDevice;
-use crate::resource::Buffer;
 use crate::Renderer;
 
 pub struct IBLMaps {
@@ -15,7 +13,7 @@ pub struct IBLMaps {
 
 impl IBLMaps {
     pub fn new(
-        renderer: &Renderer,
+        _renderer: &Renderer,
         _env_view: vk::ImageView,
     ) -> Self {
         // Implementation for creating and generating maps would go here.
