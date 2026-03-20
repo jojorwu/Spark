@@ -76,6 +76,13 @@ impl RenderPass for SSAOPass {
         );
     }
 
+    fn needs_descriptor_update(&self, _renderer: &Renderer, _frame_index: usize) -> bool {
+        // Example: logic to check if versions changed
+        // In a full implementation, we'd compare renderer.gbuffer.normal[frame_index].version
+        // against a version stored in the pass.
+        true
+    }
+
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
         let extent = renderer.swapchain.extent;

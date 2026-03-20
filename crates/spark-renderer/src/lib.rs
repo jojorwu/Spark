@@ -378,9 +378,18 @@ impl Renderer {
         self.ensure_global_descriptor_set();
     }
 
-    pub fn update_pass_descriptors_if_needed(&mut self, _current_frame: usize) {
-        // Implement logic to only update when versions change
-        // For now, this is a placeholder for the more granular per-resource tracking
+    pub fn update_pass_descriptors_if_needed(&mut self, current_frame: usize) {
+        // Collect passes that need update to avoid borrow issues during iteration
+        let mut passes_to_update = Vec::new();
+        for (i, pass) in self.render_passes.iter().enumerate() {
+            if pass.needs_descriptor_update(self, current_frame) {
+                passes_to_update.push(i);
+            }
+        }
+
+        for idx in passes_to_update {
+            self.render_passes[idx].update_descriptor_sets(self);
+        }
     }
 
     pub fn ensure_global_descriptor_set(&mut self) {
@@ -1136,15 +1145,13 @@ impl Renderer {
         &mut self,
         packet: crate::resource::FramePacket,
     ) -> u32 {
+        use rayon::prelude::*;
         self.scene_view_matrix_for_pos = packet.view_matrix;
 
-        // 1. Prepare GPU Indirect and Object buffers
-        let mut indirect_commands = Vec::new();
-        let mut object_ssbos = Vec::new();
-
-        for mesh in packet.meshes {
+        // 1. Prepare GPU Indirect and Object buffers in parallel
+        let (object_ssbos, indirect_commands): (Vec<_>, Vec<_>) = packet.meshes.par_iter().enumerate().map(|(i, mesh)| {
              let m = mesh.model.transpose();
-             object_ssbos.push(ObjectDataSSBO {
+             let ssbo = ObjectDataSSBO {
                 model_row0: m.row(0),
                 model_row1: m.row(1),
                 model_row2: m.row(2),
@@ -1153,15 +1160,16 @@ impl Renderer {
                 first_index: mesh.first_index,
                 vertex_offset: mesh.vertex_offset,
                 material_index: mesh.material_index,
-            });
-            indirect_commands.push(vk::DrawIndexedIndirectCommand {
+            };
+            let cmd = vk::DrawIndexedIndirectCommand {
                 index_count: mesh.index_count,
                 instance_count: 1,
                 first_index: mesh.first_index,
                 vertex_offset: mesh.vertex_offset,
-                first_instance: (object_ssbos.len() - 1) as u32,
-            });
-        }
+                first_instance: i as u32,
+            };
+            (ssbo, cmd)
+        }).unzip();
 
         self.update_indirect_buffers(&indirect_commands, &object_ssbos);
         let total_objects = object_ssbos.len() as u32;

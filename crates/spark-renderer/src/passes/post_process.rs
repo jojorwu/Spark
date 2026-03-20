@@ -115,7 +115,7 @@ impl RenderPass for PostProcessPass {
 
             for i in 0..self.bloom_mips.len() {
                 let mip = &self.bloom_mips[i];
-                let ds = self.bloom_descriptor_sets[i];
+                let ds = self.bloom_descriptor_sets[ctx.current_frame * self.bloom_mips.len() + i];
 
                 // Update descriptor with current source
                 let img_info = [vk::DescriptorImageInfo::default()
@@ -180,7 +180,7 @@ impl RenderPass for PostProcessPass {
             for i in (0..self.bloom_mips.len() - 1).rev() {
                 let dst_mip = &self.bloom_mips[i];
                 let src_mip = &self.bloom_mips[i+1];
-                let ds = self.bloom_descriptor_sets[i+1]; // Reuse DS for upsampling
+                let ds = self.bloom_descriptor_sets[ctx.current_frame * self.bloom_mips.len() + i + 1]; // Reuse DS for upsampling
 
                 let img_info = [vk::DescriptorImageInfo::default()
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -365,11 +365,15 @@ impl PostProcessPass {
             )?
         };
 
+        let mut bloom_layouts = Vec::new();
+        for _ in 0..(6 * MAX_FRAMES_IN_FLIGHT) {
+            bloom_layouts.push(ds_layout);
+        }
         let bloom_descriptor_sets = unsafe {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(descriptor_pool)
-                    .set_layouts(&[ds_layout; 6]), // num_bloom_mips is 6
+                    .set_layouts(&bloom_layouts),
             )?
         };
 

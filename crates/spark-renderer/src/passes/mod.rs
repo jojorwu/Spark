@@ -36,6 +36,9 @@ pub trait RenderPass: Send + Sync {
     /// Performs initial or global descriptor set updates for the pass.
     fn update_descriptor_sets(&self, _renderer: &Renderer) {}
 
+    /// Checks if descriptors need updating based on resource versions.
+    fn needs_descriptor_update(&self, _renderer: &Renderer, _frame_index: usize) -> bool { true }
+
     /// Records Vulkan commands for this pass into the provided command buffer.
     fn record_commands(&self, ctx: &RenderContext);
 

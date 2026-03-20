@@ -32,6 +32,7 @@ impl RenderPass for HiZPass {
             command_buffer,
             renderer.gbuffer.depth[prev_frame].view,
             renderer.common_sampler,
+            current_frame,
         );
     }
 
@@ -159,7 +160,11 @@ impl HiZPass {
 
         let mut descriptor_sets = Vec::new();
         if mip_levels > 1 {
-            let layouts = vec![descriptor_set_layout; (mip_levels - 1) as usize];
+            let total_sets = (mip_levels - 1) * crate::MAX_FRAMES_IN_FLIGHT as u32;
+            let mut layouts = Vec::new();
+            for _ in 0..total_sets {
+                layouts.push(descriptor_set_layout);
+            }
             descriptor_sets = unsafe {
                 device.device.allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()
@@ -190,6 +195,7 @@ impl HiZPass {
         command_buffer: vk::CommandBuffer,
         depth_view: vk::ImageView,
         sampler: vk::Sampler,
+        frame_index: usize,
     ) {
         unsafe {
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, self.pipeline);
@@ -212,14 +218,15 @@ impl HiZPass {
                     .image_layout(vk::ImageLayout::GENERAL)
                     .image_view(dst_view)];
 
+                let ds_idx = frame_index * (self.mip_levels - 1) as usize + i as usize;
                 let writes = [
                     vk::WriteDescriptorSet::default()
-                        .dst_set(self.descriptor_sets[i as usize])
+                        .dst_set(self.descriptor_sets[ds_idx])
                         .dst_binding(0)
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .image_info(&img_info),
                     vk::WriteDescriptorSet::default()
-                        .dst_set(self.descriptor_sets[i as usize])
+                        .dst_set(self.descriptor_sets[ds_idx])
                         .dst_binding(1)
                         .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                         .image_info(&dst_info),
@@ -232,7 +239,7 @@ impl HiZPass {
                     vk::PipelineBindPoint::COMPUTE,
                     self.layout,
                     0,
-                    &[self.descriptor_sets[i as usize]],
+                    &[self.descriptor_sets[ds_idx]],
                     &[],
                 );
 

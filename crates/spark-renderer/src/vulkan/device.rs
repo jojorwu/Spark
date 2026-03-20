@@ -323,9 +323,12 @@ impl VulkanDevice {
         if b.ptr.is_null() {
             panic!("Buffer is not host-visible for upload");
         }
+        let data_size = (data.len() * std::mem::size_of::<T>()) as u64;
+        if data_size > b.size {
+            panic!("Data size exceeds buffer size");
+        }
         unsafe {
-            let mut align = ash::util::Align::new(b.ptr, std::mem::align_of::<T>() as u64, b.size);
-            align.copy_from_slice(data);
+            std::ptr::copy_nonoverlapping(data.as_ptr(), b.ptr as *mut T, data.len());
         }
         b.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }

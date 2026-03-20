@@ -23,6 +23,7 @@ impl RenderPass for CullingPass {
                 global_ds,
                 indirect_buffer: ind_buf,
                 count_buffer: cnt_buf,
+                renderer_ref_for_pc_extract: renderer,
             };
             self.record_commands_impl(&params);
         }
@@ -44,6 +45,7 @@ pub struct CullingRecordParams<'a> {
     pub global_ds: vk::DescriptorSet,
     pub indirect_buffer: &'a Buffer,
     pub count_buffer: &'a Buffer,
+    pub renderer_ref_for_pc_extract: &'a Renderer,
 }
 
 pub struct CullingPass {
@@ -147,6 +149,40 @@ impl CullingPass {
                 0,
                 &[global_ds],
                 &[],
+            );
+
+            #[repr(C)]
+            struct PC {
+                light_count: u32,
+                metallic: f32,
+                roughness: f32,
+                width: f32,
+                height: f32,
+                padding: u32,
+                object_buffer_address: u64,
+                prev_view_proj: spark_math::Mat4,
+                vertex_buffer_address: u64,
+            }
+            let frame = &params.renderer_ref_for_pc_extract.frames[params.renderer_ref_for_pc_extract.current_frame];
+            let pc = PC {
+                light_count: params.renderer_ref_for_pc_extract.light_count,
+                metallic: 0.0,
+                roughness: 0.0,
+                width: params.renderer_ref_for_pc_extract.get_extent().width as f32,
+                height: params.renderer_ref_for_pc_extract.get_extent().height as f32,
+                padding: 0,
+                object_buffer_address: frame.object_data_buffer.as_ref().map_or(0, |b| b.address),
+                prev_view_proj: params.renderer_ref_for_pc_extract.prev_view_proj,
+                vertex_buffer_address: params.renderer_ref_for_pc_extract.global_vertex_buffer.as_ref().map_or(0, |b| b.address),
+            };
+            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+
+            device.cmd_push_constants(
+                command_buffer,
+                self.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                pc_bytes,
             );
 
             device.cmd_dispatch(command_buffer, object_count.div_ceil(256), 1, 1);

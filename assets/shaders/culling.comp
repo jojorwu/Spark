@@ -41,6 +41,18 @@ layout(std430, set = 0, binding = 3) buffer CountBuffer {
 
 layout(set = 0, binding = 4) uniform sampler2D hizPyramid;
 
+layout(push_constant) uniform PC {
+    uint lightCount;
+    float metallic;
+    float roughness;
+    float width;
+    float height;
+    uint  padding;
+    uint64_t objectBufferAddress;
+    mat4 prevViewProj;
+    uint64_t vertexBufferAddress;
+} push;
+
 layout(local_size_x = 256) in;
 
 bool sphereInFrustum(vec3 center, float radius) {
@@ -74,14 +86,14 @@ void main() {
         // Flip Y for Vulkan
         uv.y = 1.0 - uv.y;
 
-        float sphereDepth = clipPos.z; // Depth of center
-        // To be conservative, we should use the depth of the closest point on the sphere
-        // but this is a reasonable approximation for now.
+        float sphereDepth = clipPos.z;
 
-        // We use the depth pyramid to check if the sphere is occluded.
-        // We need to pick a mip level based on the screen-space size of the sphere.
-        // Simplified: just use mip 0 for now to test the logic.
-        float maxDepth = textureLod(hizPyramid, uv, 0).r;
+        // Calculate appropriate mip level based on project sphere size
+        float diameter = (2.0 * radius) / clipPos.w;
+        float screenPixelSize = diameter * max(push.width, push.height);
+        float mipLevel = floor(log2(screenPixelSize));
+
+        float maxDepth = textureLod(hizPyramid, uv, mipLevel).r;
 
         if (sphereDepth > maxDepth + 0.0001) {
             return; // Occluded
