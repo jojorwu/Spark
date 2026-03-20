@@ -111,6 +111,23 @@ struct SceneDataCollector {
     lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>,
 }
 
+impl SceneDataCollector {
+    fn new() -> Self {
+        Self {
+            renderables: Vec::new(),
+            instanced: std::collections::HashMap::new(),
+            lights: Vec::new(),
+        }
+    }
+
+    fn merge(&mut self, other: SceneDataCollector) {
+        self.renderables.extend(other.renderables);
+        self.lights.extend(other.lights);
+        for (key, transforms) in other.instanced {
+            self.instanced.entry(key).or_default().extend(transforms);
+        }
+    }
+}
 
 impl Scene {
     pub fn new() -> Self {
@@ -234,13 +251,7 @@ impl Scene {
 
     /// Collects a Packet for the renderer.
     pub fn collect_frame_packet(&self, frustum: Option<&spark_math::Frustum>) -> spark_renderer::resource::FramePacket {
-        let mut data = SceneDataCollector {
-            renderables: Vec::with_capacity(128),
-            instanced: std::collections::HashMap::new(),
-            lights: Vec::with_capacity(16),
-        };
-
-        self.collect_data_recursive(self.root, frustum, &mut data);
+        let data = self.collect_data_recursive(self.root, frustum);
 
         let mut meshes = Vec::with_capacity(data.renderables.len() + data.instanced.values().map(|v| v.len()).sum::<usize>());
         for r in data.renderables {
@@ -271,8 +282,9 @@ impl Scene {
         }
 
         let lights = data.lights.into_iter().map(|(t, _type, color, intensity, _range)| {
+            let translation = spark_math::Vec3::new(t.w_axis.x, t.w_axis.y, t.w_axis.z);
             spark_renderer::resource::LightDraw {
-                position: t.w_axis.xyz(),
+                position: translation,
                 color,
                 intensity,
             }
@@ -289,14 +301,14 @@ impl Scene {
         &self,
         node_key: NodeKey,
         frustum: Option<&spark_math::Frustum>,
-        data: &mut SceneDataCollector,
-    ) {
+    ) -> SceneDataCollector {
+        let mut data = SceneDataCollector::new();
         if let Some(node) = self.nodes.get(node_key) {
             for component in &node.components {
                 let any = component.as_any();
                 if let Some(mesh) = any.downcast_ref::<MeshComponent>() {
                     let visible = if let Some(f) = frustum {
-                        let translation = node.global_transform.w_axis.xyz();
+                        let translation = spark_math::Vec3::new(node.global_transform.w_axis.x, node.global_transform.w_axis.y, node.global_transform.w_axis.z);
                         f.intersects_sphere(translation, mesh.bounding_radius)
                     } else {
                         true
@@ -322,9 +334,45 @@ impl Scene {
                 }
             }
 
-            for &child_key in &node.children {
-                self.collect_data_recursive(child_key, frustum, data);
+            if node.children.len() >= 100 {
+                use rayon::prelude::*;
+                let child_datas: Vec<_> = node.children.par_iter().map(|&ck| {
+                    self.collect_data_recursive(ck, frustum)
+                }).collect();
+                for cd in child_datas {
+                    data.merge(cd);
+                }
+            } else {
+                for &child_key in &node.children {
+                    data.merge(self.collect_data_recursive(child_key, frustum));
+                }
             }
         }
+        data
+    }
+
+    pub fn pick_node_parallel(&self, ray: &spark_math::Ray) -> Option<(NodeKey, f32)> {
+        use rayon::prelude::*;
+        let nodes: Vec<_> = self.nodes.iter().collect();
+        nodes.into_par_iter()
+            .filter_map(|(key, node)| {
+                let mut radius = 0.5f32;
+                let mut has_bounds = false;
+
+                for component in &node.components {
+                    if let Some(mesh) = component.as_any().downcast_ref::<MeshComponent>() {
+                        radius = mesh.bounding_radius;
+                        has_bounds = true;
+                    } else if component.as_any().is::<LightComponent>() || component.as_any().is::<CameraComponent>() {
+                        has_bounds = true;
+                    }
+                }
+
+                if !has_bounds { return None; }
+
+                let center = spark_math::Vec3::new(node.global_transform.w_axis.x, node.global_transform.w_axis.y, node.global_transform.w_axis.z);
+                ray.intersect_sphere(center, radius).map(|t| (key, t))
+            })
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
     }
 }

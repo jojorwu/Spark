@@ -5,6 +5,7 @@ pub mod resource;
 pub mod event;
 pub mod logger;
 pub mod systems;
+pub mod systems_events;
 pub mod event_mapper;
 
 use winit::{
@@ -25,6 +26,7 @@ pub struct FrameContext<'a> {
     pub renderer: &'a mut Renderer,
     pub resource_manager: &'a mut ResourceManager,
     pub delta: f32,
+    pub event_proxy: crate::systems_events::events::EventProxy<'a>,
 }
 
 /// A trait representing a system that processes engine state.
@@ -44,6 +46,7 @@ pub struct Engine {
     pub last_frame_time: instant::Instant,
     pub current_fps: f32,
     pub systems: Vec<Box<dyn System>>,
+    pub system_events: Vec<crate::systems_events::events::SystemEvent>,
 }
 
 impl Engine {
@@ -76,6 +79,7 @@ impl Engine {
             last_frame_time: instant::Instant::now(),
             current_fps: 0.0,
             systems: Vec::new(),
+            system_events: Vec::new(),
         })
     }
 
@@ -128,18 +132,29 @@ impl Engine {
     fn update_phase(&mut self, delta: f32) {
         self.plugin_manager.update_plugins(&mut self.scene, delta);
 
-        let mut ctx = FrameContext {
-            scene: &mut self.scene,
-            renderer: &mut self.renderer,
-            resource_manager: &mut self.resource_manager,
-            delta,
-        };
+        let mut system_events = std::mem::take(&mut self.system_events);
+        system_events.clear(); // Reset for this frame
 
-        let mut systems = std::mem::take(&mut self.systems);
-        for system in &mut systems {
-            system.update(&mut ctx);
+        {
+            let mut ctx = FrameContext {
+                scene: &mut self.scene,
+                renderer: &mut self.renderer,
+                resource_manager: &mut self.resource_manager,
+                delta,
+                event_proxy: crate::systems_events::events::EventProxy {
+                    events: &self.event_queue.events,
+                    outgoing: &mut system_events,
+                },
+            };
+
+            let mut systems = std::mem::take(&mut self.systems);
+            for system in &mut systems {
+                system.update(&mut ctx);
+            }
+            self.systems = systems;
         }
-        self.systems = systems;
+
+        self.system_events = system_events;
     }
 
     fn render_phase(&mut self, egui_output: Option<(egui::FullOutput, egui::Context)>) {

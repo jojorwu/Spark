@@ -6,7 +6,7 @@ pub enum EngineEvent {
 }
 
 pub struct EventQueue {
-    events: Vec<EngineEvent>,
+    pub(crate) events: Vec<EngineEvent>,
 }
 
 impl EventQueue {

@@ -2,6 +2,7 @@ pub mod error;
 pub mod pipeline;
 pub mod passes;
 pub mod resource;
+pub mod factory;
 pub mod ui;
 pub mod vertex;
 pub mod vulkan;

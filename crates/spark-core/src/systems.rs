@@ -1,5 +1,7 @@
 use crate::System;
 
+pub mod component;
+
 pub struct HierarchySystem;
 
 impl System for HierarchySystem {
