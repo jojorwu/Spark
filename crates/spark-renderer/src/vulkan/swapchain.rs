@@ -3,6 +3,7 @@ use ash::{
     Instance,
 };
 
+/// Manages the Vulkan swapchain, its images, and associated synchronization for presentation.
 pub struct VulkanSwapchain {
     pub loader: SwapchainLoader,
     pub handle: vk::SwapchainKHR,

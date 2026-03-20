@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
-/// Represents a Vulkan buffer with its associated memory and size.
+/// Represents a Vulkan buffer with its associated memory, size, and versioning for cache optimization.
 pub struct Buffer {
     pub handle: vk::Buffer,
     pub allocation: Arc<Mutex<Option<gpu_allocator::vulkan::Allocation>>>,
@@ -41,7 +41,7 @@ impl std::fmt::Debug for Buffer {
 unsafe impl Send for Buffer {}
 unsafe impl Sync for Buffer {}
 
-/// Represents a framebuffer attachment (Image, Memory, View).
+/// Represents a framebuffer attachment, including its Vulkan image, optional allocation, and view.
 pub struct Attachment {
     pub image: vk::Image,
     pub allocation: Arc<Mutex<Option<gpu_allocator::vulkan::Allocation>>>,
@@ -62,7 +62,7 @@ impl Clone for Attachment {
     }
 }
 
-/// Represents all resources and synchronization primitives for a single frame.
+/// Represents the data required to draw a single mesh instance.
 #[derive(Debug)]
 pub struct MeshDraw {
     pub model: spark_math::Mat4,

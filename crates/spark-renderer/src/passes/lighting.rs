@@ -12,6 +12,17 @@ pub struct LightingDescriptorParams<'a> {
     pub brdf_lut_view: vk::ImageView,
 }
 
+pub struct LightingPipelineParams<'a> {
+    pub device: &'a ash::Device,
+    pub pipeline_cache: vk::PipelineCache,
+    pub extent: vk::Extent2D,
+    pub vert_spirv: &'a [u32],
+    pub frag_spirv: &'a [u32],
+    pub msaa_samples: vk::SampleCountFlags,
+    pub global_ds_layout: vk::DescriptorSetLayout,
+    pub bindless_ds_layout: vk::DescriptorSetLayout,
+}
+
 pub struct LightingPass {
     pub pipeline: Option<vk::Pipeline>,
     pub layout: vk::PipelineLayout,
@@ -117,6 +128,24 @@ impl LightingPass {
             descriptor_set_layout: ds_layout,
             descriptor_sets,
         })
+    }
+
+    pub fn create_pipeline(&mut self, params: LightingPipelineParams) {
+        let deferred_pipeline = crate::pipeline::Pipeline::new(
+            params.device,
+            &crate::pipeline::PipelineCreateParams {
+                extent: params.extent,
+                vert_shader_code: params.vert_spirv,
+                frag_shader_code: params.frag_spirv,
+                msaa_samples: params.msaa_samples,
+                is_deferred_lighting: true,
+                input_attachments_count: 4,
+                pipeline_cache: params.pipeline_cache,
+                global_ds_layout: params.global_ds_layout,
+                bindless_ds_layout: params.bindless_ds_layout,
+            }
+        );
+        self.pipeline = Some(deferred_pipeline.graphics_pipeline);
     }
 
     pub fn update_descriptor_set_for_frame(

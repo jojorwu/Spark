@@ -18,6 +18,15 @@ pub struct SSAORecordParams<'a> {
     pub view: Mat4,
 }
 
+pub struct SSAOPipelineParams<'a> {
+    pub device: &'a ash::Device,
+    pub pipeline_cache: vk::PipelineCache,
+    pub extent: vk::Extent2D,
+    pub vert_shader: &'a [u32],
+    pub ssao_shader: &'a [u32],
+    pub blur_shader: &'a [u32],
+}
+
 pub struct SSAOPass {
     pub ssao_pipeline: vk::Pipeline,
     pub blur_pipeline: vk::Pipeline,
@@ -258,16 +267,15 @@ impl SSAOPass {
 
     pub fn create_pipelines(
         &mut self,
-        device: &ash::Device,
-        pipeline_cache: vk::PipelineCache,
-        extent: vk::Extent2D,
-        vert_shader: &[u32],
-        ssao_shader: &[u32],
-        blur_shader: &[u32],
+        params: SSAOPipelineParams,
     ) {
-        let vert_module = crate::pipeline::Pipeline::create_shader_module(device, vert_shader);
-        let ssao_module = crate::pipeline::Pipeline::create_shader_module(device, ssao_shader);
-        let blur_module = crate::pipeline::Pipeline::create_shader_module(device, blur_shader);
+        let device = params.device;
+        let extent = params.extent;
+        let pipeline_cache = params.pipeline_cache;
+
+        let vert_module = crate::pipeline::Pipeline::create_shader_module(device, params.vert_shader);
+        let ssao_module = crate::pipeline::Pipeline::create_shader_module(device, params.ssao_shader);
+        let blur_module = crate::pipeline::Pipeline::create_shader_module(device, params.blur_shader);
 
         let entry_point = std::ffi::CString::new("main").unwrap();
 

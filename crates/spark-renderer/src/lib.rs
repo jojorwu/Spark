@@ -80,18 +80,6 @@ pub struct GlobalUBO {
     pub cascade_splits: [f32; 4],
 }
 
-fn halton(index: u32, base: u32) -> f32 {
-    let mut result = 0.0;
-    let mut f = 1.0;
-    let mut i = index;
-    while i > 0 {
-        f /= base as f32;
-        result += f * (i % base) as f32;
-        i /= base;
-    }
-    result
-}
-
 impl Renderer {
     /// Cascaded shadow map texture size.
     pub const SHADOW_MAP_CASCADE_SIZE: u32 = 2048;
@@ -1112,14 +1100,33 @@ impl Renderer {
         id
     }
 
+    /// Calculates the projection jitter for temporal anti-aliasing.
     pub fn get_jitter(&self) -> [f32; 2] {
-        let x = halton((self.frame_index % 16) as u32 + 1, 2) - 0.5;
-        let y = halton((self.frame_index % 16) as u32 + 1, 3) - 0.5;
+        let x = crate::vulkan::utils::halton((self.frame_index % 16) as u32 + 1, 2) - 0.5;
+        let y = crate::vulkan::utils::halton((self.frame_index % 16) as u32 + 1, 3) - 0.5;
         [x / self.swapchain.extent.width as f32, y / self.swapchain.extent.height as f32]
     }
 
     pub fn add_render_pass<P: crate::passes::RenderPass + 'static>(&mut self, pass: P) {
         self.render_passes.push(Box::new(pass));
+    }
+
+    /// Calculates the six frustum planes from a view-projection matrix.
+    fn calculate_frustum_planes(view_proj: spark_math::Mat4) -> [spark_math::Vec4; 6] {
+        let mut frustum = [spark_math::Vec4::ZERO; 6];
+        let m = view_proj.transpose();
+        frustum[0] = m.w_axis + m.x_axis;
+        frustum[1] = m.w_axis - m.x_axis;
+        frustum[2] = m.w_axis + m.y_axis;
+        frustum[3] = m.w_axis - m.y_axis;
+        frustum[4] = m.w_axis + m.z_axis;
+        frustum[5] = m.w_axis - m.z_axis;
+
+        for plane in &mut frustum {
+            let len = spark_math::Vec3::new(plane.x, plane.y, plane.z).length();
+            *plane /= len;
+        }
+        frustum
     }
 
     pub fn prepare_frame(
@@ -1181,20 +1188,7 @@ impl Renderer {
 
         let inv_v = packet.view_matrix.inverse();
         let camera_pos = [inv_v.w_axis.x, inv_v.w_axis.y, inv_v.w_axis.z, 1.0];
-
-        let mut frustum = [spark_math::Vec4::ZERO; 6];
-        let m = view_proj.transpose();
-        frustum[0] = m.w_axis + m.x_axis;
-        frustum[1] = m.w_axis - m.x_axis;
-        frustum[2] = m.w_axis + m.y_axis;
-        frustum[3] = m.w_axis - m.y_axis;
-        frustum[4] = m.w_axis + m.z_axis;
-        frustum[5] = m.w_axis - m.z_axis;
-
-        for plane in &mut frustum {
-            let len = spark_math::Vec3::new(plane.x, plane.y, plane.z).length();
-            *plane /= len;
-        }
+        let frustum = Self::calculate_frustum_planes(view_proj);
 
         let ubo = GlobalUBO {
             vp: view_proj,
@@ -1358,15 +1352,17 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_buffer_struct() {
         let buffer = Buffer {
             handle: vk::Buffer::null(),
-            memory: vk::DeviceMemory::null(),
+            allocation: Arc::new(Mutex::new(None)),
             size: 1024,
             ptr: std::ptr::null_mut(),
             address: 0,
+            version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         assert_eq!(buffer.size, 1024);
         assert_eq!(buffer.handle, vk::Buffer::null());

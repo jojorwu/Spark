@@ -4,6 +4,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::ffi::CString;
 use winit::window::Window;
 
+/// Encapsulates the core Vulkan instance, debug messenger, and surface components.
 pub struct VulkanContext {
     pub entry: Entry,
     pub instance: Instance,

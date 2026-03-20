@@ -90,12 +90,14 @@ fn main() {
         engine.renderer.descriptor_pool,
     ).unwrap();
     ssao_pass.create_pipelines(
-        &engine.renderer.device.device,
-        engine.renderer.pipeline_cache,
-        engine.renderer.get_extent(),
-        &compiler.compile("assets/shaders/ssao.vert", shaderc::ShaderKind::Vertex),
-        &compiler.compile("assets/shaders/ssao.frag", shaderc::ShaderKind::Fragment),
-        &compiler.compile("assets/shaders/ssao_blur.frag", shaderc::ShaderKind::Fragment),
+        spark_renderer::passes::ssao::SSAOPipelineParams {
+            device: &engine.renderer.device.device,
+            pipeline_cache: engine.renderer.pipeline_cache,
+            extent: engine.renderer.get_extent(),
+            vert_shader: &compiler.compile("assets/shaders/ssao.vert", shaderc::ShaderKind::Vertex),
+            ssao_shader: &compiler.compile("assets/shaders/ssao.frag", shaderc::ShaderKind::Fragment),
+            blur_shader: &compiler.compile("assets/shaders/ssao_blur.frag", shaderc::ShaderKind::Fragment),
+        }
     );
 
     let mut lighting_pass = spark_renderer::passes::lighting::LightingPass::new(
@@ -118,21 +120,18 @@ fn main() {
     def_options.add_macro_definition("MSAA_SAMPLES", Some(&msaa_count.to_string()));
     let def_frag_spirv = compiler.compile_with_options("assets/shaders/deferred.frag", shaderc::ShaderKind::Fragment, &def_options);
 
-    let deferred_pipeline = Pipeline::new(
-        engine.renderer.get_device(),
-        &spark_renderer::pipeline::PipelineCreateParams {
-            extent: engine.renderer.get_extent(),
-            vert_shader_code: &compiler.compile("assets/shaders/deferred.vert", shaderc::ShaderKind::Vertex),
-            frag_shader_code: &def_frag_spirv,
-            msaa_samples: engine.renderer.get_msaa_samples(),
-            is_deferred_lighting: true,
-            input_attachments_count: 4,
+    lighting_pass.create_pipeline(
+        spark_renderer::passes::lighting::LightingPipelineParams {
+            device: &engine.renderer.device.device,
             pipeline_cache: engine.renderer.pipeline_cache,
+            extent: engine.renderer.get_extent(),
+            vert_spirv: &compiler.compile("assets/shaders/deferred.vert", shaderc::ShaderKind::Vertex),
+            frag_spirv: &def_frag_spirv,
+            msaa_samples: engine.renderer.get_msaa_samples(),
             global_ds_layout: engine.renderer.global_descriptor_set_layout,
             bindless_ds_layout: engine.renderer.bindless_descriptor_set_layout,
         }
     );
-    lighting_pass.pipeline = Some(deferred_pipeline.graphics_pipeline);
 
     let grid_pass = spark_renderer::passes::grid::GridPass::new(
         &engine.renderer.device.device,

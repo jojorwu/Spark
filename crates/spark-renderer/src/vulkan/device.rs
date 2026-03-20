@@ -15,6 +15,7 @@ pub struct ImageCreateParams {
     pub samples: vk::SampleCountFlags,
 }
 
+/// Represents the Vulkan logical device and its associated command pools and memory allocator.
 pub struct VulkanDevice {
     pub pdevice: vk::PhysicalDevice,
     pub device: Device,
