@@ -9,6 +9,8 @@ layout(binding = 2) uniform sampler2D fogSampler;
 layout(push_constant) uniform PushConstants {
     float exposure;
     float gamma;
+    float enable_bloom;
+    float padding;
 } push;
 
 // ACES Tone Mapping (Narkowicz 2015)
@@ -26,8 +28,13 @@ void main() {
     vec3 bloomColor = texture(bloomSampler, inUV).rgb;
     vec3 fogColor = texture(fogSampler, inUV).rgb;
 
-    // Mix HDR with bloom and fog
-    vec3 result = (hdrColor + bloomColor + fogColor) * push.exposure;
+    // Mix HDR with bloom (if enabled) and fog
+    vec3 result = hdrColor;
+    if (push.enable_bloom > 0.5) {
+        result += bloomColor;
+    }
+    result += fogColor;
+    result *= push.exposure;
 
     // ACES Tone Mapping
     vec3 mapped = ACESFilm(result);

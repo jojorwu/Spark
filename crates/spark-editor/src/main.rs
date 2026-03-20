@@ -266,7 +266,7 @@ fn main() {
             }
             winit::event::Event::AboutToWait => {
                 ui.begin_frame(window);
-                ui.draw_ui(scene, rm, renderer);
+                ui.draw_ui(scene, rm, renderer, fps);
                 ui.draw_viewport(scene, fps);
                 let full_output = ui.end_frame(window);
                 (false, Some((full_output, ui.egui_ctx.clone())))

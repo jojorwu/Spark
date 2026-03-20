@@ -268,8 +268,8 @@ impl RenderPass for PostProcessPass {
             renderer.device.device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.unwrap());
             renderer.device.device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.descriptor_sets[ctx.current_frame]], &[]);
 
-            let pc = [renderer.exposure, renderer.gamma];
-            let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 8);
+            let pc = [renderer.exposure, renderer.gamma, if renderer.enable_bloom { 1.0 } else { 0.0 }, 0.0];
+            let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 16);
             renderer.device.device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
 
             let viewport = vk::Viewport::default().width(extent.width as f32).height(extent.height as f32).max_depth(1.0);
@@ -336,7 +336,7 @@ impl PostProcessPass {
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,
-                        size: 8,
+                        size: 16,
                     }]),
                 None,
             )?
