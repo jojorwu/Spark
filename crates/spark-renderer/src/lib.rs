@@ -1143,8 +1143,11 @@ impl Renderer {
         let mut object_ssbos = Vec::new();
 
         for mesh in packet.meshes {
+             let m = mesh.model.transpose();
              object_ssbos.push(ObjectDataSSBO {
-                model: mesh.model,
+                model_row0: m.row(0),
+                model_row1: m.row(1),
+                model_row2: m.row(2),
                 sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
                 index_count: mesh.index_count,
                 first_index: mesh.first_index,

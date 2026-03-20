@@ -110,7 +110,7 @@ impl ResourceManager {
         let v_sz = (self.all_vertices.len() * std::mem::size_of::<spark_renderer::vertex::Vertex>()) as u64;
         let vb = renderer.create_buffer(
             v_sz,
-            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
         let staging_v = renderer.create_buffer(
@@ -125,7 +125,7 @@ impl ResourceManager {
         let i_sz = (self.all_indices.len() * 4) as u64;
         let ib = renderer.create_buffer(
             i_sz,
-            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
         let staging_i = renderer.create_buffer(
@@ -275,12 +275,12 @@ impl GltfLoader {
                         spark_math::Vec2::ZERO
                     };
 
-                    rm.all_vertices.push(Vertex {
-                        pos: spark_math::Vec3::from_array(p),
-                        normal: n,
-                        color: spark_math::Vec3::ONE,
-                        tex_coord: tc,
-                    });
+                    rm.all_vertices.push(Vertex::pack(
+                        spark_math::Vec3::from_array(p),
+                        n,
+                        tc,
+                        spark_math::Vec3::ONE,
+                    ));
                 }
 
                 let index_count = if let Some(indices) = reader.read_indices() {

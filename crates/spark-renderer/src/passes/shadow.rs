@@ -1,7 +1,6 @@
 use ash::vk;
 use std::sync::{Arc, Mutex};
 use crate::Renderer;
-use crate::vertex::Vertex;
 use crate::pipeline::Pipeline;
 
 pub const SHADOW_CASCADE_COUNT: usize = 4;
@@ -197,14 +196,7 @@ impl ShadowPass {
                 .name(&entry_point),
         ];
 
-        let binding_descriptions = [
-            Vertex::get_binding_description(),
-        ];
-        let attribute_descriptions = Vertex::get_attribute_descriptions();
-
-        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(&binding_descriptions)
-            .vertex_attribute_descriptions(&attribute_descriptions);
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
 
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
@@ -323,14 +315,14 @@ impl ShadowPass {
                 #[repr(C)]
                 struct PC {
                     lvp: spark_math::Mat4,
-                    padding: u32,
                     address: u64,
+                    vertex_address: u64,
                 }
                 let frame = &renderer.frames[renderer.current_frame];
                 let pc = PC {
                     lvp,
-                    padding: 0,
                     address: frame.object_data_buffer.as_ref().map_or(0, |b| b.address),
+                    vertex_address: renderer.global_vertex_buffer.as_ref().map_or(0, |b| b.address),
                 };
                 let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
 
@@ -343,8 +335,7 @@ impl ShadowPass {
                 );
 
                 if let Some(ref indirect_buffer) = frame.indirect_commands_buffer {
-                    if let (Some(vb), Some(ib)) = (renderer.global_vertex_buffer.as_ref(), renderer.global_index_buffer.as_ref()) {
-                        device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
+                    if let Some(ib) = renderer.global_index_buffer.as_ref() {
                         device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
 
                         if let Some(ref count_buffer) = frame.draw_count_buffer {

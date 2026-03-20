@@ -64,10 +64,16 @@ impl CullingPass {
         shader_code: &[u32],
         global_ub_layout: vk::DescriptorSetLayout,
     ) -> Result<Self, crate::error::RendererError> {
+        let push_constant_ranges = [vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+            .offset(0)
+            .size(128)];
+
         let layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(&[global_ub_layout]),
+                    .set_layouts(&[global_ub_layout])
+                    .push_constant_ranges(&push_constant_ranges),
                 None,
             )?
         };

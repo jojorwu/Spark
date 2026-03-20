@@ -34,6 +34,7 @@ impl RenderPass for GBufferPass {
             padding: u32,
             object_buffer_address: u64,
             prev_view_proj: spark_math::Mat4,
+            vertex_buffer_address: u64,
         }
         let pc = PC {
             count: renderer.light_count,
@@ -44,6 +45,7 @@ impl RenderPass for GBufferPass {
             padding: 0,
             object_buffer_address: renderer.frames[current_frame].object_data_buffer.as_ref().map_or(0, |b| b.address),
             prev_view_proj: renderer.prev_view_proj,
+            vertex_buffer_address: renderer.global_vertex_buffer.as_ref().map_or(0, |b| b.address),
         };
         let pc_bytes = unsafe { std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>()) };
 
@@ -125,8 +127,7 @@ impl RenderPass for GBufferPass {
                         &[],
                     );
 
-                    if let (Some(vb), Some(ib)) = (renderer.global_vertex_buffer.as_ref(), renderer.global_index_buffer.as_ref()) {
-                        device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
+                    if let Some(ib) = renderer.global_index_buffer.as_ref() {
                         device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
                     }
 

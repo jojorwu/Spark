@@ -43,12 +43,6 @@ impl Pipeline {
 
         let main_function_name = CString::new("main").unwrap();
 
-        use crate::vertex::Vertex;
-        let binding_descriptions = [
-            Vertex::get_binding_description(),
-        ];
-        let attribute_descriptions = Vertex::get_attribute_descriptions();
-
         let shader_stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::VERTEX)
@@ -60,13 +54,7 @@ impl Pipeline {
                 .name(&main_function_name),
         ];
 
-        let vertex_input_info = if is_deferred_lighting {
-            vk::PipelineVertexInputStateCreateInfo::default()
-        } else {
-            vk::PipelineVertexInputStateCreateInfo::default()
-                .vertex_binding_descriptions(&binding_descriptions)
-                .vertex_attribute_descriptions(&attribute_descriptions)
-        };
+        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
 
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)

@@ -105,7 +105,9 @@ pub struct RenderFrame {
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct ObjectDataSSBO {
-    pub model: spark_math::Mat4,
+    pub model_row0: spark_math::Vec4,
+    pub model_row1: spark_math::Vec4,
+    pub model_row2: spark_math::Vec4,
     pub sphere: spark_math::Vec4,
     pub index_count: u32,
     pub first_index: u32,
