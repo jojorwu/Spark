@@ -5,6 +5,7 @@ pub mod resource;
 pub mod event;
 pub mod logger;
 pub mod systems;
+pub mod event_mapper;
 
 use winit::{
     event::{Event, WindowEvent},
@@ -18,14 +19,17 @@ use crate::resource::ResourceManager;
 use crate::event::EventQueue;
 use spark_renderer::Renderer;
 
+/// Context passed to systems during the update phase.
+pub struct FrameContext<'a> {
+    pub scene: &'a mut Scene,
+    pub renderer: &'a mut Renderer,
+    pub resource_manager: &'a mut ResourceManager,
+    pub delta: f32,
+}
+
+/// A trait representing a system that processes engine state.
 pub trait System {
-    fn update(
-        &mut self,
-        scene: &mut Scene,
-        renderer: &mut Renderer,
-        resource_manager: &mut ResourceManager,
-        delta: f32,
-    );
+    fn update(&mut self, ctx: &mut FrameContext);
 }
 
 pub struct Engine {
@@ -80,27 +84,12 @@ impl Engine {
     }
 
     fn handle_window_event(&mut self, event: &WindowEvent, elwt: &winit::event_loop::EventLoopWindowTarget<()>) {
-        match event {
-            WindowEvent::CloseRequested => {
-                elwt.exit();
-            }
-            WindowEvent::Resized(size) => {
-                self.event_queue.push(crate::event::EngineEvent::WindowResized { width: size.width, height: size.height });
-            }
-            WindowEvent::KeyboardInput { event: input_event, .. } => {
-                if let winit::keyboard::PhysicalKey::Code(code) = input_event.physical_key {
-                    if input_event.state == winit::event::ElementState::Pressed {
-                        self.event_queue.push(crate::event::EngineEvent::KeyDown { key: code });
-                    } else {
-                        self.event_queue.push(crate::event::EngineEvent::KeyUp { key: code });
-                    }
-                }
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.event_queue.push(crate::event::EngineEvent::MouseMoved { x: position.x, y: position.y });
-            }
-            _ => {}
+        if let WindowEvent::CloseRequested = event {
+            elwt.exit();
+            return;
         }
+
+        crate::event_mapper::EventMapper::map_window_event(event, &mut self.event_queue);
     }
 
     pub fn run<F>(mut self, mut ui_callback: F)
@@ -126,29 +115,45 @@ impl Engine {
                     self.last_frame_time = now;
                     self.current_fps = 0.9 * self.current_fps + 0.1 * (1.0 / delta.max(0.001));
 
-                    self.plugin_manager.update_plugins(&mut self.scene, delta);
+                    self.update_phase(delta);
+                    self.render_phase(egui_output);
 
-                    let mut systems = std::mem::take(&mut self.systems);
-                    for system in &mut systems {
-                        system.update(&mut self.scene, &mut self.renderer, &mut self.resource_manager, delta);
-                    }
-                    self.systems = systems;
-
-                    // Rendering orchestration
-                    let packet = self.scene.collect_frame_packet(None);
-                    let total_objects = self.renderer.prepare_frame(packet);
-
-                    self.renderer.draw_frame(
-                        &self.window,
-                        egui_output,
-                        total_objects
-                    );
-
-                    self.renderer.clear_instance_buffers();
                     self.event_queue.clear();
                 }
                 _ => (),
             }
         }).expect("Event loop failed");
+    }
+
+    fn update_phase(&mut self, delta: f32) {
+        self.plugin_manager.update_plugins(&mut self.scene, delta);
+
+        let mut ctx = FrameContext {
+            scene: &mut self.scene,
+            renderer: &mut self.renderer,
+            resource_manager: &mut self.resource_manager,
+            delta,
+        };
+
+        let mut systems = std::mem::take(&mut self.systems);
+        for system in &mut systems {
+            system.update(&mut ctx);
+        }
+        self.systems = systems;
+    }
+
+    fn render_phase(&mut self, egui_output: Option<(egui::FullOutput, egui::Context)>) {
+        // Collect visibility and light data
+        let packet = self.scene.collect_frame_packet(None);
+        let total_objects = self.renderer.prepare_frame(packet);
+
+        // Draw the frame
+        self.renderer.draw_frame(
+            &self.window,
+            egui_output,
+            total_objects
+        );
+
+        self.renderer.clear_instance_buffers();
     }
 }

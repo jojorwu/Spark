@@ -1,6 +1,5 @@
 use slotmap::{SlotMap, new_key_type};
 use spark_math::{Mat4, Vec4Swizzles};
-use rayon::prelude::*;
 use serde::{Serialize, Deserialize};
 
 new_key_type! {
@@ -112,16 +111,6 @@ struct SceneDataCollector {
     lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>,
 }
 
-impl SceneDataCollector {
-    fn merge(mut self, other: Self) -> Self {
-        self.renderables.extend(other.renderables);
-        for (key, transforms) in other.instanced {
-            self.instanced.entry(key).or_default().extend(transforms);
-        }
-        self.lights.extend(other.lights);
-        self
-    }
-}
 
 impl Scene {
     pub fn new() -> Self {
@@ -245,9 +234,15 @@ impl Scene {
 
     /// Collects a Packet for the renderer.
     pub fn collect_frame_packet(&self, frustum: Option<&spark_math::Frustum>) -> spark_renderer::resource::FramePacket {
-        let data = self.collect_data_parallel(self.root, frustum);
+        let mut data = SceneDataCollector {
+            renderables: Vec::with_capacity(128),
+            instanced: std::collections::HashMap::new(),
+            lights: Vec::with_capacity(16),
+        };
 
-        let mut meshes = Vec::new();
+        self.collect_data_recursive(self.root, frustum, &mut data);
+
+        let mut meshes = Vec::with_capacity(data.renderables.len() + data.instanced.values().map(|v| v.len()).sum::<usize>());
         for r in data.renderables {
             meshes.push(spark_renderer::resource::MeshDraw {
                 model: r.0,
@@ -265,7 +260,7 @@ impl Scene {
             for t in transforms {
                 meshes.push(spark_renderer::resource::MeshDraw {
                     model: t,
-                    vertex_count: 0, // Not needed for indirect
+                    vertex_count: 0,
                     index_count: ic,
                     first_index: fi,
                     vertex_offset: vo,
@@ -290,17 +285,12 @@ impl Scene {
         }
     }
 
-    fn collect_data_parallel(
+    fn collect_data_recursive(
         &self,
         node_key: NodeKey,
         frustum: Option<&spark_math::Frustum>,
-    ) -> SceneDataCollector {
-        let mut data = SceneDataCollector {
-            renderables: Vec::new(),
-            instanced: std::collections::HashMap::new(),
-            lights: Vec::new(),
-        };
-
+        data: &mut SceneDataCollector,
+    ) {
         if let Some(node) = self.nodes.get(node_key) {
             for component in &node.components {
                 let any = component.as_any();
@@ -332,22 +322,9 @@ impl Scene {
                 }
             }
 
-            if !node.children.is_empty() {
-                let children_data: SceneDataCollector = node.children.par_iter()
-                    .map(|&child_key| self.collect_data_parallel(child_key, frustum))
-                    .reduce(|| SceneDataCollector {
-                        renderables: Vec::new(),
-                        instanced: std::collections::HashMap::new(),
-                        lights: Vec::new(),
-                    }, |a, b| a.merge(b));
-
-                data.renderables.extend(children_data.renderables);
-                for (key, transforms) in children_data.instanced {
-                    data.instanced.entry(key).or_default().extend(transforms);
-                }
-                data.lights.extend(children_data.lights);
+            for &child_key in &node.children {
+                self.collect_data_recursive(child_key, frustum, data);
             }
         }
-        data
     }
 }
