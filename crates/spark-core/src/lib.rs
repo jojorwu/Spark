@@ -159,7 +159,7 @@ impl Engine {
 
     fn render_phase(&mut self, egui_output: Option<(egui::FullOutput, egui::Context)>) {
         // Collect visibility and light data
-        let packet = self.scene.collect_frame_packet(None);
+        let packet = self.scene.collect_frame_packet(None, &self.resource_manager);
         let total_objects = self.renderer.prepare_frame(packet);
 
         // Draw the frame

@@ -25,6 +25,11 @@ pub struct PassShaders {
     pub tonemap_frag: Vec<u32>,
     pub bloom_downsample: Vec<u32>,
     pub bloom_upsample: Vec<u32>,
+    pub forward_vert: Vec<u32>,
+    pub forward_frag: Vec<u32>,
+    pub particle_comp: Vec<u32>,
+    pub particle_vert: Vec<u32>,
+    pub particle_frag: Vec<u32>,
 }
 
 impl Renderer {
@@ -92,6 +97,14 @@ impl Renderer {
         let mut post_process_pass = crate::passes::post_process::PostProcessPass::new(
             self, vk::Format::B8G8R8A8_UNORM, extent
         ).map_err(|_| RendererError::NoSuitableDevice)?;
+
+        let forward_pass = crate::passes::forward::ForwardPass::new(
+            self, &shaders.forward_vert, &shaders.forward_frag
+        )?;
+
+        let particle_pass = crate::passes::particle::ParticlePass::new(
+            self, &shaders.particle_comp, &shaders.particle_vert, &shaders.particle_frag
+        )?;
         post_process_pass.create_pipelines(crate::passes::post_process::PostProcessPipelineParams {
             device: &self.device.device,
             pipeline_cache: cache,
@@ -114,6 +127,8 @@ impl Renderer {
         self.add_render_pass(lighting_pass);
         self.add_render_pass(grid_pass);
         self.add_render_pass(volumetric_pass);
+        self.add_render_pass(forward_pass);
+        self.add_render_pass(particle_pass);
         self.add_render_pass(taa_pass);
         self.add_render_pass(post_process_pass);
 

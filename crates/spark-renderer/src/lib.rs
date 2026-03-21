@@ -16,6 +16,7 @@ use crate::vulkan::device::VulkanDevice;
 use crate::vulkan::gbuffer::GBuffer;
 use crate::vulkan::swapchain::VulkanSwapchain;
 use crate::vulkan::texture::Texture;
+use spark_math::Vec4Swizzles;
 pub use ash;
 use ash::vk;
 use winit::window::Window;
@@ -67,6 +68,7 @@ pub struct Renderer {
     pub main_light_view_proj: spark_math::Mat4,
     pub current_view_proj: spark_math::Mat4,
     pub last_object_count: u32,
+    pub last_transparent_count: u32,
     pub current_image_index: u32,
     pub pass_descriptor_versions: Vec<std::collections::HashMap<String, u64>>,
 }
@@ -235,6 +237,8 @@ impl Renderer {
                     indirect_commands_buffer: None,
                     object_data_buffer: None,
                     draw_count_buffer: None,
+                    transparent_indirect_buffer: None,
+                    transparent_object_buffer: None,
                 }
             })
             .collect::<Vec<_>>()
@@ -296,6 +300,7 @@ impl Renderer {
             main_light_view_proj: spark_math::Mat4::IDENTITY,
             current_view_proj: spark_math::Mat4::IDENTITY,
             last_object_count: 0,
+            last_transparent_count: 0,
             current_image_index: 0,
             pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::collections::HashMap::new()).collect(),
         })
@@ -558,6 +563,48 @@ impl Renderer {
         let frame = &mut self.frames[self.current_frame];
         frame.instance_pool.push(buffer);
         (frame.instance_pool.len() - 1) as u32
+    }
+
+    pub fn update_transparent_buffers(
+        &mut self,
+        commands: &[vk::DrawIndexedIndirectCommand],
+        object_data: &[ObjectDataSSBO],
+    ) {
+        let frame_idx = self.current_frame;
+        let cmd_sz = std::mem::size_of_val(commands) as u64;
+
+        let mut buffer = self.frames[frame_idx].transparent_indirect_buffer.clone();
+        if buffer.is_none() || buffer.as_ref().unwrap().size < cmd_sz {
+            if let Some(old) = self.frames[frame_idx].transparent_indirect_buffer.take() {
+                self.device.destroy_buffer(old);
+            }
+            buffer = Some(self.create_buffer(
+                cmd_sz.max(1024),
+                vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ));
+            self.frames[frame_idx].transparent_indirect_buffer = buffer.clone();
+        }
+        if !commands.is_empty() {
+            self.upload_to_buffer(&buffer.unwrap(), commands);
+        }
+
+        let obj_sz = std::mem::size_of_val(object_data) as u64;
+        let mut obj_buffer = self.frames[frame_idx].transparent_object_buffer.clone();
+        if obj_buffer.is_none() || obj_buffer.as_ref().unwrap().size < obj_sz {
+            if let Some(old) = self.frames[frame_idx].transparent_object_buffer.take() {
+                self.device.destroy_buffer(old);
+            }
+            obj_buffer = Some(self.create_buffer(
+                obj_sz.max(1024),
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ));
+            self.frames[frame_idx].transparent_object_buffer = obj_buffer.clone();
+        }
+        if !object_data.is_empty() {
+            self.upload_to_buffer(&obj_buffer.unwrap(), object_data);
+        }
     }
 
     pub fn update_indirect_buffers(
@@ -1149,7 +1196,7 @@ impl Renderer {
         self.scene_view_matrix_for_pos = packet.view_matrix;
 
         // 1. Prepare GPU Indirect and Object buffers in parallel
-        let (object_ssbos, indirect_commands): (Vec<_>, Vec<_>) = packet.meshes.par_iter().enumerate().map(|(i, mesh)| {
+        let (object_ssbos, indirect_commands): (Vec<_>, Vec<_>) = packet.opaque_meshes.par_iter().enumerate().map(|(i, mesh)| {
              let m = mesh.model.transpose();
              let ssbo = ObjectDataSSBO {
                 model_row0: m.row(0),
@@ -1173,6 +1220,39 @@ impl Renderer {
 
         self.update_indirect_buffers(&indirect_commands, &object_ssbos);
         let total_objects = object_ssbos.len() as u32;
+
+        // 1.1 Prepare Transparent buffers (with simple back-to-front sorting)
+        let mut transparent_meshes = packet.transparent_meshes;
+        let view_pos = packet.view_matrix.inverse().w_axis.xyz();
+        transparent_meshes.sort_by(|a, b| {
+            let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
+            let dist_b = (b.model.w_axis.xyz() - view_pos).length_squared();
+            dist_b.partial_cmp(&dist_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let (trans_ssbos, trans_cmds): (Vec<_>, Vec<_>) = transparent_meshes.par_iter().enumerate().map(|(i, mesh)| {
+             let m = mesh.model.transpose();
+             let ssbo = ObjectDataSSBO {
+                model_row0: m.row(0),
+                model_row1: m.row(1),
+                model_row2: m.row(2),
+                sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
+                index_count: mesh.index_count,
+                first_index: mesh.first_index,
+                vertex_offset: mesh.vertex_offset,
+                material_index: mesh.material_index,
+            };
+            let cmd = vk::DrawIndexedIndirectCommand {
+                index_count: mesh.index_count,
+                instance_count: 1,
+                first_index: mesh.first_index,
+                vertex_offset: mesh.vertex_offset,
+                first_instance: i as u32,
+            };
+            (ssbo, cmd)
+        }).unzip();
+        self.update_transparent_buffers(&trans_cmds, &trans_ssbos);
+        self.last_transparent_count = trans_ssbos.len() as u32;
 
         // 2. Update Lights
         self.update_lights_from_draw(&packet.lights);

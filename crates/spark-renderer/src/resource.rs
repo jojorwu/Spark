@@ -82,7 +82,8 @@ pub struct LightDraw {
 
 pub struct FramePacket {
     pub view_matrix: spark_math::Mat4,
-    pub meshes: Vec<MeshDraw>,
+    pub opaque_meshes: Vec<MeshDraw>,
+    pub transparent_meshes: Vec<MeshDraw>,
     pub lights: Vec<LightDraw>,
 }
 
@@ -100,6 +101,8 @@ pub struct RenderFrame {
     pub indirect_commands_buffer: Option<Buffer>,
     pub object_data_buffer: Option<Buffer>,
     pub draw_count_buffer: Option<Buffer>,
+    pub transparent_indirect_buffer: Option<Buffer>,
+    pub transparent_object_buffer: Option<Buffer>,
 }
 
 #[repr(C)]

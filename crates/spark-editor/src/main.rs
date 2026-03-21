@@ -82,6 +82,11 @@ fn main() {
         tonemap_frag: compiler.compile("assets/shaders/tonemap_bloom.frag", shaderc::ShaderKind::Fragment),
         bloom_downsample: compiler.compile("assets/shaders/bloom_downsample.frag", shaderc::ShaderKind::Fragment),
         bloom_upsample: compiler.compile("assets/shaders/bloom_upsample.frag", shaderc::ShaderKind::Fragment),
+        forward_vert: compiler.compile("assets/shaders/forward.vert", shaderc::ShaderKind::Vertex),
+        forward_frag: compiler.compile("assets/shaders/forward.frag", shaderc::ShaderKind::Fragment),
+        particle_comp: compiler.compile("assets/shaders/particle.comp", shaderc::ShaderKind::Compute),
+        particle_vert: compiler.compile("assets/shaders/particle.vert", shaderc::ShaderKind::Vertex),
+        particle_frag: compiler.compile("assets/shaders/particle.frag", shaderc::ShaderKind::Fragment),
     };
 
     engine.renderer.setup_default_passes(shaders).expect("Failed to setup render passes");

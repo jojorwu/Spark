@@ -9,6 +9,8 @@ pub mod clustered;
 pub mod taa;
 pub mod grid;
 pub mod volumetric;
+pub mod forward;
+pub mod particle;
 
 use ash::vk;
 use crate::Renderer;

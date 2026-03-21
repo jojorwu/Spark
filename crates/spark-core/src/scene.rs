@@ -250,34 +250,53 @@ impl Scene {
     }
 
     /// Collects a Packet for the renderer.
-    pub fn collect_frame_packet(&self, frustum: Option<&spark_math::Frustum>) -> spark_renderer::resource::FramePacket {
+    pub fn collect_frame_packet(&self, frustum: Option<&spark_math::Frustum>, resource_manager: &crate::resource::ResourceManager) -> spark_renderer::resource::FramePacket {
         let data = self.collect_data_recursive(self.root, frustum);
 
-        let mut meshes = Vec::with_capacity(data.renderables.len() + data.instanced.values().map(|v| v.len()).sum::<usize>());
+        let mut opaque_meshes = Vec::new();
+        let mut transparent_meshes = Vec::new();
+
         for r in data.renderables {
-            meshes.push(spark_renderer::resource::MeshDraw {
+            let mat_idx = r.6.unwrap_or(0);
+            let is_transparent = resource_manager.all_materials.get(mat_idx as usize).map_or(false, |m| (m.flags & 1) != 0);
+
+            let draw = spark_renderer::resource::MeshDraw {
                 model: r.0,
                 vertex_count: r.1,
                 index_count: r.2,
                 first_index: r.3,
                 vertex_offset: r.4,
-                material_index: r.6.unwrap_or(0),
+                material_index: mat_idx,
                 bounding_radius: r.7,
-            });
+            };
+
+            if is_transparent {
+                transparent_meshes.push(draw);
+            } else {
+                opaque_meshes.push(draw);
+            }
         }
 
         for ((ic, fi, vo, _tex, mat_idx, br_bits), transforms) in data.instanced {
             let br = f32::from_bits(br_bits);
+            let midx = mat_idx.unwrap_or(0);
+            let is_transparent = resource_manager.all_materials.get(midx as usize).map_or(false, |m| (m.flags & 1) != 0);
+
             for t in transforms {
-                meshes.push(spark_renderer::resource::MeshDraw {
+                let draw = spark_renderer::resource::MeshDraw {
                     model: t,
                     vertex_count: 0,
                     index_count: ic,
                     first_index: fi,
                     vertex_offset: vo,
-                    material_index: mat_idx.unwrap_or(0),
+                    material_index: midx,
                     bounding_radius: br,
-                });
+                };
+                if is_transparent {
+                    transparent_meshes.push(draw);
+                } else {
+                    opaque_meshes.push(draw);
+                }
             }
         }
 
@@ -292,7 +311,8 @@ impl Scene {
 
         spark_renderer::resource::FramePacket {
             view_matrix: self.last_view_matrix,
-            meshes,
+            opaque_meshes,
+            transparent_meshes,
             lights,
         }
     }
