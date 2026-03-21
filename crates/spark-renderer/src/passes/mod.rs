@@ -44,6 +44,9 @@ pub trait RenderPass: Send + Sync {
     /// Records Vulkan commands for this pass into the provided command buffer.
     fn record_commands(&self, ctx: &RenderContext);
 
+    /// Records commands into secondary command buffers for parallel execution.
+    fn record_secondary_commands(&self, _ctx: &RenderContext) -> Vec<vk::CommandBuffer> { Vec::new() }
+
     /// Retrieves a specific image resource view from the pass for cross-pass communication.
     fn get_resource_view(&self, _name: &str, _frame_index: usize) -> Option<vk::ImageView> {
         None

@@ -103,6 +103,7 @@ pub struct RenderFrame {
     pub draw_count_buffer: Option<Buffer>,
     pub transparent_indirect_buffer: Option<Buffer>,
     pub transparent_object_buffer: Option<Buffer>,
+    pub secondary_command_buffers: Vec<vk::CommandBuffer>,
 }
 
 #[repr(C)]

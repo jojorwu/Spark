@@ -16,14 +16,16 @@ impl Default for GBufferPass {
     }
 }
 
-impl RenderPass for GBufferPass {
-    fn name(&self) -> &str { "GBufferPass" }
+use crate::Renderer;
 
-    fn record_commands(&self, ctx: &RenderContext) {
-        let renderer = ctx.renderer;
-        let command_buffer = ctx.command_buffer;
-        let current_frame = ctx.current_frame;
-
+impl GBufferPass {
+    fn record_gbuffer_commands(
+        &self,
+        device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        renderer: &Renderer,
+        current_frame: usize,
+    ) {
         #[repr(C)]
         struct PC {
             count: u32,
@@ -49,7 +51,6 @@ impl RenderPass for GBufferPass {
         };
         let pc_bytes = unsafe { std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>()) };
 
-        let device = &renderer.device.device;
         let extent = renderer.get_extent();
         let global_ds = renderer.frames[current_frame].global_descriptor_set;
 
@@ -155,6 +156,43 @@ impl RenderPass for GBufferPass {
                 device.cmd_end_rendering(command_buffer);
             }
         }
+    }
+}
+
+impl RenderPass for GBufferPass {
+    fn name(&self) -> &str { "GBufferPass" }
+
+    fn record_secondary_commands(&self, ctx: &RenderContext) -> Vec<vk::CommandBuffer> {
+        let renderer = ctx.renderer;
+        let device = &renderer.device.device;
+        let cf = ctx.current_frame;
+
+        let cb = renderer.allocate_secondary_command_buffer(4); // Thread 4
+
+        let color_formats = [vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::R8G8B8A8_UNORM, vk::Format::R16G16_SFLOAT];
+        let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::default()
+            .color_attachment_formats(&color_formats)
+            .depth_attachment_format(vk::Format::D32_SFLOAT);
+
+        let inheritance = vk::CommandBufferInheritanceInfo::default()
+            .push_next(&mut rendering_info);
+        let begin = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE).inheritance_info(&inheritance);
+
+        unsafe {
+            device.begin_command_buffer(cb, &begin).unwrap();
+            self.record_gbuffer_commands(device, cb, renderer, cf);
+            device.end_command_buffer(cb).unwrap();
+        }
+
+        vec![cb]
+    }
+
+
+    fn record_commands(&self, ctx: &RenderContext) {
+        let renderer = ctx.renderer;
+        let command_buffer = ctx.command_buffer;
+        let current_frame = ctx.current_frame;
+        self.record_gbuffer_commands(&renderer.device.device, command_buffer, renderer, current_frame);
 
         // Barrier: G-Buffer to SHADER_READ_ONLY_OPTIMAL
         let gbuffer_barriers = [

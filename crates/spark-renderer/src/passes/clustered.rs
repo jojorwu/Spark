@@ -24,14 +24,23 @@ impl RenderPass for ClusteredPass {
             100.0,
         );
 
-        self.record_build_commands(
-            &renderer.device.device,
-            command_buffer,
-            proj.inverse(),
-            [renderer.swapchain.extent.width as f32, renderer.swapchain.extent.height as f32],
-            0.1,
-            100.0
-        );
+        let screen_size = [renderer.swapchain.extent.width as f32, renderer.swapchain.extent.height as f32];
+
+        let mut last_p = self.last_proj.lock().unwrap();
+        let mut last_s = self.last_screen_size.lock().unwrap();
+
+        if *last_p != proj || *last_s != screen_size {
+            self.record_build_commands(
+                &renderer.device.device,
+                command_buffer,
+                proj.inverse(),
+                screen_size,
+                0.1,
+                100.0
+            );
+            *last_p = proj;
+            *last_s = screen_size;
+        }
 
         self.record_cull_commands(&renderer.device.device, command_buffer, view, renderer.light_count);
     }
@@ -69,6 +78,8 @@ pub struct ClusteredPass {
     pub light_grid_buffer: Buffer,
     pub global_index_list: Buffer,
     pub index_counter: Buffer,
+    pub last_proj: std::sync::Mutex<Mat4>,
+    pub last_screen_size: std::sync::Mutex<[f32; 2]>,
 }
 
 impl ClusteredPass {
@@ -195,6 +206,8 @@ impl ClusteredPass {
             light_grid_buffer,
             global_index_list,
             index_counter,
+            last_proj: std::sync::Mutex::new(Mat4::ZERO),
+            last_screen_size: std::sync::Mutex::new([0.0, 0.0]),
         })
     }
 

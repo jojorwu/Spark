@@ -239,6 +239,7 @@ impl Renderer {
                     draw_count_buffer: None,
                     transparent_indirect_buffer: None,
                     transparent_object_buffer: None,
+                secondary_command_buffers: Vec::new(),
                 }
             })
             .collect::<Vec<_>>()
@@ -794,6 +795,7 @@ impl Renderer {
         image_index: u32,
         egui_output: Option<(egui::FullOutput, egui::Context)>,
     ) {
+        use rayon::prelude::*;
         let command_buffer = self.frames[self.current_frame].command_buffer;
         let cf = self.current_frame;
 
@@ -813,6 +815,16 @@ impl Renderer {
                 current_frame: cf,
                 image_index,
             };
+
+            let pass_commands: Vec<Vec<vk::CommandBuffer>> = self.render_passes.par_iter().map(|pass| {
+                pass.record_secondary_commands(&ctx)
+            }).collect();
+
+            for pass_cbs in pass_commands {
+                if !pass_cbs.is_empty() {
+                    self.device.device.cmd_execute_commands(command_buffer, &pass_cbs);
+                }
+            }
 
             for pass in &self.render_passes {
                 pass.record_commands(&ctx);
@@ -1325,6 +1337,11 @@ impl Renderer {
 
     pub fn get_thread_command_pool(&self, thread_idx: usize) -> vk::CommandPool {
         self.device.thread_command_pools[thread_idx % self.device.thread_command_pools.len()]
+    }
+
+    pub fn allocate_secondary_command_buffer(&self, thread_idx: usize) -> vk::CommandBuffer {
+        let pool = self.get_thread_command_pool(thread_idx);
+        self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY)
     }
 
     /// Uploads data to a GPU buffer.

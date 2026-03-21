@@ -68,6 +68,12 @@ pub struct ResourceManager {
     pub all_indices: Vec<u32>,
     pub all_materials: Vec<spark_renderer::MaterialDataSSBO>,
     pub needs_upload: bool,
+    pub registry: ResourceRegistry,
+}
+
+#[derive(Default)]
+pub struct ResourceRegistry {
+    pub active_meshes: HashMap<Handle<spark_renderer::vertex::Vertex>, u32>,
 }
 
 impl ResourceManager {
@@ -80,6 +86,7 @@ impl ResourceManager {
             all_indices: Vec::new(),
             all_materials: Vec::new(),
             needs_upload: false,
+            registry: ResourceRegistry::default(),
         }
     }
 }
