@@ -101,7 +101,7 @@ impl Engine {
         F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
     {
         let event_loop = self.event_loop.take().unwrap();
-        self.plugin_manager.init_plugins(&mut self.scene);
+        self.plugin_manager.init_plugins(&mut self.scene, &mut self.renderer, &mut self.resource_manager);
 
         event_loop.run(move |event, elwt| {
             let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene, &mut self.resource_manager, &mut self.renderer, self.current_fps);
@@ -130,8 +130,6 @@ impl Engine {
     }
 
     fn update_phase(&mut self, delta: f32) {
-        self.plugin_manager.update_plugins(&mut self.scene, delta);
-
         let mut system_events = std::mem::take(&mut self.system_events);
         system_events.clear(); // Reset for this frame
 
@@ -146,6 +144,8 @@ impl Engine {
                     outgoing: &mut system_events,
                 },
             };
+
+            self.plugin_manager.update_plugins(&mut ctx);
 
             let mut systems = std::mem::take(&mut self.systems);
             for system in &mut systems {

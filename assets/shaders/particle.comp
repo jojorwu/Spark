@@ -1,0 +1,44 @@
+#version 450
+
+struct Particle {
+    vec4 pos;
+    vec4 vel;
+    vec4 color;
+    float life;
+    float size;
+    vec2 padding;
+};
+
+layout(std430, binding = 0) buffer Particles {
+    Particle particles[];
+};
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float count;
+} pc;
+
+layout(local_size_x = 256) in;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uint(pc.count)) return;
+
+    Particle p = particles[idx];
+
+    if (p.life <= 0.0) {
+        // Simple respawn logic
+        p.pos = vec4(0.0, 0.0, 0.0, 1.0);
+        p.vel = vec4((fract(sin(float(idx)) * 43758.5453) - 0.5) * 2.0, 2.0 + fract(cos(float(idx)) * 12345.6789), (fract(sin(float(idx) * 1.1) * 76543.21) - 0.5) * 2.0, 0.0);
+        p.life = 1.0 + fract(sin(float(idx)) * 5.0);
+        p.color = vec4(1.0, 0.5, 0.2, 1.0);
+        p.size = 0.1;
+    } else {
+        p.pos.xyz += p.vel.xyz * pc.dt;
+        p.vel.y -= 9.8 * pc.dt;
+        p.life -= pc.dt;
+        p.color.a = p.life / 2.0;
+    }
+
+    particles[idx] = p;
+}

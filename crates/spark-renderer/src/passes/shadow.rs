@@ -28,7 +28,7 @@ impl RenderPass for ShadowPass {
 
         let mut buffers = Vec::new();
         for cascade_idx in 0..SHADOW_CASCADE_COUNT {
-            let cb = renderer.allocate_secondary_command_buffer(cascade_idx);
+            let cb = renderer.allocate_secondary_command_buffer();
 
             let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::default().depth_attachment_format(vk::Format::D32_SFLOAT);
             let inheritance = vk::CommandBufferInheritanceInfo::default()

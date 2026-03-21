@@ -167,7 +167,7 @@ impl RenderPass for GBufferPass {
         let device = &renderer.device.device;
         let cf = ctx.current_frame;
 
-        let cb = renderer.allocate_secondary_command_buffer(4); // Thread 4
+        let cb = renderer.allocate_secondary_command_buffer();
 
         let color_formats = [vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::R8G8B8A8_UNORM, vk::Format::R16G16_SFLOAT];
         let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::default()

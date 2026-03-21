@@ -1335,12 +1335,13 @@ impl Renderer {
         &self.device.device
     }
 
-    pub fn get_thread_command_pool(&self, thread_idx: usize) -> vk::CommandPool {
+    pub fn get_thread_command_pool(&self) -> vk::CommandPool {
+        let thread_idx = rayon::current_thread_index().unwrap_or(0);
         self.device.thread_command_pools[thread_idx % self.device.thread_command_pools.len()]
     }
 
-    pub fn allocate_secondary_command_buffer(&self, thread_idx: usize) -> vk::CommandBuffer {
-        let pool = self.get_thread_command_pool(thread_idx);
+    pub fn allocate_secondary_command_buffer(&self) -> vk::CommandBuffer {
+        let pool = self.get_thread_command_pool();
         self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY)
     }
 
