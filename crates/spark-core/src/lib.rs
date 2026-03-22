@@ -7,6 +7,8 @@ pub mod systems;
 pub mod systems_events;
 pub mod event_mapper;
 pub mod input;
+pub mod command;
+pub mod event_bus;
 
 use winit::{
     event::{Event, WindowEvent},
@@ -36,6 +38,8 @@ pub struct FrameContext<'a> {
     pub delta: f32,
     pub event_proxy: crate::systems_events::events::EventProxy<'a>,
     pub input: &'a crate::input::InputManager,
+    pub command_queue: &'a mut crate::command::CommandQueue,
+    pub event_bus: &'a crate::event_bus::EventBus,
 }
 
 /// A trait representing a system that processes engine state.
@@ -57,6 +61,8 @@ pub struct Engine {
     pub resource_manager: ResourceManager,
     pub event_queue: EventQueue,
     pub input_manager: crate::input::InputManager,
+    pub command_queue: crate::command::CommandQueue,
+    pub event_bus: crate::event_bus::EventBus,
     pub system_registry: crate::systems::SystemRegistry,
     pub last_frame_time: instant::Instant,
     pub current_fps: f32,
@@ -80,6 +86,8 @@ impl Engine {
         let resource_manager = ResourceManager::new();
         let event_queue = EventQueue::new();
         let input_manager = crate::input::InputManager::new();
+        let command_queue = crate::command::CommandQueue::new();
+        let event_bus = crate::event_bus::EventBus::new();
         let system_registry = crate::systems::SystemRegistry::new();
 
         Ok(Self {
@@ -91,6 +99,8 @@ impl Engine {
             resource_manager,
             event_queue,
             input_manager,
+            command_queue,
+            event_bus,
             system_registry,
             last_frame_time: instant::Instant::now(),
             current_fps: 0.0,
@@ -185,12 +195,17 @@ impl Engine {
                     outgoing: &mut system_events,
                 },
                 input: &self.input_manager,
+                command_queue: &mut self.command_queue,
+                event_bus: &self.event_bus,
             };
 
             crate::systems::Scheduler::run(&mut self.system_registry, &mut ctx);
         }
 
         self.system_events = system_events;
+
+        // Execute all deferred commands after system updates
+        self.command_queue.execute_all(&mut self.scene, &mut self.resource_manager);
     }
 
     fn render_phase(&mut self, egui_output: Option<(egui::FullOutput, egui::Context)>, delta: f32) {
