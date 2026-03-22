@@ -300,6 +300,7 @@ impl LightingPass {
 
 impl RenderPass for LightingPass {
     fn name(&self) -> &str { "LightingPass" }
+    fn dependencies(&self) -> Vec<&'static str> { vec!["GBufferPass", "SSAOPass", "ShadowPass", "ClusteredPass"] }
 
     fn update_descriptor_sets(&self, renderer: &Renderer) {
         let light_buffers: Vec<Buffer> = renderer.frames.iter().filter_map(|f| f.light_buffer.clone()).collect();

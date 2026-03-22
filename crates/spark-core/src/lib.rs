@@ -1,6 +1,5 @@
 pub mod scene;
 pub mod task;
-pub mod plugin;
 pub mod resource;
 pub mod event;
 pub mod logger;
@@ -16,16 +15,24 @@ use winit::{
 };
 use crate::scene::Scene;
 use crate::task::TaskSystem;
-use crate::plugin::PluginManager;
 use crate::resource::ResourceManager;
 use crate::event::EventQueue;
 use spark_renderer::Renderer;
+
+/// Context passed to systems during initialization and cleanup.
+pub struct InitContext<'a> {
+    pub scene: &'a mut Scene,
+    pub renderer: &'a mut Renderer,
+    pub resource_manager: &'a mut ResourceManager,
+    pub task_system: &'a TaskSystem,
+}
 
 /// Context passed to systems during the update phase.
 pub struct FrameContext<'a> {
     pub scene: &'a mut Scene,
     pub renderer: &'a mut Renderer,
     pub resource_manager: &'a mut ResourceManager,
+    pub task_system: &'a TaskSystem,
     pub delta: f32,
     pub event_proxy: crate::systems_events::events::EventProxy<'a>,
     pub input: &'a crate::input::InputManager,
@@ -34,7 +41,10 @@ pub struct FrameContext<'a> {
 /// A trait representing a system that processes engine state.
 pub trait System: Send + Sync {
     fn name(&self) -> &str;
+    fn version(&self) -> &str { "0.1.0" }
+    fn on_init(&mut self, _ctx: &mut InitContext) {}
     fn update(&mut self, ctx: &mut FrameContext);
+    fn on_stop(&mut self, _ctx: &mut InitContext) {}
     fn dependencies(&self) -> Vec<&'static str> { Vec::new() }
 }
 
@@ -44,7 +54,6 @@ pub struct Engine {
     pub scene: Scene,
     pub renderer: Renderer,
     pub task_system: TaskSystem,
-    pub plugin_manager: PluginManager,
     pub resource_manager: ResourceManager,
     pub event_queue: EventQueue,
     pub input_manager: crate::input::InputManager,
@@ -68,7 +77,6 @@ impl Engine {
         let renderer = Renderer::new(&window, ui_shaders)?;
         let scene = Scene::new();
         let task_system = TaskSystem::new();
-        let plugin_manager = PluginManager::new();
         let resource_manager = ResourceManager::new();
         let event_queue = EventQueue::new();
         let input_manager = crate::input::InputManager::new();
@@ -80,7 +88,6 @@ impl Engine {
             scene,
             renderer,
             task_system,
-            plugin_manager,
             resource_manager,
             event_queue,
             input_manager,
@@ -93,6 +100,10 @@ impl Engine {
 
     pub fn add_system<S: System + 'static>(&mut self, system: S) {
         self.system_registry.add_system(system);
+    }
+
+    pub fn add_boxed_system(&mut self, system: Box<dyn System>) {
+        self.system_registry.add_boxed_system(system);
     }
 
     fn handle_window_event(&mut self, event: &WindowEvent, elwt: &winit::event_loop::EventLoopWindowTarget<()>) {
@@ -109,7 +120,16 @@ impl Engine {
         F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
     {
         let event_loop = self.event_loop.take().unwrap();
-        self.plugin_manager.init_plugins(&mut self.scene, &mut self.renderer, &mut self.resource_manager);
+
+        {
+            let mut init_ctx = InitContext {
+                scene: &mut self.scene,
+                renderer: &mut self.renderer,
+                resource_manager: &mut self.resource_manager,
+                task_system: &self.task_system,
+            };
+            crate::systems::Scheduler::init(&mut self.system_registry, &mut init_ctx);
+        }
 
         event_loop.run(move |event, elwt| {
             let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene, &mut self.resource_manager, &mut self.renderer, self.current_fps);
@@ -134,6 +154,16 @@ impl Engine {
                 }
                 _ => (),
             }
+
+            if elwt.exiting() {
+                 let mut init_ctx = InitContext {
+                    scene: &mut self.scene,
+                    renderer: &mut self.renderer,
+                    resource_manager: &mut self.resource_manager,
+                    task_system: &self.task_system,
+                };
+                crate::systems::Scheduler::shutdown(&mut self.system_registry, &mut init_ctx);
+            }
         }).expect("Event loop failed");
     }
 
@@ -148,6 +178,7 @@ impl Engine {
                 scene: &mut self.scene,
                 renderer: &mut self.renderer,
                 resource_manager: &mut self.resource_manager,
+                task_system: &self.task_system,
                 delta,
                 event_proxy: crate::systems_events::events::EventProxy {
                     events: &self.event_queue.events,
@@ -156,7 +187,6 @@ impl Engine {
                 input: &self.input_manager,
             };
 
-            self.plugin_manager.update_plugins(&mut ctx);
             crate::systems::Scheduler::run(&mut self.system_registry, &mut ctx);
         }
 

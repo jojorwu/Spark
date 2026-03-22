@@ -1,9 +1,10 @@
 pub mod component;
 
-use crate::{System, FrameContext};
+use crate::{System, FrameContext, InitContext};
+use std::collections::{HashSet, HashMap};
 
 pub struct SystemRegistry {
-    systems: Vec<Box<dyn System>>,
+    pub systems: Vec<Box<dyn System>>,
 }
 
 impl SystemRegistry {
@@ -15,14 +16,54 @@ impl SystemRegistry {
         self.systems.push(Box::new(system));
     }
 
-    pub fn take_systems(&mut self) -> Vec<Box<dyn System>> {
-        std::mem::take(&mut self.systems)
+    pub fn add_boxed_system(&mut self, system: Box<dyn System>) {
+        self.systems.push(system);
     }
 
-    pub fn restore_systems(&mut self, systems: Vec<Box<dyn System>>) {
-        self.systems = systems;
+    pub fn sort_systems(&mut self) {
+        let mut visited = HashSet::new();
+        let mut temp_visited = HashSet::new();
+
+        let name_to_idx: HashMap<String, usize> = self.systems.iter().enumerate()
+            .map(|(i, s)| (s.name().to_string(), i))
+            .collect();
+
+        fn visit(
+            idx: usize,
+            systems: &Vec<Box<dyn System>>,
+            name_to_idx: &HashMap<String, usize>,
+            ordered: &mut Vec<usize>,
+            visited: &mut HashSet<usize>,
+            temp_visited: &mut HashSet<usize>,
+        ) {
+            if temp_visited.contains(&idx) {
+                panic!("Circular dependency detected in systems!");
+            }
+            if !visited.contains(&idx) {
+                temp_visited.insert(idx);
+                for dep in systems[idx].dependencies() {
+                    if let Some(&dep_idx) = name_to_idx.get(dep) {
+                        visit(dep_idx, systems, name_to_idx, ordered, visited, temp_visited);
+                    }
+                }
+                temp_visited.remove(&idx);
+                visited.insert(idx);
+                ordered.push(idx);
+            }
+        }
+
+        let mut indices = Vec::new();
+        for i in 0..self.systems.len() {
+            visit(i, &self.systems, &name_to_idx, &mut indices, &mut visited, &mut temp_visited);
+        }
+
+        let mut old_systems: Vec<Option<Box<dyn System>>> = self.systems.drain(..).map(Some).collect();
+        for idx in indices {
+            self.systems.push(old_systems[idx].take().unwrap());
+        }
     }
 }
+
 
 impl Default for SystemRegistry {
     fn default() -> Self {
@@ -33,17 +74,23 @@ impl Default for SystemRegistry {
 pub struct Scheduler;
 
 impl Scheduler {
+    pub fn init(registry: &mut SystemRegistry, ctx: &mut InitContext) {
+        registry.sort_systems();
+        for system in &mut registry.systems {
+            system.on_init(ctx);
+        }
+    }
+
     pub fn run(registry: &mut SystemRegistry, ctx: &mut FrameContext) {
-        let mut systems = registry.take_systems();
-
-        // For now, let's keep it simple and just run them in registration order
-        // until we have a more robust graph implementation.
-        // The framework is ready for dependencies.
-
-        for system in &mut systems {
+        for system in &mut registry.systems {
             system.update(ctx);
         }
-        registry.restore_systems(systems);
+    }
+
+    pub fn shutdown(registry: &mut SystemRegistry, ctx: &mut InitContext) {
+        for system in &mut registry.systems {
+            system.on_stop(ctx);
+        }
     }
 }
 

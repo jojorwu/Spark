@@ -1216,6 +1216,49 @@ impl Renderer {
         self.render_passes.push(Box::new(pass));
     }
 
+    pub fn sort_render_passes(&mut self) {
+        let mut visited = std::collections::HashSet::new();
+        let mut temp_visited = std::collections::HashSet::new();
+
+        let name_to_idx: std::collections::HashMap<String, usize> = self.render_passes.iter().enumerate()
+            .map(|(i, p)| (p.name().to_string(), i))
+            .collect();
+
+        fn visit(
+            idx: usize,
+            passes: &Vec<Box<dyn crate::passes::RenderPass>>,
+            name_to_idx: &std::collections::HashMap<String, usize>,
+            ordered: &mut Vec<usize>,
+            visited: &mut std::collections::HashSet<usize>,
+            temp_visited: &mut std::collections::HashSet<usize>,
+        ) {
+            if temp_visited.contains(&idx) {
+                panic!("Circular dependency detected in render passes!");
+            }
+            if !visited.contains(&idx) {
+                temp_visited.insert(idx);
+                for dep in passes[idx].dependencies() {
+                    if let Some(&dep_idx) = name_to_idx.get(dep) {
+                        visit(dep_idx, passes, name_to_idx, ordered, visited, temp_visited);
+                    }
+                }
+                temp_visited.remove(&idx);
+                visited.insert(idx);
+                ordered.push(idx);
+            }
+        }
+
+        let mut indices = Vec::new();
+        for i in 0..self.render_passes.len() {
+            visit(i, &self.render_passes, &name_to_idx, &mut indices, &mut visited, &mut temp_visited);
+        }
+
+        let mut old_passes: Vec<Option<Box<dyn crate::passes::RenderPass>>> = self.render_passes.drain(..).map(Some).collect();
+        for idx in indices {
+            self.render_passes.push(old_passes[idx].take().unwrap());
+        }
+    }
+
     /// Calculates the six frustum planes from a view-projection matrix.
     fn calculate_frustum_planes(view_proj: spark_math::Mat4) -> [spark_math::Vec4; 6] {
         let mut frustum = [spark_math::Vec4::ZERO; 6];

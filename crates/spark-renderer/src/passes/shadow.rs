@@ -46,16 +46,8 @@ impl RenderPass for ShadowPass {
     }
 
 
-    fn record_commands(&self, ctx: &RenderContext) {
-        let lvp = ctx.renderer.main_light_view_proj;
-        self.record_commands_impl(
-            &ctx.renderer.device.device,
-            ctx.command_buffer,
-            &[lvp; 4],
-            ctx.renderer,
-            ctx.renderer.last_object_count,
-            false // Not secondary if called this way
-        );
+    fn record_commands(&self, _ctx: &RenderContext) {
+        // Note: record_cascade_commands is called via record_secondary_commands.
     }
 
     fn get_resource_view(&self, name: &str, _frame_index: usize) -> Option<vk::ImageView> {

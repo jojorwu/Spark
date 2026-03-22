@@ -34,6 +34,7 @@ pub struct PostProcessPass {
 
 impl RenderPass for PostProcessPass {
     fn name(&self) -> &str { "PostProcessPass" }
+    fn dependencies(&self) -> Vec<&'static str> { vec!["LightingPass", "TAAPass", "VolumetricPass"] }
 
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let device = &renderer.device.device;

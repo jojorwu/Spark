@@ -1,5 +1,5 @@
 pub mod ffi;
-use spark_core::plugin::Plugin;
+use spark_core::System;
 use libloading::{Library, Symbol};
 use std::rc::Rc;
 use netcorehost::{nethost, hostfxr::Hostfxr, pdcstring::PdCString};
@@ -27,7 +27,7 @@ impl Default for ScriptHost {
 
 impl ScriptHost {
 
-    pub fn load_rust_plugin(&mut self, path: &str) -> Box<dyn Plugin> {
+    pub fn load_rust_plugin(&mut self, path: &str) -> Box<dyn System> {
         log::info!("Loading Rust plugin from: {}", path);
 
         let lib = unsafe { Library::new(path).expect("Failed to load library") };
@@ -35,7 +35,7 @@ impl ScriptHost {
         self.libraries.push(lib.clone());
 
         unsafe {
-            let constructor: Symbol<fn() -> Box<dyn Plugin>> = lib.get(b"create_plugin").expect("Failed to find constructor");
+            let constructor: Symbol<fn() -> Box<dyn System>> = lib.get(b"create_system").expect("Failed to find constructor");
             constructor()
         }
     }

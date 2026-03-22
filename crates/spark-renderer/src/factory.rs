@@ -132,6 +132,7 @@ impl Renderer {
         self.add_render_pass(taa_pass);
         self.add_render_pass(post_process_pass);
 
+        self.sort_render_passes();
         self.update_all_descriptor_sets();
 
         let gbuffer_vert = shaders.gbuffer_vert;

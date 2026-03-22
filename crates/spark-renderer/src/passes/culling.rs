@@ -6,6 +6,7 @@ use crate::Renderer;
 
 impl RenderPass for CullingPass {
     fn name(&self) -> &str { "CullingPass" }
+    fn dependencies(&self) -> Vec<&'static str> { vec!["HiZPass"] }
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
         let current_frame = ctx.current_frame;

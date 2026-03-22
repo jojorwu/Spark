@@ -161,6 +161,7 @@ impl GBufferPass {
 
 impl RenderPass for GBufferPass {
     fn name(&self) -> &str { "GBufferPass" }
+    fn dependencies(&self) -> Vec<&'static str> { vec!["CullingPass"] }
 
     fn record_secondary_commands(&self, ctx: &RenderContext) -> Vec<vk::CommandBuffer> {
         let renderer = ctx.renderer;
@@ -192,7 +193,9 @@ impl RenderPass for GBufferPass {
         let renderer = ctx.renderer;
         let command_buffer = ctx.command_buffer;
         let current_frame = ctx.current_frame;
-        self.record_gbuffer_commands(&renderer.device.device, command_buffer, renderer, current_frame);
+
+        // Note: record_gbuffer_commands is called via record_secondary_commands.
+        // We only add barriers here.
 
         // Barrier: G-Buffer to SHADER_READ_ONLY_OPTIMAL
         let gbuffer_barriers = [
