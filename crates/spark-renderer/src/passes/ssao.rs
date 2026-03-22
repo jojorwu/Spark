@@ -116,7 +116,32 @@ impl RenderPass for SSAOPass {
         }
     }
 
-    fn destroy(&mut self, renderer: &Renderer) {
+    fn on_resize(&mut self, renderer: &mut Renderer, new_extent: vk::Extent2D) {
+        let device = &renderer.device;
+        for img in self.ssao_images.drain(..) {
+            img.destroy(&device.device, &device.allocator);
+        }
+        for img in self.ssao_blur_images.drain(..) {
+            img.destroy(&device.device, &device.allocator);
+        }
+
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            self.ssao_images.push(Attachment::create_image_resource(
+                device, new_extent.width, new_extent.height,
+                vk::Format::R8_UNORM,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                vk::SampleCountFlags::TYPE_1,
+            ).unwrap());
+            self.ssao_blur_images.push(Attachment::create_image_resource(
+                device, new_extent.width, new_extent.height,
+                vk::Format::R8_UNORM,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                vk::SampleCountFlags::TYPE_1,
+            ).unwrap());
+        }
+    }
+
+    fn destroy(&mut self, renderer: &mut Renderer) {
         let device = &renderer.device.device;
         unsafe {
             device.destroy_pipeline(self.ssao_pipeline, None);
@@ -134,12 +159,8 @@ impl RenderPass for SSAOPass {
             for img in self.ssao_blur_images.drain(..) {
                 img.destroy(device, &renderer.device.allocator);
             }
-            renderer.device.device.destroy_sampler(self.noise_texture.sampler, None);
-            renderer.device.device.destroy_image_view(self.noise_texture.view, None);
-            renderer.device.device.destroy_image(self.noise_texture.image, None);
-            if let Some(alloc) = self.noise_texture.allocation.take() {
-                renderer.device.allocator.lock().unwrap().free(alloc).unwrap();
-            }
+            let texture = std::mem::replace(&mut self.noise_texture, renderer.default_texture.as_ref().unwrap().clone());
+            renderer.destroy_texture(texture);
         }
     }
 }
@@ -226,16 +247,6 @@ impl SSAOPass {
                     .set_layouts(&[blur_ds_layout; MAX_FRAMES_IN_FLIGHT]),
             )?
         };
-
-        let mut ssao_params_buffer = Vec::new();
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            let buffer = renderer.create_buffer(
-                std::mem::size_of::<SSAOParamsStruct>() as u64,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            );
-            ssao_params_buffer.push(buffer);
-        }
 
         let mut ssao_images = Vec::new();
         let mut ssao_blur_images = Vec::new();

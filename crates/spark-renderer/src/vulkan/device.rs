@@ -25,7 +25,7 @@ pub struct VulkanDevice {
     pub depth_format: vk::Format,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub command_pool: vk::CommandPool,
-    pub thread_command_pools: Vec<vk::CommandPool>,
+    pub thread_command_pools: Vec<[vk::CommandPool; crate::MAX_FRAMES_IN_FLIGHT]>,
     pub allocator: Arc<Mutex<Allocator>>,
 }
 
@@ -96,15 +96,18 @@ impl VulkanDevice {
         let mut thread_command_pools = Vec::new();
         let thread_count = num_cpus::get();
         for _ in 0..thread_count {
-            let pool = unsafe {
-                device.create_command_pool(
-                    &vk::CommandPoolCreateInfo::default()
-                        .queue_family_index(graphics_family)
-                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
-                    None,
-                )?
-            };
-            thread_command_pools.push(pool);
+            let mut pools = [vk::CommandPool::null(); crate::MAX_FRAMES_IN_FLIGHT];
+            for p in pools.iter_mut() {
+                *p = unsafe {
+                    device.create_command_pool(
+                        &vk::CommandPoolCreateInfo::default()
+                            .queue_family_index(graphics_family)
+                            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                        None,
+                    )?
+                };
+            }
+            thread_command_pools.push(pools);
         }
 
         let allocator = Allocator::new(&AllocatorCreateDesc {
@@ -475,8 +478,10 @@ impl VulkanDevice {
 impl Drop for VulkanDevice {
     fn drop(&mut self) {
         unsafe {
-            for pool in self.thread_command_pools.drain(..) {
-                self.device.destroy_command_pool(pool, None);
+            for pools in self.thread_command_pools.drain(..) {
+                for pool in pools {
+                    self.device.destroy_command_pool(pool, None);
+                }
             }
             self.device.destroy_command_pool(self.command_pool, None);
             // Allocator must be dropped before Device

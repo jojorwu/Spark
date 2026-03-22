@@ -74,7 +74,7 @@ impl RenderPass for ParticlePass {
         }
     }
 
-    fn destroy(&mut self, renderer: &Renderer) {
+    fn destroy(&mut self, renderer: &mut Renderer) {
         let device = &renderer.device.device;
         unsafe {
             device.destroy_pipeline(self.compute_pipeline, None);

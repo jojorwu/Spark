@@ -12,16 +12,20 @@ impl ShaderCompiler {
         Self { compiler: shaderc::Compiler::new().unwrap() }
     }
 
-    fn compile(&self, path: &str, kind: shaderc::ShaderKind) -> Vec<u32> {
-        let code = fs::read_to_string(path).unwrap_or_else(|_| panic!("Failed to read shader: {}", path));
+    fn compile(&self, path: &str, kind: shaderc::ShaderKind) -> Result<Vec<u32>, String> {
+        let code = fs::read_to_string(path).map_err(|e| format!("Failed to read shader {}: {}", path, e))?;
         let name = std::path::Path::new(path).file_name().unwrap().to_str().unwrap();
-        self.compiler.compile_into_spirv(&code, kind, name, "main", None).unwrap().as_binary().to_vec()
+        self.compiler.compile_into_spirv(&code, kind, name, "main", None)
+            .map(|artifact| artifact.as_binary().to_vec())
+            .map_err(|e| format!("Shader compilation error in {}: {}", path, e))
     }
 
-    fn compile_with_options(&self, path: &str, kind: shaderc::ShaderKind, options: &shaderc::CompileOptions) -> Vec<u32> {
-        let code = fs::read_to_string(path).unwrap_or_else(|_| panic!("Failed to read shader: {}", path));
+    fn compile_with_options(&self, path: &str, kind: shaderc::ShaderKind, options: &shaderc::CompileOptions) -> Result<Vec<u32>, String> {
+        let code = fs::read_to_string(path).map_err(|e| format!("Failed to read shader {}: {}", path, e))?;
         let name = std::path::Path::new(path).file_name().unwrap().to_str().unwrap();
-        self.compiler.compile_into_spirv(&code, kind, name, "main", Some(options)).unwrap().as_binary().to_vec()
+        self.compiler.compile_into_spirv(&code, kind, name, "main", Some(options))
+            .map(|artifact| artifact.as_binary().to_vec())
+            .map_err(|e| format!("Shader compilation error in {}: {}", path, e))
     }
 }
 use spark_script::ScriptHost;
@@ -34,8 +38,8 @@ fn main() {
 
     let compiler = ShaderCompiler::new();
 
-    let ui_vert_spirv = compiler.compile("assets/shaders/ui.vert", shaderc::ShaderKind::Vertex);
-    let ui_frag_spirv = compiler.compile("assets/shaders/ui.frag", shaderc::ShaderKind::Fragment);
+    let ui_vert_spirv = compiler.compile("assets/shaders/ui.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile UI vertex shader");
+    let ui_frag_spirv = compiler.compile("assets/shaders/ui.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile UI fragment shader");
 
     let mut engine = Engine::new(
         "Spark Engine Editor",
@@ -60,33 +64,33 @@ fn main() {
     def_options.add_macro_definition("MSAA_SAMPLES", Some(&msaa_count.to_string()));
 
     let shaders = spark_renderer::factory::PassShaders {
-        culling: compiler.compile("assets/shaders/culling.comp", shaderc::ShaderKind::Compute),
-        hiz: compiler.compile("assets/shaders/hiz.comp", shaderc::ShaderKind::Compute),
-        cluster_build: compiler.compile("assets/shaders/cluster_build.comp", shaderc::ShaderKind::Compute),
-        cluster_cull: compiler.compile("assets/shaders/cluster_cull.comp", shaderc::ShaderKind::Compute),
-        shadow_vert: compiler.compile("assets/shaders/shadow.vert", shaderc::ShaderKind::Vertex),
-        shadow_frag: compiler.compile("assets/shaders/shadow.frag", shaderc::ShaderKind::Fragment),
-        gbuffer_vert: compiler.compile("assets/shaders/gbuffer.vert", shaderc::ShaderKind::Vertex),
-        gbuffer_frag: compiler.compile("assets/shaders/gbuffer.frag", shaderc::ShaderKind::Fragment),
-        ssao_vert: compiler.compile("assets/shaders/ssao.vert", shaderc::ShaderKind::Vertex),
-        ssao_frag: compiler.compile("assets/shaders/ssao.frag", shaderc::ShaderKind::Fragment),
-        ssao_blur_frag: compiler.compile("assets/shaders/ssao_blur.frag", shaderc::ShaderKind::Fragment),
-        deferred_vert: compiler.compile("assets/shaders/deferred.vert", shaderc::ShaderKind::Vertex),
-        deferred_frag: compiler.compile_with_options("assets/shaders/deferred.frag", shaderc::ShaderKind::Fragment, &def_options),
-        grid_vert: compiler.compile("assets/shaders/grid.vert", shaderc::ShaderKind::Vertex),
-        grid_frag: compiler.compile("assets/shaders/grid.frag", shaderc::ShaderKind::Fragment),
-        volumetric: compiler.compile("assets/shaders/volumetric.comp", shaderc::ShaderKind::Compute),
-        taa_vert: compiler.compile("assets/shaders/taa.vert", shaderc::ShaderKind::Vertex),
-        taa_frag: compiler.compile("assets/shaders/taa.frag", shaderc::ShaderKind::Fragment),
-        fullscreen_vert: compiler.compile("assets/shaders/fullscreen.vert", shaderc::ShaderKind::Vertex),
-        tonemap_frag: compiler.compile("assets/shaders/tonemap_bloom.frag", shaderc::ShaderKind::Fragment),
-        bloom_downsample: compiler.compile("assets/shaders/bloom_downsample.frag", shaderc::ShaderKind::Fragment),
-        bloom_upsample: compiler.compile("assets/shaders/bloom_upsample.frag", shaderc::ShaderKind::Fragment),
-        forward_vert: compiler.compile("assets/shaders/forward.vert", shaderc::ShaderKind::Vertex),
-        forward_frag: compiler.compile("assets/shaders/forward.frag", shaderc::ShaderKind::Fragment),
-        particle_comp: compiler.compile("assets/shaders/particle.comp", shaderc::ShaderKind::Compute),
-        particle_vert: compiler.compile("assets/shaders/particle.vert", shaderc::ShaderKind::Vertex),
-        particle_frag: compiler.compile("assets/shaders/particle.frag", shaderc::ShaderKind::Fragment),
+        culling: compiler.compile("assets/shaders/culling.comp", shaderc::ShaderKind::Compute).expect("Failed to compile culling.comp"),
+        hiz: compiler.compile("assets/shaders/hiz.comp", shaderc::ShaderKind::Compute).expect("Failed to compile hiz.comp"),
+        cluster_build: compiler.compile("assets/shaders/cluster_build.comp", shaderc::ShaderKind::Compute).expect("Failed to compile cluster_build.comp"),
+        cluster_cull: compiler.compile("assets/shaders/cluster_cull.comp", shaderc::ShaderKind::Compute).expect("Failed to compile cluster_cull.comp"),
+        shadow_vert: compiler.compile("assets/shaders/shadow.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile shadow.vert"),
+        shadow_frag: compiler.compile("assets/shaders/shadow.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile shadow.frag"),
+        gbuffer_vert: compiler.compile("assets/shaders/gbuffer.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile gbuffer.vert"),
+        gbuffer_frag: compiler.compile("assets/shaders/gbuffer.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile gbuffer.frag"),
+        ssao_vert: compiler.compile("assets/shaders/ssao.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile ssao.vert"),
+        ssao_frag: compiler.compile("assets/shaders/ssao.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile ssao.frag"),
+        ssao_blur_frag: compiler.compile("assets/shaders/ssao_blur.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile ssao_blur.frag"),
+        deferred_vert: compiler.compile("assets/shaders/deferred.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile deferred.vert"),
+        deferred_frag: compiler.compile_with_options("assets/shaders/deferred.frag", shaderc::ShaderKind::Fragment, &def_options).expect("Failed to compile deferred.frag"),
+        grid_vert: compiler.compile("assets/shaders/grid.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile grid.vert"),
+        grid_frag: compiler.compile("assets/shaders/grid.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile grid.frag"),
+        volumetric: compiler.compile("assets/shaders/volumetric.comp", shaderc::ShaderKind::Compute).expect("Failed to compile volumetric.comp"),
+        taa_vert: compiler.compile("assets/shaders/taa.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile taa.vert"),
+        taa_frag: compiler.compile("assets/shaders/taa.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile taa.frag"),
+        fullscreen_vert: compiler.compile("assets/shaders/fullscreen.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile fullscreen.vert"),
+        tonemap_frag: compiler.compile("assets/shaders/tonemap_bloom.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile tonemap_bloom.frag"),
+        bloom_downsample: compiler.compile("assets/shaders/bloom_downsample.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile bloom_downsample.frag"),
+        bloom_upsample: compiler.compile("assets/shaders/bloom_upsample.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile bloom_upsample.frag"),
+        forward_vert: compiler.compile("assets/shaders/forward.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile forward.vert"),
+        forward_frag: compiler.compile("assets/shaders/forward.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile forward.frag"),
+        particle_comp: compiler.compile("assets/shaders/particle.comp", shaderc::ShaderKind::Compute).expect("Failed to compile particle.comp"),
+        particle_vert: compiler.compile("assets/shaders/particle.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile particle.vert"),
+        particle_frag: compiler.compile("assets/shaders/particle.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile particle.frag"),
     };
 
     engine.renderer.setup_default_passes(shaders).expect("Failed to setup render passes");

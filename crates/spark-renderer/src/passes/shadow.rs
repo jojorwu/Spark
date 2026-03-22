@@ -66,7 +66,7 @@ impl RenderPass for ShadowPass {
         }
     }
 
-    fn destroy(&mut self, renderer: &Renderer) {
+    fn destroy(&mut self, renderer: &mut Renderer) {
         unsafe {
             let device = &renderer.device.device;
             for i in 0..SHADOW_CASCADE_COUNT {

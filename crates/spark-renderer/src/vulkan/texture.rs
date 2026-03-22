@@ -8,3 +8,16 @@ pub struct Texture {
     pub mip_levels: u32,
     pub bindless_index: u32,
 }
+
+impl Clone for Texture {
+    fn clone(&self) -> Self {
+        Self {
+            image: self.image,
+            allocation: None, // Allocations cannot be trivially cloned
+            view: self.view,
+            sampler: self.sampler,
+            mip_levels: self.mip_levels,
+            bindless_index: self.bindless_index,
+        }
+    }
+}

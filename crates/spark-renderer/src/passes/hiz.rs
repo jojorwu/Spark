@@ -44,7 +44,60 @@ impl RenderPass for HiZPass {
         }
     }
 
-    fn destroy(&mut self, renderer: &Renderer) {
+    fn on_resize(&mut self, renderer: &mut Renderer, new_extent: vk::Extent2D) {
+        let device = &renderer.device;
+
+        // Destroy old
+        unsafe {
+            for view in &self.mip_views {
+                device.device.destroy_image_view(*view, None);
+            }
+            device.device.destroy_image_view(self.pyramid_view, None);
+            device.device.destroy_image(self.pyramid_image, None);
+            if let Some(alloc) = self.pyramid_allocation.lock().unwrap().take() {
+                device.allocator.lock().unwrap().free(alloc).unwrap();
+            }
+        }
+
+        self.width = new_extent.width;
+        self.height = new_extent.height;
+        self.mip_levels = (self.width.max(self.height) as f32).log2().floor() as u32 + 1;
+
+        let (image, allocation) = device.create_image(
+            &crate::vulkan::device::ImageCreateParams {
+                width: self.width,
+                height: self.height,
+                mip_levels: self.mip_levels,
+                format: vk::Format::R32_SFLOAT,
+                tiling: vk::ImageTiling::OPTIMAL,
+                usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
+                properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                samples: vk::SampleCountFlags::TYPE_1,
+            }
+        ).unwrap();
+
+        self.pyramid_image = image;
+        *self.pyramid_allocation.lock().unwrap() = Some(allocation);
+        self.pyramid_view = device.create_image_view(image, vk::Format::R32_SFLOAT, self.mip_levels);
+
+        self.mip_views.clear();
+        for i in 0..self.mip_levels {
+            let view_info = vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::R32_SFLOAT)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: i,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+            self.mip_views.push(unsafe { device.device.create_image_view(&view_info, None).unwrap() });
+        }
+    }
+
+    fn destroy(&mut self, renderer: &mut Renderer) {
         unsafe {
             let device = &renderer.device.device;
             for view in &self.mip_views {

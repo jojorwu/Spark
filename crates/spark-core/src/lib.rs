@@ -120,7 +120,7 @@ impl Engine {
                     self.current_fps = 0.9 * self.current_fps + 0.1 * (1.0 / delta.max(0.001));
 
                     self.update_phase(delta);
-                    self.render_phase(egui_output);
+                    self.render_phase(egui_output, delta);
 
                     self.event_queue.clear();
                 }
@@ -157,7 +157,7 @@ impl Engine {
         self.system_events = system_events;
     }
 
-    fn render_phase(&mut self, egui_output: Option<(egui::FullOutput, egui::Context)>) {
+    fn render_phase(&mut self, egui_output: Option<(egui::FullOutput, egui::Context)>, delta: f32) {
         // Collect visibility and light data
         let packet = self.scene.collect_frame_packet(None, &self.resource_manager);
         let total_objects = self.renderer.prepare_frame(packet);
@@ -166,7 +166,8 @@ impl Engine {
         self.renderer.draw_frame(
             &self.window,
             egui_output,
-            total_objects
+            total_objects,
+            delta
         );
 
         self.renderer.clear_instance_buffers();

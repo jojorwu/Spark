@@ -112,7 +112,7 @@ impl RenderPass for ForwardPass {
         }
     }
 
-    fn destroy(&mut self, renderer: &Renderer) {
+    fn destroy(&mut self, renderer: &mut Renderer) {
         unsafe {
             renderer.device.device.destroy_pipeline(self.pipeline.unwrap(), None);
             renderer.device.device.destroy_pipeline_layout(self.layout, None);

@@ -49,7 +49,7 @@ impl RenderPass for VolumetricPass {
         }
     }
 
-    fn destroy(&mut self, renderer: &Renderer) {
+    fn destroy(&mut self, renderer: &mut Renderer) {
         let device = &renderer.device.device;
         unsafe {
             for a in self.output_images.drain(..) { a.destroy(device, &renderer.device.allocator); }

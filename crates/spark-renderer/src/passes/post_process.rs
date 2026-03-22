@@ -282,7 +282,27 @@ impl RenderPass for PostProcessPass {
         }
     }
 
-    fn destroy(&mut self, renderer: &Renderer) {
+    fn on_resize(&mut self, renderer: &mut Renderer, new_extent: vk::Extent2D) {
+        let device = &renderer.device;
+        for mip in self.bloom_mips.drain(..) {
+            mip.destroy(&device.device, &device.allocator);
+        }
+
+        let num_bloom_mips = 6;
+        for i in 1..=num_bloom_mips {
+            let att = Attachment::create_image_resource(
+                device,
+                (new_extent.width >> i).max(1),
+                (new_extent.height >> i).max(1),
+                vk::Format::R16G16B16A16_SFLOAT,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                vk::SampleCountFlags::TYPE_1,
+            ).unwrap();
+            self.bloom_mips.push(att);
+        }
+    }
+
+    fn destroy(&mut self, renderer: &mut Renderer) {
         unsafe {
             let device = &renderer.device.device;
             if let Some(p) = self.pipeline { device.destroy_pipeline(p, None); }
@@ -346,13 +366,13 @@ impl PostProcessPass {
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count((MAX_FRAMES_IN_FLIGHT as u32 * 3) + num_bloom_mips as u32),
+                .descriptor_count((MAX_FRAMES_IN_FLIGHT as u32 * 3) + (num_bloom_mips as u32 * MAX_FRAMES_IN_FLIGHT as u32)),
         ];
         let descriptor_pool = unsafe {
             device.create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
                     .pool_sizes(&pool_sizes)
-                    .max_sets(MAX_FRAMES_IN_FLIGHT as u32 + num_bloom_mips as u32),
+                    .max_sets(MAX_FRAMES_IN_FLIGHT as u32 + (num_bloom_mips as u32 * MAX_FRAMES_IN_FLIGHT as u32)),
                 None,
             )?
         };

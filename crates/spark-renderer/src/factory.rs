@@ -95,7 +95,7 @@ impl Renderer {
         let volumetric_pass = crate::passes::volumetric::VolumetricPass::new(self, &shaders.volumetric)?;
 
         let mut post_process_pass = crate::passes::post_process::PostProcessPass::new(
-            self, vk::Format::B8G8R8A8_UNORM, extent
+            self, self.swapchain.format, extent
         ).map_err(|_| RendererError::NoSuitableDevice)?;
 
         let forward_pass = crate::passes::forward::ForwardPass::new(

@@ -20,6 +20,7 @@ pub struct RenderContext<'a> {
     pub command_buffer: vk::CommandBuffer,
     pub current_frame: usize,
     pub image_index: u32,
+    pub delta: f32,
 }
 
 /// A trait representing a modular rendering pass.
@@ -57,6 +58,9 @@ pub trait RenderPass: Send + Sync {
         None
     }
 
+    /// Notifies the pass that the viewport or swapchain has been resized.
+    fn on_resize(&mut self, _renderer: &mut Renderer, _new_extent: vk::Extent2D) {}
+
     /// Cleans up resources managed by this pass.
-    fn destroy(&mut self, _renderer: &Renderer) {}
+    fn destroy(&mut self, _renderer: &mut Renderer) {}
 }

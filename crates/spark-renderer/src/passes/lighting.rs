@@ -430,7 +430,7 @@ impl RenderPass for LightingPass {
         }
     }
 
-    fn destroy(&mut self, renderer: &Renderer) {
+    fn destroy(&mut self, renderer: &mut Renderer) {
         unsafe {
             let device = &renderer.device.device;
             if let Some(p) = self.pipeline {

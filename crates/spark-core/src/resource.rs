@@ -377,7 +377,6 @@ impl GltfLoader {
                 };
                 components.push(Box::new(mesh_comp) as Box<dyn Component>);
                 rm.needs_upload = true;
-                break;
             }
         }
 

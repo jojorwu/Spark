@@ -71,6 +71,7 @@ pub struct Renderer {
     pub last_transparent_count: u32,
     pub current_image_index: u32,
     pub pass_descriptor_versions: Vec<std::collections::HashMap<String, u64>>,
+    pub dummy_buffer: Buffer,
 }
 
 #[repr(C)]
@@ -128,6 +129,11 @@ impl Renderer {
         };
 
         let (av, fi, in_f) = Self::create_sync_objects_impl(&device.device);
+        let dummy_buffer = device.create_buffer(
+            64,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        ).map_err(|_| RendererError::NoSuitableDevice)?;
         let pipeline_cache = unsafe {
             device.device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)?
         };
@@ -208,11 +214,12 @@ impl Renderer {
             )? [0]
         };
 
+        let global_layouts = vec![global_descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         let global_descriptor_sets = unsafe {
             device.device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(descriptor_pool)
-                    .set_layouts(&[global_descriptor_set_layout, global_descriptor_set_layout]),
+                    .set_layouts(&global_layouts),
             )?
         };
 
@@ -256,7 +263,7 @@ impl Renderer {
             )
         });
 
-        Ok(Self {
+        let mut renderer = Self {
             context,
             device,
             swapchain,
@@ -304,7 +311,14 @@ impl Renderer {
             last_transparent_count: 0,
             current_image_index: 0,
             pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::collections::HashMap::new()).collect(),
-        })
+            dummy_buffer,
+        };
+
+        renderer.init_default_resources();
+        renderer.common_shadow_view = renderer.default_texture.as_ref().unwrap().view;
+        renderer.hiz_view = renderer.default_texture.as_ref().unwrap().view;
+
+        Ok(renderer)
     }
 
     pub fn set_global_buffers(&mut self, vertex: Buffer, index: Buffer) {
@@ -689,6 +703,7 @@ impl Renderer {
         window: &Window,
         egui_output: Option<(egui::FullOutput, egui::Context)>,
         _object_count: u32,
+        delta: f32,
     ) {
         // Retrieve view_proj and light_view_proj from the current frame's global buffer
         // For simplicity, we'll keep them as parameters or fetch from UBO.
@@ -733,14 +748,15 @@ impl Renderer {
                 )
                 .expect("Failed to reset command buffer");
 
-            // Clean up secondary command buffers from previous frame
-            let thread_pools = self.device.thread_command_pools.clone();
-            for pool in thread_pools {
+            // Clean up secondary command buffers for the current frame
+            for pools in &self.device.thread_command_pools {
+                let pool = pools[self.current_frame];
                 self.device.device.reset_command_pool(pool, vk::CommandPoolResetFlags::empty()).unwrap();
             }
             self.record_command_buffer(
                 image_index,
                 egui_output,
+                delta,
             );
             let s_available = [image_available];
             let s_finished = [render_finished];
@@ -794,6 +810,7 @@ impl Renderer {
         &mut self,
         image_index: u32,
         egui_output: Option<(egui::FullOutput, egui::Context)>,
+        delta: f32,
     ) {
         use rayon::prelude::*;
         let command_buffer = self.frames[self.current_frame].command_buffer;
@@ -807,26 +824,24 @@ impl Renderer {
 
             use crate::passes::RenderContext;
 
-            // Record passes sequentially for now to avoid complex borrowing/Vulkan state issues
-            // while maintaining the modular architecture.
             let ctx = RenderContext {
                 renderer: self,
                 command_buffer,
                 current_frame: cf,
                 image_index,
+                delta,
             };
 
-            let pass_commands: Vec<Vec<vk::CommandBuffer>> = self.render_passes.par_iter().map(|pass| {
+            // 1. Record secondary command buffers in parallel
+            let pass_secondary_commands: Vec<Vec<vk::CommandBuffer>> = self.render_passes.par_iter().map(|pass| {
                 pass.record_secondary_commands(&ctx)
             }).collect();
 
-            for pass_cbs in pass_commands {
-                if !pass_cbs.is_empty() {
-                    self.device.device.cmd_execute_commands(command_buffer, &pass_cbs);
+            // 2. Execute commands sequentially to preserve pass dependencies
+            for (i, pass) in self.render_passes.iter().enumerate() {
+                if !pass_secondary_commands[i].is_empty() {
+                    self.device.device.cmd_execute_commands(command_buffer, &pass_secondary_commands[i]);
                 }
-            }
-
-            for pass in &self.render_passes {
                 pass.record_commands(&ctx);
             }
 
@@ -873,12 +888,24 @@ impl Renderer {
                 window.inner_size().width,
                 window.inner_size().height,
             )?;
+            let extent = self.swapchain.extent;
             self.gbuffer.recreate(
                 &self.device,
-                self.swapchain.extent,
+                extent,
                 self.device.msaa_samples,
                 self.device.depth_format,
             )?;
+
+            if self.viewport_attachment.is_some() {
+                self.create_viewport_attachment(extent.width, extent.height);
+            }
+
+            let mut render_passes = std::mem::take(&mut self.render_passes);
+            for pass in &mut render_passes {
+                pass.on_resize(self, extent);
+            }
+            self.render_passes = render_passes;
+
             self.update_all_descriptor_sets();
         }
         Ok(())
@@ -953,6 +980,9 @@ impl Renderer {
         self.destroy_buffer(st);
 
         let bindless_index = self.next_bindless_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if bindless_index >= 10000 {
+            panic!("Exceeded maximum bindless texture count (10000)");
+        }
 
         let img_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -1337,7 +1367,8 @@ impl Renderer {
 
     pub fn get_thread_command_pool(&self) -> vk::CommandPool {
         let thread_idx = rayon::current_thread_index().unwrap_or(0);
-        self.device.thread_command_pools[thread_idx % self.device.thread_command_pools.len()]
+        let pools = &self.device.thread_command_pools[thread_idx % self.device.thread_command_pools.len()];
+        pools[self.current_frame]
     }
 
     pub fn allocate_secondary_command_buffer(&self) -> vk::CommandBuffer {
