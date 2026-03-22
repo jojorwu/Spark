@@ -70,7 +70,7 @@ pub struct Renderer {
     pub last_object_count: u32,
     pub last_transparent_count: u32,
     pub current_image_index: u32,
-    pub pass_descriptor_versions: Vec<std::collections::HashMap<String, u64>>,
+    pub pass_descriptor_versions: Vec<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
     pub dummy_buffer: Buffer,
 }
 
@@ -310,7 +310,7 @@ impl Renderer {
             last_object_count: 0,
             last_transparent_count: 0,
             current_image_index: 0,
-            pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::collections::HashMap::new()).collect(),
+            pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).collect(),
             dummy_buffer,
         };
 
@@ -399,7 +399,6 @@ impl Renderer {
     }
 
     pub fn update_pass_descriptors_if_needed(&mut self, current_frame: usize) {
-        // Collect passes that need update to avoid borrow issues during iteration
         let mut passes_to_update = Vec::new();
         for (i, pass) in self.render_passes.iter().enumerate() {
             if pass.needs_descriptor_update(self, current_frame) {
@@ -408,7 +407,12 @@ impl Renderer {
         }
 
         for idx in passes_to_update {
+            let pass_name = self.render_passes[idx].name().to_string();
             self.render_passes[idx].update_descriptor_sets(self);
+
+            // Note: This logic assumes that if update_descriptor_sets is called,
+            // the pass is now up-to-date with whatever resource it tracked in needs_descriptor_update.
+            self.pass_descriptor_versions[current_frame].lock().unwrap().insert(pass_name, 1);
         }
     }
 

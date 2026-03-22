@@ -69,14 +69,16 @@ void main() {
     if (idx >= objects.length()) return;
 
     ObjectData obj = objects[idx];
-    mat4 model = mat4(
-        vec4(obj.modelRow0.x, obj.modelRow1.x, obj.modelRow2.x, 0.0),
-        vec4(obj.modelRow0.y, obj.modelRow1.y, obj.modelRow2.y, 0.0),
-        vec4(obj.modelRow0.z, obj.modelRow1.z, obj.modelRow2.z, 0.0),
-        vec4(obj.modelRow0.w, obj.modelRow1.w, obj.modelRow2.w, 1.0)
-    );
-    vec3 center = (model * vec4(obj.sphere.xyz, 1.0)).xyz;
-    float radius = obj.sphere.w; // Simplified scaling
+
+    // Efficiently transform sphere center from rows
+    vec3 center;
+    center.x = dot(obj.modelRow0, vec4(obj.sphere.xyz, 1.0));
+    center.y = dot(obj.modelRow1, vec4(obj.sphere.xyz, 1.0));
+    center.z = dot(obj.modelRow2, vec4(obj.sphere.xyz, 1.0));
+
+    // Calculate max scale to conservatively scale the radius
+    float maxScale = max(length(obj.modelRow0.xyz), max(length(obj.modelRow1.xyz), length(obj.modelRow2.xyz)));
+    float radius = obj.sphere.w * maxScale;
 
     if (sphereInFrustum(center, radius)) {
         // Occlusion Culling

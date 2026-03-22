@@ -74,19 +74,24 @@ void main() {
     VertexBufferRef vertexBuffer = VertexBufferRef(push.vertexBufferAddress);
 
     uint objIdx = gl_InstanceIndex;
-    mat4 model = mat4(
-        vec4(objectBuffer.objects[objIdx].modelRow0.x, objectBuffer.objects[objIdx].modelRow1.x, objectBuffer.objects[objIdx].modelRow2.x, 0.0),
-        vec4(objectBuffer.objects[objIdx].modelRow0.y, objectBuffer.objects[objIdx].modelRow1.y, objectBuffer.objects[objIdx].modelRow2.y, 0.0),
-        vec4(objectBuffer.objects[objIdx].modelRow0.z, objectBuffer.objects[objIdx].modelRow1.z, objectBuffer.objects[objIdx].modelRow2.z, 0.0),
-        vec4(objectBuffer.objects[objIdx].modelRow0.w, objectBuffer.objects[objIdx].modelRow1.w, objectBuffer.objects[objIdx].modelRow2.w, 1.0)
-    );
+    ObjectData obj = objectBuffer.objects[objIdx];
 
     Vertex v = vertexBuffer.vertices[gl_VertexIndex];
     vec3 pos = vec3(v.pos[0], v.pos[1], v.pos[2]);
 
-    vec4 worldPos = model * vec4(pos, 1.0);
+    vec4 worldPos;
+    worldPos.x = dot(obj.modelRow0, vec4(pos, 1.0));
+    worldPos.y = dot(obj.modelRow1, vec4(pos, 1.0));
+    worldPos.z = dot(obj.modelRow2, vec4(pos, 1.0));
+    worldPos.w = 1.0;
     outWorldPos = worldPos.xyz;
-    outNormal = mat3(model) * unpackNormal(v.normal);
+
+    vec3 localNormal = unpackNormal(v.normal);
+    outNormal.x = dot(obj.modelRow0.xyz, localNormal);
+    outNormal.y = dot(obj.modelRow1.xyz, localNormal);
+    outNormal.z = dot(obj.modelRow2.xyz, localNormal);
+    outNormal = normalize(outNormal);
+
     outTexCoord = unpackTexCoord(v.texCoord);
     outColor = unpackColor(v.color);
     outMaterialIndex = objectBuffer.objects[objIdx].materialIndex;

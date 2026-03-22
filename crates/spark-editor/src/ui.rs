@@ -134,7 +134,7 @@ impl EditorUI {
 
     pub fn draw_ui(&mut self, scene: &mut Scene, resource_manager: &mut spark_core::resource::ResourceManager, renderer: &mut spark_renderer::Renderer, fps: f32) {
         self.draw_menu_bar(scene, resource_manager, renderer);
-        self.draw_bottom_panel(renderer, fps);
+        self.draw_bottom_panel(scene, resource_manager, renderer, fps);
         self.draw_hierarchy_panel(scene);
         self.draw_inspector_panel(scene, renderer);
 
@@ -259,7 +259,7 @@ impl EditorUI {
         });
     }
 
-    fn draw_bottom_panel(&mut self, renderer: &mut spark_renderer::Renderer, fps: f32) {
+    fn draw_bottom_panel(&mut self, scene: &mut Scene, resource_manager: &mut spark_core::resource::ResourceManager, renderer: &mut spark_renderer::Renderer, fps: f32) {
         let ctx = self.egui_ctx.clone();
         egui::TopBottomPanel::bottom("bottom_panel").show(&ctx, |ui| {
             ui.horizontal(|ui| {

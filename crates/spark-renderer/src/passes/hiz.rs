@@ -21,6 +21,27 @@ use crate::Renderer;
 
 impl RenderPass for HiZPass {
     fn name(&self) -> &str { "HiZPass" }
+
+    fn needs_descriptor_update(&self, renderer: &Renderer, frame_index: usize) -> bool {
+        let prev_frame = (frame_index + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT;
+        let depth_version = renderer.gbuffer.depth[prev_frame].version.load(std::sync::atomic::Ordering::Relaxed);
+
+        let pass_versions = renderer.pass_descriptor_versions[frame_index].lock().unwrap();
+        if let Some(&v) = pass_versions.get(self.name()) {
+            return v != depth_version;
+        }
+        true
+    }
+
+    fn update_descriptor_sets(&self, _renderer: &Renderer) {
+        // The descriptor sets are updated dynamically in record_commands_impl
+        // because each mip level needs a different source/destination.
+        // We update the pass version to match the current depth version.
+        // This is a bit of a hack since HiZPass doesn't use the standard update_descriptor_sets,
+        // but it satisfies the versioning system.
+        // Actually, we'll leave it to true in record_commands to be safe,
+        // but we can track the depth version there.
+    }
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
         let command_buffer = ctx.command_buffer;
@@ -28,7 +49,7 @@ impl RenderPass for HiZPass {
 
         let prev_frame = (current_frame + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT;
         self.record_commands_impl(
-            &renderer.device.device,
+            renderer,
             command_buffer,
             renderer.gbuffer.depth[prev_frame].view,
             renderer.common_sampler,
@@ -244,12 +265,13 @@ impl HiZPass {
 
     pub fn record_commands_impl(
         &self,
-        device: &ash::Device,
+        renderer: &Renderer,
         command_buffer: vk::CommandBuffer,
         depth_view: vk::ImageView,
         sampler: vk::Sampler,
         frame_index: usize,
     ) {
+        let device = &renderer.device.device;
         unsafe {
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, self.pipeline);
 
@@ -286,6 +308,10 @@ impl HiZPass {
                 ];
 
                 device.update_descriptor_sets(&writes, &[]);
+
+                // Track depth version
+                let depth_version = renderer.gbuffer.depth[(frame_index + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT].version.load(std::sync::atomic::Ordering::Relaxed);
+                renderer.pass_descriptor_versions[frame_index].lock().unwrap().insert(self.name().to_string(), depth_version);
 
                 device.cmd_bind_descriptor_sets(
                     command_buffer,
