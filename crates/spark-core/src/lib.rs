@@ -35,6 +35,7 @@ pub struct FrameContext<'a> {
 pub trait System: Send + Sync {
     fn name(&self) -> &str;
     fn update(&mut self, ctx: &mut FrameContext);
+    fn dependencies(&self) -> Vec<&'static str> { Vec::new() }
 }
 
 pub struct Engine {

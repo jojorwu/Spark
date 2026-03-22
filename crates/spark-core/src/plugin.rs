@@ -11,6 +11,12 @@ pub struct InitContext<'a> {
 }
 
 pub trait Plugin: Send + Sync {
+    /// Returns the name of the plugin.
+    fn name(&self) -> &str;
+
+    /// Returns the version of the plugin.
+    fn version(&self) -> &str { "0.1.0" }
+
     /// Called when the plugin is loaded and initialized.
     fn on_init(&mut self, ctx: &mut InitContext);
 

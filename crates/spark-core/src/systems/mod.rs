@@ -35,6 +35,11 @@ pub struct Scheduler;
 impl Scheduler {
     pub fn run(registry: &mut SystemRegistry, ctx: &mut FrameContext) {
         let mut systems = registry.take_systems();
+
+        // For now, let's keep it simple and just run them in registration order
+        // until we have a more robust graph implementation.
+        // The framework is ready for dependencies.
+
         for system in &mut systems {
             system.update(ctx);
         }
@@ -46,6 +51,7 @@ pub struct HierarchySystem;
 
 impl System for HierarchySystem {
     fn name(&self) -> &str { "HierarchySystem" }
+    fn dependencies(&self) -> Vec<&'static str> { vec!["ComponentSystem"] }
     fn update(&mut self, ctx: &mut FrameContext) {
         ctx.scene.update_all_transforms();
     }
