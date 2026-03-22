@@ -4,6 +4,7 @@ use crate::scene::NodeKey;
 pub struct ComponentSystem;
 
 impl System for ComponentSystem {
+    fn name(&self) -> &str { "ComponentSystem" }
     fn update(&mut self, ctx: &mut crate::FrameContext) {
         // Component updates:
         // Due to the borrowing rules, we must take components out of the scene tree,

@@ -7,6 +7,7 @@ pub mod logger;
 pub mod systems;
 pub mod systems_events;
 pub mod event_mapper;
+pub mod input;
 
 use winit::{
     event::{Event, WindowEvent},
@@ -27,10 +28,12 @@ pub struct FrameContext<'a> {
     pub resource_manager: &'a mut ResourceManager,
     pub delta: f32,
     pub event_proxy: crate::systems_events::events::EventProxy<'a>,
+    pub input: &'a crate::input::InputManager,
 }
 
 /// A trait representing a system that processes engine state.
-pub trait System {
+pub trait System: Send + Sync {
+    fn name(&self) -> &str;
     fn update(&mut self, ctx: &mut FrameContext);
 }
 
@@ -43,9 +46,10 @@ pub struct Engine {
     pub plugin_manager: PluginManager,
     pub resource_manager: ResourceManager,
     pub event_queue: EventQueue,
+    pub input_manager: crate::input::InputManager,
+    pub system_registry: crate::systems::SystemRegistry,
     pub last_frame_time: instant::Instant,
     pub current_fps: f32,
-    pub systems: Vec<Box<dyn System>>,
     pub system_events: Vec<crate::systems_events::events::SystemEvent>,
 }
 
@@ -66,6 +70,8 @@ impl Engine {
         let plugin_manager = PluginManager::new();
         let resource_manager = ResourceManager::new();
         let event_queue = EventQueue::new();
+        let input_manager = crate::input::InputManager::new();
+        let system_registry = crate::systems::SystemRegistry::new();
 
         Ok(Self {
             window,
@@ -76,15 +82,16 @@ impl Engine {
             plugin_manager,
             resource_manager,
             event_queue,
+            input_manager,
+            system_registry,
             last_frame_time: instant::Instant::now(),
             current_fps: 0.0,
-            systems: Vec::new(),
             system_events: Vec::new(),
         })
     }
 
     pub fn add_system<S: System + 'static>(&mut self, system: S) {
-        self.systems.push(Box::new(system));
+        self.system_registry.add_system(system);
     }
 
     fn handle_window_event(&mut self, event: &WindowEvent, elwt: &winit::event_loop::EventLoopWindowTarget<()>) {
@@ -130,6 +137,8 @@ impl Engine {
     }
 
     fn update_phase(&mut self, delta: f32) {
+        self.input_manager.update(&self.event_queue.events);
+
         let mut system_events = std::mem::take(&mut self.system_events);
         system_events.clear(); // Reset for this frame
 
@@ -143,15 +152,11 @@ impl Engine {
                     events: &self.event_queue.events,
                     outgoing: &mut system_events,
                 },
+                input: &self.input_manager,
             };
 
             self.plugin_manager.update_plugins(&mut ctx);
-
-            let mut systems = std::mem::take(&mut self.systems);
-            for system in &mut systems {
-                system.update(&mut ctx);
-            }
-            self.systems = systems;
+            crate::systems::Scheduler::run(&mut self.system_registry, &mut ctx);
         }
 
         self.system_events = system_events;

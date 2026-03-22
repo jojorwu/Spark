@@ -37,7 +37,7 @@ impl RenderPass for ParticlePass {
             device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::COMPUTE, self.compute_pipeline);
             device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::COMPUTE, self.compute_layout, 0, &[self.descriptor_sets[cf]], &[]);
 
-            let pc = [0.016f32, self.particle_count as f32]; // Fixed delta for now
+            let pc = [ctx.delta, self.particle_count as f32];
             let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 8);
             device.cmd_push_constants(ctx.command_buffer, self.compute_layout, vk::ShaderStageFlags::COMPUTE, 0, pc_bytes);
 
