@@ -43,8 +43,11 @@ pub struct EditorUI {
     pub camera_rot: spark_math::Vec2, // Yaw, Pitch
     pub logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     pub active_bottom_tab: BottomTab,
+    pub camera_speed: f32,
     pub node_to_delete: Option<NodeKey>,
     pub node_to_add_child: Option<(NodeKey, NodeType)>,
+    pub initial_gizmo_transform: Option<spark_math::Mat4>,
+    pub component_to_remove: Option<(NodeKey, usize)>,
 }
 
 pub enum NodeType {
@@ -83,10 +86,13 @@ impl EditorUI {
             gizmo_mode: GizmoMode::Translate,
             camera_pos: spark_math::Vec3::new(0.0, 2.0, 10.0),
             camera_rot: spark_math::Vec2::new(-90.0f32.to_radians(), 0.0),
+            camera_speed: 0.1,
             logs,
             active_bottom_tab: BottomTab::Console,
             node_to_delete: None,
             node_to_add_child: None,
+            initial_gizmo_transform: None,
+            component_to_remove: None,
         }
     }
 
@@ -173,6 +179,14 @@ impl EditorUI {
             self.delete_node(scene, key);
             if self.selected_node == Some(key) {
                 self.selected_node = None;
+            }
+        }
+
+        if let Some((node_key, comp_idx)) = self.component_to_remove.take() {
+            if let Some(node) = scene.nodes.get_mut(node_key) {
+                if comp_idx < node.components.len() {
+                    node.components.remove(comp_idx);
+                }
             }
         }
     }
@@ -266,6 +280,7 @@ impl EditorUI {
                     });
                 }
                 BottomTab::Assets => {
+                    let mut asset_to_load = None;
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for entry in walkdir::WalkDir::new("assets")
                             .into_iter()
@@ -273,15 +288,26 @@ impl EditorUI {
                             let path = entry.path();
                             if path.is_file() {
                                 let label = path.file_name().unwrap().to_string_lossy();
-                                if ui.selectable_label(false, format!("📄 {}", label)).clicked() {
-                                    log::info!("Selected asset: {:?}", path);
-                                }
+                                let is_gltf = path.extension().map_or(false, |ext| ext == "gltf" || ext == "glb");
+
+                                ui.horizontal(|ui| {
+                                    let icon = if is_gltf { "📦" } else { "📄" };
+                                    if ui.selectable_label(false, format!("{} {}", icon, label)).clicked() {
+                                        log::info!("Selected asset: {:?}", path);
+                                        if is_gltf {
+                                            asset_to_load = Some(path.to_path_buf());
+                                        }
+                                    }
+                                });
                             } else if path.is_dir() && path != std::path::Path::new("assets") {
                                 let label = path.file_name().unwrap().to_string_lossy();
                                 ui.label(format!("📁 {}", label));
                             }
                         }
                     });
+                    if let Some(path) = asset_to_load {
+                        resource_manager.load_scene(path, scene, renderer);
+                    }
                 }
                 BottomTab::Settings => {
                     ui.heading("Renderer Settings");
@@ -304,6 +330,11 @@ impl EditorUI {
                     ui.checkbox(&mut renderer.enable_bloom, "Bloom");
                 }
                 BottomTab::Statistics => {
+                    ui.horizontal(|ui| {
+                        ui.label("Camera Speed:");
+                        ui.add(egui::Slider::new(&mut self.camera_speed, 0.01..=1.0));
+                    });
+                    ui.separator();
                     ui.label(format!("FPS: {:.1}", fps));
                     ui.label(format!("Active Objects: {}", renderer.last_object_count));
                     ui.label("Draw Calls: TODO");
@@ -406,10 +437,59 @@ impl EditorUI {
                     changed_transform = self.draw_transform_editor(ui, node);
 
                     ui.separator();
-                    ui.label("Components");
+                    ui.horizontal(|ui| {
+                        ui.label("Components");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.menu_button("✚ Add", |ui| {
+                                if ui.button("Mesh").clicked() {
+                                    node.components.push(Box::new(spark_core::scene::MeshComponent {
+                                        vertex_count: 0, index_count: 0, first_index: 0, vertex_offset: 0,
+                                        texture_handle: None, material_index: None, bounding_radius: 1.0,
+                                    }));
+                                    ui.close_menu();
+                                }
+                                if ui.button("Light").clicked() {
+                                    node.components.push(Box::new(spark_core::scene::LightComponent {
+                                        light_type: spark_core::scene::LightType::Point,
+                                        color: spark_math::Vec3::ONE,
+                                        intensity: 1.0,
+                                        range: 10.0,
+                                    }));
+                                    ui.close_menu();
+                                }
+                                if ui.button("Camera").clicked() {
+                                    node.components.push(Box::new(spark_core::scene::CameraComponent {
+                                        fov: 45.0, near: 0.1, far: 100.0,
+                                    }));
+                                    ui.close_menu();
+                                }
+                            });
+                        });
+                    });
 
-                    for component in &mut node.components {
-                        self.draw_component_editor(ui, component);
+                    let mut to_remove = None;
+                    for (idx, component) in node.components.iter_mut().enumerate() {
+                        let header = match component.as_any().type_id() {
+                            t if t == std::any::TypeId::of::<spark_core::scene::MeshComponent>() => "Mesh",
+                            t if t == std::any::TypeId::of::<spark_core::scene::LightComponent>() => "Light",
+                            t if t == std::any::TypeId::of::<spark_core::scene::CameraComponent>() => "Camera",
+                            _ => "Unknown",
+                        };
+
+                        let response = ui.collapsing(header, |ui| {
+                            self.draw_component_editor(ui, component);
+                        });
+
+                        response.header_response.context_menu(|ui| {
+                            if ui.button("Remove").clicked() {
+                                to_remove = Some(idx);
+                                ui.close_menu();
+                            }
+                        });
+                    }
+
+                    if let Some(idx) = to_remove {
+                        self.component_to_remove = Some((selected_key, idx));
                     }
 
                     ui.separator();
@@ -622,7 +702,7 @@ impl EditorUI {
 
                 // Camera Controls
                 if response.hovered() {
-                    let speed = 0.1;
+                    let speed = self.camera_speed;
                     let rot_speed = 0.005;
 
                     if ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary)) {
@@ -711,6 +791,10 @@ impl EditorUI {
                         .viewport(rect);
 
                     if let Some(response) = gizmo.interact(ui) {
+                        if self.initial_gizmo_transform.is_none() {
+                            self.initial_gizmo_transform = Some(scene.nodes.get(selected_key).unwrap().local_transform);
+                        }
+
                         let m = response.transform();
                         let new_model = spark_math::Mat4::from_cols_array_2d(&[
                             m.x.into(), m.y.into(), m.z.into(), m.w.into()
@@ -726,6 +810,19 @@ impl EditorUI {
 
                         if let Some(node) = scene.nodes.get_mut(selected_key) {
                             node.local_transform = new_local;
+                        }
+                    } else if ui.input(|i| i.pointer.any_released()) {
+                        if let Some(old_transform) = self.initial_gizmo_transform.take() {
+                             if let Some(node) = scene.nodes.get(selected_key) {
+                                 let new_transform = node.local_transform;
+                                 if old_transform != new_transform {
+                                     self.execute_command(Box::new(TransformCommand {
+                                         node_key: selected_key,
+                                         old_transform,
+                                         new_transform,
+                                     }), scene);
+                                 }
+                             }
                         }
                     }
                 }
