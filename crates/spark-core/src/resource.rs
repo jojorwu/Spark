@@ -218,9 +218,22 @@ impl GltfLoader {
         scene_tree: &mut crate::scene::Scene,
         renderer: &spark_renderer::Renderer,
     ) {
+        use rayon::prelude::*;
         log::info!("Loading glTF scene: {:?}", path);
-        let (doc, buffers, _) = gltf::import(&path).expect("Failed to load glTF");
+        let (doc, buffers, images) = gltf::import(&path).expect("Failed to load glTF");
         let parent_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+
+        // Pre-load images in parallel
+        let loaded_images: Vec<_> = images.par_iter().map(|data| {
+            image::load_from_memory(&data.pixels).unwrap_or_else(|_| {
+                image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, 1))
+            })
+        }).collect();
+
+        for img in loaded_images {
+            rm.textures.add(img);
+        }
+
         let default_scene = doc.default_scene().or(doc.scenes().next());
         if let Some(scene) = default_scene {
             for node in scene.nodes() {

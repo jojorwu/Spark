@@ -5,11 +5,12 @@ use std::collections::{HashSet, HashMap};
 
 pub struct SystemRegistry {
     pub systems: Vec<Box<dyn System>>,
+    pub stages: Vec<Vec<usize>>,
 }
 
 impl SystemRegistry {
     pub fn new() -> Self {
-        Self { systems: Vec::new() }
+        Self { systems: Vec::new(), stages: Vec::new() }
     }
 
     pub fn add_system<S: System + 'static>(&mut self, system: S) {
@@ -57,9 +58,38 @@ impl SystemRegistry {
             visit(i, &self.systems, &name_to_idx, &mut indices, &mut visited, &mut temp_visited);
         }
 
+        // Reorder systems
         let mut old_systems: Vec<Option<Box<dyn System>>> = self.systems.drain(..).map(Some).collect();
         for idx in indices {
             self.systems.push(old_systems[idx].take().unwrap());
+        }
+
+        // Build stages for parallel execution
+        self.build_stages();
+    }
+
+    fn build_stages(&mut self) {
+        let name_to_idx: HashMap<String, usize> = self.systems.iter().enumerate()
+            .map(|(i, s)| (s.name().to_string(), i))
+            .collect();
+
+        let mut system_stages = vec![0; self.systems.len()];
+        let mut max_stage = 0;
+
+        for (i, system) in self.systems.iter().enumerate() {
+            let mut stage = 0;
+            for dep in system.dependencies() {
+                if let Some(&dep_idx) = name_to_idx.get(dep) {
+                    stage = stage.max(system_stages[dep_idx] + 1);
+                }
+            }
+            system_stages[i] = stage;
+            max_stage = max_stage.max(stage);
+        }
+
+        self.stages = vec![Vec::new(); max_stage + 1];
+        for (i, &stage) in system_stages.iter().enumerate() {
+            self.stages[stage].push(i);
         }
     }
 }
@@ -82,8 +112,20 @@ impl Scheduler {
     }
 
     pub fn run(registry: &mut SystemRegistry, ctx: &mut FrameContext) {
-        for system in &mut registry.systems {
-            system.update(ctx);
+        // Systems update might need mutable access to Scene and other resources.
+        // Parallel execution is tricky because Systems can mutate anything via Context.
+
+        // To allow parallel execution within a stage, we'd need to decompose FrameContext
+        // into read-only and thread-safe mutable parts (like Arc<Mutex<...>> or a proper ECS).
+
+        // However, we can already parallelize "Read-Only" systems if we had a way to distinguish them.
+        // For now, we execute stages sequentially, and systems within a stage sequentially.
+        // The architecture is now "Stage-Aware", allowing future multi-threaded dispatch.
+
+        for stage in &registry.stages {
+            for &idx in stage {
+                registry.systems[idx].update(ctx);
+            }
         }
     }
 

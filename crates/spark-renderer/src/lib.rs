@@ -31,6 +31,7 @@ pub struct Renderer {
     pub global_descriptor_set_layout: vk::DescriptorSetLayout,
     pub light_count: u32,
     pub render_passes: Vec<Box<dyn crate::passes::RenderPass>>,
+    pub render_stages: Vec<Vec<usize>>,
     pub frames: [RenderFrame; MAX_FRAMES_IN_FLIGHT],
     pub pipeline_cache: vk::PipelineCache,
     current_frame: usize,
@@ -271,6 +272,7 @@ impl Renderer {
             global_descriptor_set_layout,
             light_count: 0,
             render_passes: Vec::new(),
+            render_stages: Vec::new(),
             frames,
             pipeline_cache,
             current_frame: 0,
@@ -841,12 +843,15 @@ impl Renderer {
                 pass.record_secondary_commands(&ctx)
             }).collect();
 
-            // 2. Execute commands sequentially to preserve pass dependencies
-            for (i, pass) in self.render_passes.iter().enumerate() {
-                if !pass_secondary_commands[i].is_empty() {
-                    self.device.device.cmd_execute_commands(command_buffer, &pass_secondary_commands[i]);
+            // 2. Execute commands sequentially within stages to preserve pass dependencies
+            for stage in &self.render_stages {
+                for &idx in stage {
+                    let pass = &self.render_passes[idx];
+                    if !pass_secondary_commands[idx].is_empty() {
+                        self.device.device.cmd_execute_commands(command_buffer, &pass_secondary_commands[idx]);
+                    }
+                    pass.record_commands(&ctx);
                 }
-                pass.record_commands(&ctx);
             }
 
             if let Some((output, egui_ctx)) = egui_output {
@@ -1256,6 +1261,33 @@ impl Renderer {
         let mut old_passes: Vec<Option<Box<dyn crate::passes::RenderPass>>> = self.render_passes.drain(..).map(Some).collect();
         for idx in indices {
             self.render_passes.push(old_passes[idx].take().unwrap());
+        }
+
+        self.build_render_stages();
+    }
+
+    fn build_render_stages(&mut self) {
+        let name_to_idx: std::collections::HashMap<String, usize> = self.render_passes.iter().enumerate()
+            .map(|(i, p)| (p.name().to_string(), i))
+            .collect();
+
+        let mut pass_stages = vec![0; self.render_passes.len()];
+        let mut max_stage = 0;
+
+        for (i, pass) in self.render_passes.iter().enumerate() {
+            let mut stage = 0;
+            for dep in pass.dependencies() {
+                if let Some(&dep_idx) = name_to_idx.get(dep) {
+                    stage = stage.max(pass_stages[dep_idx] + 1);
+                }
+            }
+            pass_stages[i] = stage;
+            max_stage = max_stage.max(stage);
+        }
+
+        self.render_stages = vec![Vec::new(); max_stage + 1];
+        for (i, &stage) in pass_stages.iter().enumerate() {
+            self.render_stages[stage].push(i);
         }
     }
 

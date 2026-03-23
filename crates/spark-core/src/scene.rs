@@ -251,12 +251,11 @@ impl Scene {
 
     /// Collects a Packet for the renderer.
     pub fn collect_frame_packet(&self, frustum: Option<&spark_math::Frustum>, resource_manager: &crate::resource::ResourceManager) -> spark_renderer::resource::FramePacket {
+        use rayon::prelude::*;
         let data = self.collect_data_recursive(self.root, frustum);
 
-        let mut opaque_meshes = Vec::new();
-        let mut transparent_meshes = Vec::new();
-
-        for r in data.renderables {
+        // Parallel processing of renderables
+        let (opaque_meshes, transparent_meshes): (Vec<_>, Vec<_>) = data.renderables.par_iter().map(|r| {
             let mat_idx = r.6.unwrap_or(0);
             let is_transparent = resource_manager.all_materials.get(mat_idx as usize).map_or(false, |m| (m.flags & 1) != 0);
 
@@ -269,34 +268,46 @@ impl Scene {
                 material_index: mat_idx,
                 bounding_radius: r.7,
             };
+            (draw, is_transparent)
+        }).partition(|(_, is_trans)| !*is_trans);
 
-            if is_transparent {
-                transparent_meshes.push(draw);
-            } else {
-                opaque_meshes.push(draw);
-            }
-        }
+        // Strip the boolean from the partition result
+        let mut opaque_meshes: Vec<_> = opaque_meshes.into_iter().map(|(d, _)| d).collect();
+        let mut transparent_meshes: Vec<_> = transparent_meshes.into_iter().map(|(d, _)| d).collect();
 
-        for ((ic, fi, vo, _tex, mat_idx, br_bits), transforms) in data.instanced {
-            let br = f32::from_bits(br_bits);
+        // Parallel sort transparent meshes back-to-front
+        let view_pos = self.last_view_matrix.inverse().w_axis.xyz();
+        transparent_meshes.par_sort_by(|a, b| {
+            let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
+            let dist_b = (b.model.w_axis.xyz() - view_pos).length_squared();
+            dist_b.partial_cmp(&dist_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Parallel processing of instanced data
+        let instanced_results: Vec<_> = data.instanced.par_iter().flat_map(|((ic, fi, vo, _tex, mat_idx, br_bits), transforms)| {
+            let br = f32::from_bits(*br_bits);
             let midx = mat_idx.unwrap_or(0);
             let is_transparent = resource_manager.all_materials.get(midx as usize).map_or(false, |m| (m.flags & 1) != 0);
 
-            for t in transforms {
+            transforms.iter().map(move |&t| {
                 let draw = spark_renderer::resource::MeshDraw {
                     model: t,
                     vertex_count: 0,
-                    index_count: ic,
-                    first_index: fi,
-                    vertex_offset: vo,
+                    index_count: *ic,
+                    first_index: *fi,
+                    vertex_offset: *vo,
                     material_index: midx,
                     bounding_radius: br,
                 };
-                if is_transparent {
-                    transparent_meshes.push(draw);
-                } else {
-                    opaque_meshes.push(draw);
-                }
+                (draw, is_transparent)
+            }).collect::<Vec<_>>()
+        }).collect();
+
+        for (draw, is_trans) in instanced_results {
+            if is_trans {
+                transparent_meshes.push(draw);
+            } else {
+                opaque_meshes.push(draw);
             }
         }
 

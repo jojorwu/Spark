@@ -29,4 +29,20 @@ impl TaskSystem {
     {
         self.pool.spawn(job);
     }
+
+    pub fn scope<'a, F, R>(&self, op: F) -> R
+    where
+        F: FnOnce(&rayon::Scope<'a>) -> R + Send,
+        R: Send,
+    {
+        self.pool.scope(op)
+    }
+
+    pub fn install<F, R>(&self, op: F) -> R
+    where
+        F: FnOnce() -> R + Send,
+        R: Send,
+    {
+        self.pool.install(op)
+    }
 }
