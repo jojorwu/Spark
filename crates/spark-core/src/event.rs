@@ -1,18 +1,27 @@
 pub enum EngineEvent {
     WindowResized { width: u32, height: u32 },
-    KeyDown { key_code: u32 },
-    KeyUp { key_code: u32 },
+    KeyDown { key: winit::keyboard::KeyCode },
+    KeyUp { key: winit::keyboard::KeyCode },
     MouseMoved { x: f64, y: f64 },
 }
 
 pub struct EventQueue {
-    events: Vec<EngineEvent>,
+    pub(crate) events: Vec<EngineEvent>,
 }
 
 impl EventQueue {
     pub fn new() -> Self {
         Self { events: Vec::new() }
     }
+}
+
+impl Default for EventQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EventQueue {
 
     pub fn push(&mut self, event: EngineEvent) {
         self.events.push(event);

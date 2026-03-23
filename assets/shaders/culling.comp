@@ -9,7 +9,9 @@ struct DrawCommand {
 };
 
 struct ObjectData {
-    mat4 model;
+    vec4 modelRow0;
+    vec4 modelRow1;
+    vec4 modelRow2;
     vec4 sphere; // xyz = center, w = radius
     uint indexCount;
     uint firstIndex;
@@ -39,6 +41,18 @@ layout(std430, set = 0, binding = 3) buffer CountBuffer {
 
 layout(set = 0, binding = 4) uniform sampler2D hizPyramid;
 
+layout(push_constant) uniform PC {
+    uint lightCount;
+    float metallic;
+    float roughness;
+    float width;
+    float height;
+    uint  padding;
+    uint64_t objectBufferAddress;
+    mat4 prevViewProj;
+    uint64_t vertexBufferAddress;
+} push;
+
 layout(local_size_x = 256) in;
 
 bool sphereInFrustum(vec3 center, float radius) {
@@ -55,8 +69,16 @@ void main() {
     if (idx >= objects.length()) return;
 
     ObjectData obj = objects[idx];
-    vec3 center = (obj.model * vec4(obj.sphere.xyz, 1.0)).xyz;
-    float radius = obj.sphere.w; // Simplified scaling
+
+    // Efficiently transform sphere center from rows
+    vec3 center;
+    center.x = dot(obj.modelRow0, vec4(obj.sphere.xyz, 1.0));
+    center.y = dot(obj.modelRow1, vec4(obj.sphere.xyz, 1.0));
+    center.z = dot(obj.modelRow2, vec4(obj.sphere.xyz, 1.0));
+
+    // Calculate max scale to conservatively scale the radius
+    float maxScale = max(length(obj.modelRow0.xyz), max(length(obj.modelRow1.xyz), length(obj.modelRow2.xyz)));
+    float radius = obj.sphere.w * maxScale;
 
     if (sphereInFrustum(center, radius)) {
         // Occlusion Culling
@@ -66,14 +88,14 @@ void main() {
         // Flip Y for Vulkan
         uv.y = 1.0 - uv.y;
 
-        float sphereDepth = clipPos.z; // Depth of center
-        // To be conservative, we should use the depth of the closest point on the sphere
-        // but this is a reasonable approximation for now.
+        float sphereDepth = clipPos.z;
 
-        // We use the depth pyramid to check if the sphere is occluded.
-        // We need to pick a mip level based on the screen-space size of the sphere.
-        // Simplified: just use mip 0 for now to test the logic.
-        float maxDepth = textureLod(hizPyramid, uv, 0).r;
+        // Calculate appropriate mip level based on project sphere size
+        float diameter = (2.0 * radius) / clipPos.w;
+        float screenPixelSize = diameter * max(push.width, push.height);
+        float mipLevel = floor(log2(screenPixelSize));
+
+        float maxDepth = textureLod(hizPyramid, uv, mipLevel).r;
 
         if (sphereDepth > maxDepth + 0.0001) {
             return; // Occluded

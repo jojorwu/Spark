@@ -19,3 +19,4 @@ image.workspace = true
 rayon.workspace = true
 num_cpus.workspace = true
 rand = "0.8"
+gpu-allocator = { version = "0.28", default-features = false, features = ["vulkan", "std"] }

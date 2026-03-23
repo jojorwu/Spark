@@ -9,26 +9,19 @@ pub struct GBuffer {
     pub pbr: Vec<Attachment>,
     pub velocity: Vec<Attachment>,
     pub depth: Vec<Attachment>,
-    pub ssao: Vec<Attachment>,
-    pub ssao_blur: Vec<Attachment>,
 }
 
 impl GBuffer {
     pub fn new(
-        device: &ash::Device,
-        pdevice: vk::PhysicalDevice,
-        instance: &ash::Instance,
+        device: &crate::vulkan::device::VulkanDevice,
         extent: vk::Extent2D,
         msaa_samples: vk::SampleCountFlags,
         depth_format: vk::Format,
-    ) -> Self {
-        let props = unsafe { instance.get_physical_device_memory_properties(pdevice) };
-
+    ) -> Result<Self, crate::error::RendererError> {
         let hdr: Vec<Attachment> = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|_| {
                 Attachment::create_image_resource(
                     device,
-                    &props,
                     extent.width,
                     extent.height,
                     vk::Format::R16G16B16A16_SFLOAT,
@@ -38,56 +31,37 @@ impl GBuffer {
                     vk::SampleCountFlags::TYPE_1,
                 )
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         let albedo = crate::resource::create_frame_attachments(
             device,
-            &props,
             extent,
             vk::Format::R8G8B8A8_UNORM,
             msaa_samples,
-        );
+        )?;
         let velocity = crate::resource::create_frame_attachments(
             device,
-            &props,
             extent,
             vk::Format::R16G16_SFLOAT,
             msaa_samples,
-        );
+        )?;
         let normal = crate::resource::create_frame_attachments(
             device,
-            &props,
             extent,
             vk::Format::A2B10G10R10_UNORM_PACK32,
             msaa_samples,
-        );
+        )?;
         let pbr = crate::resource::create_frame_attachments(
             device,
-            &props,
             extent,
             vk::Format::R8G8B8A8_UNORM,
             msaa_samples,
-        );
-        let ssao = crate::resource::create_frame_attachments(
-            device,
-            &props,
-            extent,
-            vk::Format::R8_UNORM,
-            vk::SampleCountFlags::TYPE_1,
-        );
-        let ssao_blur = crate::resource::create_frame_attachments(
-            device,
-            &props,
-            extent,
-            vk::Format::R8_UNORM,
-            vk::SampleCountFlags::TYPE_1,
-        );
+        )?;
 
         let depth: Vec<Attachment> = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|_| {
                 Attachment::create_image_resource(
                     device,
-                    &props,
                     extent.width,
                     extent.height,
                     depth_format,
@@ -97,42 +71,37 @@ impl GBuffer {
                     msaa_samples,
                 )
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
-        Self {
+        Ok(Self {
             hdr,
             albedo,
             normal,
             pbr,
             velocity,
             depth,
-            ssao,
-            ssao_blur,
-        }
+        })
     }
 
     pub fn recreate(
         &mut self,
-        device: &ash::Device,
-        pdevice: vk::PhysicalDevice,
-        instance: &ash::Instance,
+        device: &crate::vulkan::device::VulkanDevice,
         extent: vk::Extent2D,
         msaa_samples: vk::SampleCountFlags,
         depth_format: vk::Format,
-    ) {
-        self.destroy(device);
-        let new_gb = Self::new(device, pdevice, instance, extent, msaa_samples, depth_format);
+    ) -> Result<(), crate::error::RendererError> {
+        self.destroy(&device.device, &device.allocator);
+        let new_gb = Self::new(device, extent, msaa_samples, depth_format)?;
         *self = new_gb;
+        Ok(())
     }
 
-    pub fn destroy(&mut self, device: &ash::Device) {
-        for a in self.hdr.drain(..) { a.destroy(device); }
-        for a in self.albedo.drain(..) { a.destroy(device); }
-        for a in self.normal.drain(..) { a.destroy(device); }
-        for a in self.pbr.drain(..) { a.destroy(device); }
-        for a in self.velocity.drain(..) { a.destroy(device); }
-        for a in self.depth.drain(..) { a.destroy(device); }
-        for a in self.ssao.drain(..) { a.destroy(device); }
-        for a in self.ssao_blur.drain(..) { a.destroy(device); }
+    pub fn destroy(&mut self, device: &ash::Device, allocator: &std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>) {
+        for a in self.hdr.drain(..) { a.destroy(device, allocator); }
+        for a in self.albedo.drain(..) { a.destroy(device, allocator); }
+        for a in self.normal.drain(..) { a.destroy(device, allocator); }
+        for a in self.pbr.drain(..) { a.destroy(device, allocator); }
+        for a in self.velocity.drain(..) { a.destroy(device, allocator); }
+        for a in self.depth.drain(..) { a.destroy(device, allocator); }
     }
 }

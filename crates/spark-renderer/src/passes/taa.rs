@@ -2,6 +2,7 @@ use ash::vk;
 use crate::resource::Attachment;
 use crate::Renderer;
 use crate::MAX_FRAMES_IN_FLIGHT;
+use super::RenderContext;
 
 pub struct TAAPass {
     pub pipeline: vk::Pipeline,
@@ -14,11 +15,56 @@ pub struct TAAPass {
 use super::RenderPass;
 
 impl RenderPass for TAAPass {
-    fn update_descriptor_sets(&self, renderer: &Renderer) {
-        self.update_descriptor_sets(&renderer.device.device, &renderer.gbuffer.hdr, &renderer.gbuffer.velocity, &renderer.gbuffer.depth, renderer.shadow_pass.sampler);
+    fn name(&self) -> &str { "TAAPass" }
+    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_taa }
+    fn prepare(&self, renderer: &Renderer, current_frame: usize) {
+        let sampler = renderer.common_sampler;
+        let prev_idx = (current_frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+        let current_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.gbuffer.hdr[current_frame].view).sampler(sampler)];
+        let history_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(self.history_images[prev_idx].view).sampler(sampler)];
+        let velocity_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.gbuffer.velocity[current_frame].view).sampler(sampler)];
+        let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.gbuffer.depth[current_frame].view).sampler(sampler)];
+
+        let writes = [
+            vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[current_frame]).dst_binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&current_info),
+            vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[current_frame]).dst_binding(1).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&history_info),
+            vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[current_frame]).dst_binding(2).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&velocity_info),
+            vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[current_frame]).dst_binding(3).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&depth_info),
+        ];
+        unsafe { renderer.device.device.update_descriptor_sets(&writes, &[]); }
     }
-    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, current_frame: usize) {
-        self.record_commands(&renderer.device.device, command_buffer, renderer.swapchain.extent, current_frame);
+
+    fn update_descriptor_sets(&self, _renderer: &Renderer) {
+        // Handled in prepare
+    }
+
+    fn record_commands(&self, ctx: &RenderContext) {
+        self.record_commands_impl(
+            &ctx.renderer.device.device,
+            ctx.command_buffer,
+            ctx.renderer.swapchain.extent,
+            ctx.current_frame,
+        );
+    }
+
+    fn get_resource_view(&self, name: &str, frame_index: usize) -> Option<vk::ImageView> {
+        if name == "history" {
+            Some(self.history_images[frame_index].view)
+        } else {
+            None
+        }
+    }
+
+    fn destroy(&mut self, renderer: &mut Renderer) {
+        let device = &renderer.device.device;
+        unsafe {
+            device.destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline_layout(self.layout, None);
+            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            for img in self.history_images.drain(..) {
+                img.destroy(device, &renderer.device.allocator);
+            }
+        }
     }
 }
 
@@ -30,13 +76,11 @@ impl TAAPass {
     ) -> Result<Self, crate::error::RendererError> {
         let device = &renderer.device.device;
         let extent = renderer.get_extent();
-        let props = unsafe { renderer.context.instance.get_physical_device_memory_properties(renderer.device.pdevice) };
 
         let history_images = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|_| {
                 Attachment::create_image_resource(
-                    device,
-                    &props,
+                    &renderer.device,
                     extent.width,
                     extent.height,
                     vk::Format::R16G16B16A16_SFLOAT,
@@ -44,7 +88,7 @@ impl TAAPass {
                     vk::SampleCountFlags::TYPE_1,
                 )
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         let bindings = [
             vk::DescriptorSetLayoutBinding::default().binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -60,7 +104,7 @@ impl TAAPass {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(renderer.descriptor_pool)
-                    .set_layouts(&vec![ds_layout; MAX_FRAMES_IN_FLIGHT]),
+                    .set_layouts(&[ds_layout; MAX_FRAMES_IN_FLIGHT]),
             )?
         };
 
@@ -138,7 +182,7 @@ impl TAAPass {
         }
     }
 
-    pub fn record_commands(
+    pub fn record_commands_impl(
         &self,
         device: &ash::Device,
         command_buffer: vk::CommandBuffer,
@@ -180,15 +224,4 @@ impl TAAPass {
         }
     }
 
-    pub fn destroy(&mut self, renderer: &Renderer) {
-        let device = &renderer.device.device;
-        unsafe {
-            device.destroy_pipeline(self.pipeline, None);
-            device.destroy_pipeline_layout(self.layout, None);
-            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            for img in self.history_images.drain(..) {
-                img.destroy(device);
-            }
-        }
-    }
 }

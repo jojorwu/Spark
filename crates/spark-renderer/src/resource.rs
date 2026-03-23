@@ -1,28 +1,93 @@
 use ash::vk;
+use std::sync::{Arc, Mutex};
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
-/// Represents a Vulkan buffer with its associated memory and size.
-#[derive(Debug, Copy, Clone)]
+/// Represents a Vulkan buffer with its associated memory, size, and versioning for cache optimization.
 pub struct Buffer {
     pub handle: vk::Buffer,
-    pub memory: vk::DeviceMemory,
+    pub allocation: Arc<Mutex<Option<gpu_allocator::vulkan::Allocation>>>,
     pub size: vk::DeviceSize,
     pub ptr: *mut std::ffi::c_void,
     pub address: u64,
+    pub version: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Clone for Buffer {
+    fn clone(&self) -> Self {
+        Self {
+            handle: self.handle,
+            allocation: self.allocation.clone(),
+            size: self.size,
+            ptr: self.ptr,
+            address: self.address,
+            version: self.version.clone(),
+        }
+    }
+}
+
+
+impl std::fmt::Debug for Buffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Buffer")
+            .field("handle", &self.handle)
+            .field("size", &self.size)
+            .field("address", &self.address)
+            .field("version", &self.version)
+            .finish()
+    }
 }
 
 unsafe impl Send for Buffer {}
 unsafe impl Sync for Buffer {}
 
-/// Represents a framebuffer attachment (Image, Memory, View).
+/// Represents a framebuffer attachment, including its Vulkan image, optional allocation, and view.
 pub struct Attachment {
     pub image: vk::Image,
-    pub memory: vk::DeviceMemory,
+    pub allocation: Arc<Mutex<Option<gpu_allocator::vulkan::Allocation>>>,
     pub view: vk::ImageView,
+    pub extent: vk::Extent2D,
+    pub version: Arc<std::sync::atomic::AtomicU64>,
 }
 
-/// Represents all resources and synchronization primitives for a single frame.
+impl Clone for Attachment {
+    fn clone(&self) -> Self {
+        Self {
+            image: self.image,
+            allocation: self.allocation.clone(),
+            view: self.view,
+            extent: self.extent,
+            version: self.version.clone(),
+        }
+    }
+}
+
+/// Represents the data required to draw a single mesh instance.
+#[derive(Debug)]
+pub struct MeshDraw {
+    pub model: spark_math::Mat4,
+    pub vertex_count: u32,
+    pub index_count: u32,
+    pub first_index: u32,
+    pub vertex_offset: i32,
+    pub material_index: u32,
+    pub bounding_radius: f32,
+}
+
+pub struct LightDraw {
+    pub position: spark_math::Vec3,
+    pub color: spark_math::Vec3,
+    pub intensity: f32,
+}
+
+pub struct FramePacket {
+    pub view_matrix: spark_math::Mat4,
+    pub projection_matrix: spark_math::Mat4,
+    pub opaque_meshes: Vec<MeshDraw>,
+    pub transparent_meshes: Vec<MeshDraw>,
+    pub lights: Vec<LightDraw>,
+}
+
 #[derive(Debug)]
 pub struct RenderFrame {
     pub command_buffer: vk::CommandBuffer,
@@ -37,12 +102,17 @@ pub struct RenderFrame {
     pub indirect_commands_buffer: Option<Buffer>,
     pub object_data_buffer: Option<Buffer>,
     pub draw_count_buffer: Option<Buffer>,
+    pub transparent_indirect_buffer: Option<Buffer>,
+    pub transparent_object_buffer: Option<Buffer>,
+    pub secondary_command_buffers: Vec<vk::CommandBuffer>,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct ObjectDataSSBO {
-    pub model: spark_math::Mat4,
+    pub model_row0: spark_math::Vec4,
+    pub model_row1: spark_math::Vec4,
+    pub model_row2: spark_math::Vec4,
     pub sphere: spark_math::Vec4,
     pub index_count: u32,
     pub first_index: u32,
@@ -81,108 +151,103 @@ pub struct LightGrid {
     pub count: u32,
 }
 
-impl Attachment {
-    /// Destroys the attachment resources.
-    pub fn destroy(&self, device: &ash::Device) {
-        unsafe {
-            device.destroy_image_view(self.view, None);
-            device.destroy_image(self.image, None);
-            device.free_memory(self.memory, None);
-        }
+pub struct ResourceTracker {
+    pub image_layouts: std::collections::HashMap<vk::Image, vk::ImageLayout>,
+}
+
+impl ResourceTracker {
+    pub fn new() -> Self {
+        Self { image_layouts: std::collections::HashMap::new() }
     }
 
-    pub fn create_image_resource(
+    pub fn transition_image(
+        &mut self,
+        cb: vk::CommandBuffer,
         device: &ash::Device,
-        mem_props: &vk::PhysicalDeviceMemoryProperties,
-        width: u32,
-        height: u32,
-        format: vk::Format,
-        usage: vk::ImageUsageFlags,
-        samples: vk::SampleCountFlags,
-    ) -> Self {
-        let img_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(format)
-            .extent(vk::Extent3D {
-                width,
-                height,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(samples)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
+        image: vk::Image,
+        new_layout: vk::ImageLayout,
+        src_access: vk::AccessFlags,
+        dst_access: vk::AccessFlags,
+        src_stage: vk::PipelineStageFlags,
+        dst_stage: vk::PipelineStageFlags,
+        aspect_mask: vk::ImageAspectFlags,
+    ) {
+        let old_layout = *self.image_layouts.get(&image).unwrap_or(&vk::ImageLayout::UNDEFINED);
+        if old_layout == new_layout { return; }
 
-        let img = unsafe { device.create_image(&img_info, None).unwrap() };
-        let reqs = unsafe { device.get_image_memory_requirements(img) };
-        let mut type_idx = 0;
-        for i in 0..mem_props.memory_type_count {
-            if (reqs.memory_type_bits & (1 << i)) != 0
-                && (mem_props.memory_types[i as usize].property_flags
-                    & vk::MemoryPropertyFlags::DEVICE_LOCAL)
-                    == vk::MemoryPropertyFlags::DEVICE_LOCAL
-            {
-                type_idx = i;
-                break;
-            }
-        }
-        let mem = unsafe {
-            device
-                .allocate_memory(
-                    &vk::MemoryAllocateInfo::default()
-                        .allocation_size(reqs.size)
-                        .memory_type_index(type_idx),
-                    None,
-                )
-                .unwrap()
-        };
-        unsafe {
-            device.bind_image_memory(img, mem, 0).unwrap();
-        }
-        let aspect = if format == vk::Format::D32_SFLOAT
-            || format == vk::Format::D32_SFLOAT_S8_UINT
-            || format == vk::Format::D24_UNORM_S8_UINT
-            || format == vk::Format::D16_UNORM
-        {
-            vk::ImageAspectFlags::DEPTH
-        } else {
-            vk::ImageAspectFlags::COLOR
-        };
-        let v_info = vk::ImageViewCreateInfo::default()
-            .image(img)
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(format)
+        let barrier = vk::ImageMemoryBarrier::default()
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .src_access_mask(src_access)
+            .dst_access_mask(dst_access)
+            .image(image)
             .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: aspect,
+                aspect_mask,
                 base_mip_level: 0,
                 level_count: 1,
                 base_array_layer: 0,
                 layer_count: 1,
             });
-        let view = unsafe { device.create_image_view(&v_info, None).unwrap() };
-        Self {
-            image: img,
-            memory: mem,
-            view,
+
+        unsafe {
+            device.cmd_pipeline_barrier(cb, src_stage, dst_stage, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
         }
+        self.image_layouts.insert(image, new_layout);
+    }
+}
+
+impl Attachment {
+    /// Destroys the attachment resources.
+    pub fn destroy(&self, device: &ash::Device, allocator: &std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>) {
+        unsafe {
+            device.destroy_image_view(self.view, None);
+            device.destroy_image(self.image, None);
+            if let Some(alloc) = self.allocation.lock().unwrap().take() {
+                allocator.lock().unwrap().free(alloc).unwrap();
+            }
+        }
+    }
+
+    pub fn create_image_resource(
+        device: &crate::vulkan::device::VulkanDevice,
+        width: u32,
+        height: u32,
+        format: vk::Format,
+        usage: vk::ImageUsageFlags,
+        samples: vk::SampleCountFlags,
+    ) -> Result<Self, crate::error::RendererError> {
+
+        let (img, allocation) = device.create_image(&crate::vulkan::device::ImageCreateParams {
+            width,
+            height,
+            mip_levels: 1,
+            format,
+            tiling: vk::ImageTiling::OPTIMAL,
+            usage,
+            properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            samples,
+        })?;
+        let view = device.create_image_view(img, format, 1);
+        Ok(Self {
+            image: img,
+            allocation: Arc::new(Mutex::new(Some(allocation))),
+            view,
+            extent: vk::Extent2D { width, height },
+            version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        })
     }
 }
 
 pub fn create_frame_attachments(
-    device: &ash::Device,
-    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    device: &crate::vulkan::device::VulkanDevice,
     extent: vk::Extent2D,
     format: vk::Format,
     msaa: vk::SampleCountFlags,
-) -> Vec<Attachment> {
+) -> Result<Vec<Attachment>, crate::error::RendererError> {
     (0..MAX_FRAMES_IN_FLIGHT)
         .map(|_| {
             Attachment::create_image_resource(
                 device,
-                mem_props,
                 extent.width,
                 extent.height,
                 format,

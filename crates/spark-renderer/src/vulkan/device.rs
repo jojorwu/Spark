@@ -1,7 +1,21 @@
 use crate::error::RendererError;
 use crate::resource::Buffer;
 use ash::{khr::surface::Instance as Surface, vk, Device, Instance};
+use gpu_allocator::vulkan::*;
+use std::sync::{Arc, Mutex};
 
+pub struct ImageCreateParams {
+    pub width: u32,
+    pub height: u32,
+    pub mip_levels: u32,
+    pub format: vk::Format,
+    pub tiling: vk::ImageTiling,
+    pub usage: vk::ImageUsageFlags,
+    pub properties: vk::MemoryPropertyFlags,
+    pub samples: vk::SampleCountFlags,
+}
+
+/// Represents the Vulkan logical device and its associated command pools and memory allocator.
 pub struct VulkanDevice {
     pub pdevice: vk::PhysicalDevice,
     pub device: Device,
@@ -11,7 +25,8 @@ pub struct VulkanDevice {
     pub depth_format: vk::Format,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub command_pool: vk::CommandPool,
-    pub thread_command_pools: Vec<vk::CommandPool>,
+    pub thread_command_pools: Vec<[vk::CommandPool; crate::MAX_FRAMES_IN_FLIGHT]>,
+    pub allocator: Arc<Mutex<Allocator>>,
 }
 
 impl VulkanDevice {
@@ -81,16 +96,28 @@ impl VulkanDevice {
         let mut thread_command_pools = Vec::new();
         let thread_count = num_cpus::get();
         for _ in 0..thread_count {
-            let pool = unsafe {
-                device.create_command_pool(
-                    &vk::CommandPoolCreateInfo::default()
-                        .queue_family_index(graphics_family)
-                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
-                    None,
-                )?
-            };
-            thread_command_pools.push(pool);
+            let mut pools = [vk::CommandPool::null(); crate::MAX_FRAMES_IN_FLIGHT];
+            for p in pools.iter_mut() {
+                *p = unsafe {
+                    device.create_command_pool(
+                        &vk::CommandPoolCreateInfo::default()
+                            .queue_family_index(graphics_family)
+                            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                        None,
+                    )?
+                };
+            }
+            thread_command_pools.push(pools);
         }
+
+        let allocator = Allocator::new(&AllocatorCreateDesc {
+            instance: instance.clone(),
+            device: device.clone(),
+            physical_device: pdevice,
+            debug_settings: Default::default(),
+            buffer_device_address: true,
+            allocation_sizes: Default::default(),
+        }).map_err(|_| RendererError::NoSuitableDevice)?;
 
         Ok(Self {
             pdevice,
@@ -102,6 +129,7 @@ impl VulkanDevice {
             memory_properties,
             command_pool,
             thread_command_pools,
+            allocator: Arc::new(Mutex::new(allocator)),
         })
     }
 
@@ -110,126 +138,97 @@ impl VulkanDevice {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         properties: vk::MemoryPropertyFlags,
-    ) -> Buffer {
+    ) -> Result<Buffer, RendererError> {
         let buffer_info = vk::BufferCreateInfo::default()
             .size(size)
             .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-        let handle = unsafe { self.device.create_buffer(&buffer_info, None).unwrap() };
+        let handle = unsafe { self.device.create_buffer(&buffer_info, None)? };
+        let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(handle) };
+
+        let location = if properties.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
+            gpu_allocator::MemoryLocation::CpuToGpu
+        } else {
+            gpu_allocator::MemoryLocation::GpuOnly
+        };
+
+        let allocation = self.allocator.lock().unwrap().allocate(&AllocationCreateDesc {
+            name: "Buffer",
+            requirements: mem_reqs,
+            location,
+            linear: true,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        }).map_err(|_| RendererError::NoSuitableDevice)?;
+
+        unsafe {
+            self.device.bind_buffer_memory(handle, allocation.memory(), allocation.offset())?;
+        }
+
         let bda_info = vk::BufferDeviceAddressInfo::default().buffer(handle);
         let address = if usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS) {
              unsafe { self.device.get_buffer_device_address(&bda_info) }
         } else {
              0
         };
-        let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(handle) };
 
-        let mut type_idx = 0;
-        for i in 0..self.memory_properties.memory_type_count {
-            if (mem_reqs.memory_type_bits & (1 << i)) != 0
-                && (self.memory_properties.memory_types[i as usize].property_flags & properties)
-                    == properties
-            {
-                type_idx = i;
-                break;
-            }
-        }
+        let ptr = allocation.mapped_ptr().map(|p| p.as_ptr()).unwrap_or(std::ptr::null_mut());
 
-        let mut alloc_flags = vk::MemoryAllocateFlagsInfo::default();
-        if usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS) {
-            alloc_flags.flags = vk::MemoryAllocateFlags::DEVICE_ADDRESS;
-        }
-
-        let memory = unsafe {
-            self.device.allocate_memory(
-                &vk::MemoryAllocateInfo::default()
-                    .allocation_size(mem_reqs.size)
-                    .memory_type_index(type_idx)
-                    .push_next(&mut alloc_flags),
-                None
-            ).unwrap()
-        };
-
-        unsafe {
-            self.device.bind_buffer_memory(handle, memory, 0).unwrap();
-        }
-
-        let ptr = if properties.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
-            unsafe {
-                self.device.map_memory(memory, 0, mem_reqs.size, vk::MemoryMapFlags::empty()).unwrap()
-            }
-        } else {
-            std::ptr::null_mut()
-        };
-
-        Buffer {
+        Ok(Buffer {
             handle,
-            memory,
+            allocation: Arc::new(Mutex::new(Some(allocation))),
             size,
             ptr,
             address,
-        }
+            version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        })
     }
 
     pub fn create_image(
         &self,
-        w: u32,
-        h: u32,
-        mip: u32,
-        f: vk::Format,
-        t: vk::ImageTiling,
-        u: vk::ImageUsageFlags,
-        p: vk::MemoryPropertyFlags,
-    ) -> (vk::Image, vk::DeviceMemory) {
+        params: &ImageCreateParams,
+    ) -> Result<(vk::Image, gpu_allocator::vulkan::Allocation), RendererError> {
         let i = unsafe {
             self.device
                 .create_image(
                     &vk::ImageCreateInfo::default()
                         .image_type(vk::ImageType::TYPE_2D)
                         .extent(vk::Extent3D {
-                            width: w,
-                            height: h,
+                            width: params.width,
+                            height: params.height,
                             depth: 1,
                         })
-                        .mip_levels(mip)
+                        .mip_levels(params.mip_levels)
                         .array_layers(1)
-                        .format(f)
-                        .tiling(t)
+                        .format(params.format)
+                        .tiling(params.tiling)
                         .initial_layout(vk::ImageLayout::UNDEFINED)
-                        .usage(u)
-                        .samples(vk::SampleCountFlags::TYPE_1)
+                        .usage(params.usage)
+                        .samples(params.samples)
                         .sharing_mode(vk::SharingMode::EXCLUSIVE),
                     None,
-                )
-                .unwrap()
+                )?
         };
         let reqs = unsafe { self.device.get_image_memory_requirements(i) };
 
-        let mut type_idx = 0;
-        for j in 0..self.memory_properties.memory_type_count {
-            if (reqs.memory_type_bits & (1 << j)) != 0
-                && (self.memory_properties.memory_types[j as usize].property_flags & p) == p
-            {
-                type_idx = j;
-                break;
-            }
-        }
-
-        let m = unsafe {
-            self.device
-                .allocate_memory(
-                    &vk::MemoryAllocateInfo::default()
-                        .allocation_size(reqs.size)
-                        .memory_type_index(type_idx),
-                    None,
-                )
-                .unwrap()
+        let location = if params.properties.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
+            gpu_allocator::MemoryLocation::CpuToGpu
+        } else {
+            gpu_allocator::MemoryLocation::GpuOnly
         };
+
+        let allocation = self.allocator.lock().unwrap().allocate(&AllocationCreateDesc {
+            name: "Image",
+            requirements: reqs,
+            location,
+            linear: false,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        }).map_err(|_| RendererError::NoSuitableDevice)?;
+
         unsafe {
-            self.device.bind_image_memory(i, m, 0).unwrap();
+            self.device.bind_image_memory(i, allocation.memory(), allocation.offset())?;
         }
-        (i, m)
+        Ok((i, allocation))
     }
 
     pub fn create_image_view(&self, image: vk::Image, format: vk::Format, mip_levels: u32) -> vk::ImageView {
@@ -327,10 +326,14 @@ impl VulkanDevice {
         if b.ptr.is_null() {
             panic!("Buffer is not host-visible for upload");
         }
-        unsafe {
-            let mut align = ash::util::Align::new(b.ptr, std::mem::align_of::<T>() as u64, b.size);
-            align.copy_from_slice(data);
+        let data_size = (data.len() * std::mem::size_of::<T>()) as u64;
+        if data_size > b.size {
+            panic!("Data size exceeds buffer size");
         }
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), b.ptr as *mut T, data.len());
+        }
+        b.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn create_command_buffer(&self, pool: vk::CommandPool, level: vk::CommandBufferLevel) -> vk::CommandBuffer {
@@ -378,7 +381,9 @@ impl VulkanDevice {
     pub fn destroy_buffer(&self, buffer: Buffer) {
         unsafe {
             self.device.destroy_buffer(buffer.handle, None);
-            self.device.free_memory(buffer.memory, None);
+            if let Some(alloc) = buffer.allocation.lock().unwrap().take() {
+                self.allocator.lock().unwrap().free(alloc).unwrap();
+            }
         }
     }
 
@@ -473,10 +478,16 @@ impl VulkanDevice {
 impl Drop for VulkanDevice {
     fn drop(&mut self) {
         unsafe {
-            for pool in self.thread_command_pools.drain(..) {
-                self.device.destroy_command_pool(pool, None);
+            for pools in self.thread_command_pools.drain(..) {
+                for pool in pools {
+                    self.device.destroy_command_pool(pool, None);
+                }
             }
             self.device.destroy_command_pool(self.command_pool, None);
+            // Allocator must be dropped before Device
+            // We use Arc to share it, so we need to ensure it's the last reference
+            // or we just let Arc handle it, but wait_idle is important.
+            let _ = self.device.device_wait_idle();
             self.device.destroy_device(None);
         }
     }

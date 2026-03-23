@@ -398,14 +398,17 @@ impl EguiRenderer {
                 );
                 renderer.upload_to_buffer(&staging, &pixels);
 
-                let (image, memory) = renderer.create_image_basic(
-                    size[0],
-                    size[1],
-                    1,
-                    vk::Format::R8G8B8A8_UNORM,
-                    vk::ImageTiling::OPTIMAL,
-                    vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                let (image, _old_alloc) = renderer.create_image_basic(
+                    &crate::vulkan::device::ImageCreateParams {
+                        width: size[0],
+                        height: size[1],
+                        mip_levels: 1,
+                        format: vk::Format::R8G8B8A8_UNORM,
+                        tiling: vk::ImageTiling::OPTIMAL,
+                        usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                        properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                        samples: vk::SampleCountFlags::TYPE_1,
+                    }
                 );
 
                 renderer.transition_image_layout_basic(
@@ -427,9 +430,11 @@ impl EguiRenderer {
 
                 renderer.destroy_buffer(staging);
 
+                let allocation = _old_alloc;
+
                 let texture = crate::vulkan::texture::Texture {
                     image,
-                    memory,
+                    allocation: Some(allocation),
                     view,
                     sampler,
                     mip_levels: 1,

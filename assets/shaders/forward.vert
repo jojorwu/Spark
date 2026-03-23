@@ -30,7 +30,7 @@ layout(buffer_reference, std430) readonly buffer ObjectDataRef {
 
 layout (set = 0, binding = 0) uniform GlobalUBO {
     mat4 viewProj;
-    mat4 lightViewProj;
+    mat4 lightViewProj[4];
     mat4 invViewProj;
     vec4 cameraPos;
     vec4 frustum[6];
@@ -41,8 +41,6 @@ layout(location = 1) out vec2 outTexCoord;
 layout(location = 2) out vec3 outWorldPos;
 layout(location = 3) out vec3 outColor;
 layout(location = 4) out flat uint outMaterialIndex;
-layout(location = 5) out vec4 outCurrPos;
-layout(location = 6) out vec4 outPrevPos;
 
 layout(push_constant) uniform PushConstants {
     uint lightCount;
@@ -74,30 +72,22 @@ void main() {
     VertexBufferRef vertexBuffer = VertexBufferRef(push.vertexBufferAddress);
 
     uint objIdx = gl_InstanceIndex;
-    ObjectData obj = objectBuffer.objects[objIdx];
+    mat4 model = mat4(
+        vec4(objectBuffer.objects[objIdx].modelRow0.x, objectBuffer.objects[objIdx].modelRow1.x, objectBuffer.objects[objIdx].modelRow2.x, 0.0),
+        vec4(objectBuffer.objects[objIdx].modelRow0.y, objectBuffer.objects[objIdx].modelRow1.y, objectBuffer.objects[objIdx].modelRow2.y, 0.0),
+        vec4(objectBuffer.objects[objIdx].modelRow0.z, objectBuffer.objects[objIdx].modelRow1.z, objectBuffer.objects[objIdx].modelRow2.z, 0.0),
+        vec4(objectBuffer.objects[objIdx].modelRow0.w, objectBuffer.objects[objIdx].modelRow1.w, objectBuffer.objects[objIdx].modelRow2.w, 1.0)
+    );
 
     Vertex v = vertexBuffer.vertices[gl_VertexIndex];
     vec3 pos = vec3(v.pos[0], v.pos[1], v.pos[2]);
 
-    vec4 worldPos;
-    worldPos.x = dot(obj.modelRow0, vec4(pos, 1.0));
-    worldPos.y = dot(obj.modelRow1, vec4(pos, 1.0));
-    worldPos.z = dot(obj.modelRow2, vec4(pos, 1.0));
-    worldPos.w = 1.0;
+    vec4 worldPos = model * vec4(pos, 1.0);
     outWorldPos = worldPos.xyz;
-
-    vec3 localNormal = unpackNormal(v.normal);
-    outNormal.x = dot(obj.modelRow0.xyz, localNormal);
-    outNormal.y = dot(obj.modelRow1.xyz, localNormal);
-    outNormal.z = dot(obj.modelRow2.xyz, localNormal);
-    outNormal = normalize(outNormal);
-
+    outNormal = mat3(model) * unpackNormal(v.normal);
     outTexCoord = unpackTexCoord(v.texCoord);
     outColor = unpackColor(v.color);
     outMaterialIndex = objectBuffer.objects[objIdx].materialIndex;
 
-    outCurrPos = global.viewProj * worldPos;
-    outPrevPos = push.prevViewProj * worldPos;
-
-    gl_Position = outCurrPos;
+    gl_Position = global.viewProj * worldPos;
 }

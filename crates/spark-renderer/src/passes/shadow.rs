@@ -1,7 +1,6 @@
 use ash::vk;
-use crate::resource::Attachment;
+use std::sync::{Arc, Mutex};
 use crate::Renderer;
-use crate::vertex::Vertex;
 use crate::pipeline::Pipeline;
 
 pub const SHADOW_CASCADE_COUNT: usize = 4;
@@ -10,30 +9,92 @@ pub struct ShadowPass {
     pub pipeline: Option<vk::Pipeline>,
     pub layout: vk::PipelineLayout,
     pub image: vk::Image,
-    pub memory: vk::DeviceMemory,
+    pub allocation: Arc<Mutex<Option<gpu_allocator::vulkan::Allocation>>>,
     pub view: vk::ImageView, // View into the entire array
     pub cascade_views: [vk::ImageView; SHADOW_CASCADE_COUNT],
     pub sampler: vk::Sampler,
 }
 
-use super::RenderPass;
+use super::{RenderPass, RenderContext};
 
 impl RenderPass for ShadowPass {
-    fn update_descriptor_sets(&self, _renderer: &Renderer) {}
-    fn record_commands(&self, renderer: &Renderer, command_buffer: vk::CommandBuffer, _current_frame: usize) {
-        // Need to calculate light_view_projs here or pass it through GlobalUBO
-        // For simplicity, we'll keep the specialized record_commands and call it from the trait if possible,
-        // or refactor the specialized one to take the needed data.
+    fn name(&self) -> &str { "ShadowPass" }
+    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_shadows }
+
+    fn record_secondary_commands(&self, ctx: &RenderContext) -> Vec<vk::CommandBuffer> {
+        let renderer = ctx.renderer;
+        let device = &renderer.device.device;
+        let lvp = renderer.main_light_view_proj;
+
+        let mut buffers = Vec::new();
+        for cascade_idx in 0..SHADOW_CASCADE_COUNT {
+            let cb = renderer.allocate_secondary_command_buffer();
+
+            let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::default().depth_attachment_format(vk::Format::D32_SFLOAT);
+            let inheritance = vk::CommandBufferInheritanceInfo::default()
+                .push_next(&mut rendering_info);
+            let begin = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE).inheritance_info(&inheritance);
+
+            unsafe {
+                device.begin_command_buffer(cb, &begin).unwrap();
+                self.record_cascade_commands(device, cb, lvp, renderer, cascade_idx, true);
+                device.end_command_buffer(cb).unwrap();
+            }
+            buffers.push(cb);
+        }
+        buffers
+    }
+
+
+    fn record_commands(&self, _ctx: &RenderContext) {
+        // Note: record_cascade_commands is called via record_secondary_commands.
+    }
+
+    fn get_resource_view(&self, name: &str, _frame_index: usize) -> Option<vk::ImageView> {
+        if name == "shadow_map" {
+            Some(self.view)
+        } else {
+            None
+        }
+    }
+
+    fn destroy(&mut self, renderer: &mut Renderer) {
+        unsafe {
+            let device = &renderer.device.device;
+            for i in 0..SHADOW_CASCADE_COUNT {
+                device.destroy_image_view(self.cascade_views[i], None);
+            }
+            if let Some(p) = self.pipeline {
+                device.destroy_pipeline(p, None);
+            }
+            device.destroy_pipeline_layout(self.layout, None);
+            device.destroy_sampler(self.sampler, None);
+            device.destroy_image_view(self.view, None);
+            device.destroy_image(self.image, None);
+            if let Some(alloc) = self.allocation.lock().unwrap().take() {
+                renderer.device.allocator.lock().unwrap().free(alloc).unwrap();
+            }
+        }
     }
 }
 
 impl ShadowPass {
-    pub fn new(
+    pub fn record_commands_internal(
+        &self,
         device: &ash::Device,
-        pdevice: vk::PhysicalDevice,
-        instance: &ash::Instance,
+        command_buffer: vk::CommandBuffer,
+        light_view_projs: &[spark_math::Mat4; SHADOW_CASCADE_COUNT],
+        renderer: &Renderer,
+        object_count: u32,
+        is_secondary: bool,
+    ) {
+        self.record_commands_impl(device, command_buffer, light_view_projs, renderer, object_count, is_secondary);
+    }
+
+    pub fn new(
+        device_wrapper: &crate::vulkan::device::VulkanDevice,
     ) -> Result<Self, crate::error::RendererError> {
-        let props = unsafe { instance.get_physical_device_memory_properties(pdevice) };
+        let device = &device_wrapper.device;
         let extent = vk::Extent3D {
             width: Renderer::SHADOW_MAP_CASCADE_SIZE,
             height: Renderer::SHADOW_MAP_CASCADE_SIZE,
@@ -54,25 +115,16 @@ impl ShadowPass {
 
         let image = unsafe { device.create_image(&image_info, None)? };
         let reqs = unsafe { device.get_image_memory_requirements(image) };
-        let mut type_idx = 0;
-        for i in 0..props.memory_type_count {
-            if (reqs.memory_type_bits & (1 << i)) != 0
-                && (props.memory_types[i as usize].property_flags & vk::MemoryPropertyFlags::DEVICE_LOCAL) == vk::MemoryPropertyFlags::DEVICE_LOCAL
-            {
-                type_idx = i;
-                break;
-            }
-        }
 
-        let memory = unsafe {
-            device.allocate_memory(
-                &vk::MemoryAllocateInfo::default()
-                    .allocation_size(reqs.size)
-                    .memory_type_index(type_idx),
-                None,
-            )?
-        };
-        unsafe { device.bind_image_memory(image, memory, 0)? };
+        let allocation = device_wrapper.allocator.lock().unwrap().allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+            name: "Shadow Map",
+            requirements: reqs,
+            location: gpu_allocator::MemoryLocation::GpuOnly,
+            linear: false,
+            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+        }).map_err(|_| crate::error::RendererError::NoSuitableDevice)?;
+
+        unsafe { device.bind_image_memory(image, allocation.memory(), allocation.offset())? };
 
         let view_info = vk::ImageViewCreateInfo::default()
             .image(image)
@@ -88,7 +140,7 @@ impl ShadowPass {
         let view = unsafe { device.create_image_view(&view_info, None)? };
 
         let mut cascade_views = [vk::ImageView::null(); SHADOW_CASCADE_COUNT];
-        for i in 0..SHADOW_CASCADE_COUNT {
+        for (i, view) in cascade_views.iter_mut().enumerate() {
              let v_info = vk::ImageViewCreateInfo::default()
                 .image(image)
                 .view_type(vk::ImageViewType::TYPE_2D)
@@ -100,7 +152,7 @@ impl ShadowPass {
                     base_array_layer: i as u32,
                     layer_count: 1,
                 });
-            cascade_views[i] = unsafe { device.create_image_view(&v_info, None)? };
+            *view = unsafe { device.create_image_view(&v_info, None)? };
         }
 
         let sampler = unsafe {
@@ -133,7 +185,7 @@ impl ShadowPass {
             pipeline: None,
             layout,
             image,
-            memory,
+            allocation: Arc::new(Mutex::new(Some(allocation))),
             view,
             cascade_views,
             sampler,
@@ -162,14 +214,7 @@ impl ShadowPass {
                 .name(&entry_point),
         ];
 
-        let binding_descriptions = [
-            Vertex::get_binding_description(),
-        ];
-        let attribute_descriptions = Vertex::get_attribute_descriptions();
-
-        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(&binding_descriptions)
-            .vertex_attribute_descriptions(&attribute_descriptions);
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
 
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
@@ -228,13 +273,13 @@ impl ShadowPass {
         }
     }
 
-    pub fn record_commands(
+    fn record_cascade_commands(
         &self,
         device: &ash::Device,
         command_buffer: vk::CommandBuffer,
-        light_view_projs: &[spark_math::Mat4; SHADOW_CASCADE_COUNT],
+        lvp: spark_math::Mat4,
         renderer: &Renderer,
-        object_count: u32,
+        cascade_idx: usize,
         is_secondary: bool,
     ) {
         let pipeline = match self.pipeline {
@@ -250,119 +295,109 @@ impl ShadowPass {
         }];
 
         unsafe {
-            let mut inheritance_info = vk::CommandBufferInheritanceRenderingInfo::default()
-                .depth_attachment_format(vk::Format::D32_SFLOAT);
-            let inherit = vk::CommandBufferInheritanceInfo::default().push_next(&mut inheritance_info);
-            let begin_info = vk::CommandBufferBeginInfo::default()
-                .flags(if is_secondary {
-                    vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE | vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
-                } else {
-                    vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
+            let depth_attachment = vk::RenderingAttachmentInfo::default()
+                .image_view(self.cascade_views[cascade_idx])
+                .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .clear_value(clear[0]);
+
+            let rendering_info = vk::RenderingInfo::default()
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: vk::Extent2D {
+                        width: Renderer::SHADOW_MAP_CASCADE_SIZE,
+                        height: Renderer::SHADOW_MAP_CASCADE_SIZE,
+                    },
                 })
-                .inheritance_info(&inherit);
+                .layer_count(1)
+                .depth_attachment(&depth_attachment);
 
-            device.begin_command_buffer(command_buffer, &begin_info).unwrap();
+            if is_secondary {
+                // Secondary buffers used in dynamic rendering don't use this flag in begin_rendering,
+                // but the inheritance info must match.
+            }
 
-            for cascade_idx in 0..SHADOW_CASCADE_COUNT {
-                let depth_attachment = vk::RenderingAttachmentInfo::default()
-                    .image_view(self.cascade_views[cascade_idx])
-                    .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                    .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::STORE)
-                    .clear_value(clear[0]);
+            device.cmd_begin_rendering(command_buffer, &rendering_info);
 
-                let rendering_info = vk::RenderingInfo::default()
-                    .render_area(vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: vk::Extent2D {
-                            width: Renderer::SHADOW_MAP_CASCADE_SIZE,
-                            height: Renderer::SHADOW_MAP_CASCADE_SIZE,
-                        },
-                    })
-                    .layer_count(1)
-                    .depth_attachment(&depth_attachment);
+            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
-                device.cmd_begin_rendering(command_buffer, &rendering_info);
+            let shadow_viewport = vk::Viewport::default()
+                .width(Renderer::SHADOW_MAP_CASCADE_SIZE as f32)
+                .height(Renderer::SHADOW_MAP_CASCADE_SIZE as f32)
+                .min_depth(0.0)
+                .max_depth(1.0);
+            let shadow_scissor = vk::Rect2D::default().extent(vk::Extent2D {
+                width: Renderer::SHADOW_MAP_CASCADE_SIZE,
+                height: Renderer::SHADOW_MAP_CASCADE_SIZE,
+            });
+            device.cmd_set_viewport(command_buffer, 0, &[shadow_viewport]);
+            device.cmd_set_scissor(command_buffer, 0, &[shadow_scissor]);
 
-                device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            #[repr(C)]
+            struct PC {
+                lvp: spark_math::Mat4,
+                address: u64,
+                vertex_address: u64,
+            }
+            let frame = &renderer.frames[renderer.current_frame];
+            let pc = PC {
+                lvp,
+                address: frame.object_data_buffer.as_ref().map_or(0, |b| b.address),
+                vertex_address: renderer.global_vertex_buffer.as_ref().map_or(0, |b| b.address),
+            };
+            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
 
-                let shadow_viewport = vk::Viewport::default()
-                    .width(Renderer::SHADOW_MAP_CASCADE_SIZE as f32)
-                    .height(Renderer::SHADOW_MAP_CASCADE_SIZE as f32)
-                    .min_depth(0.0)
-                    .max_depth(1.0);
-                let shadow_scissor = vk::Rect2D::default().extent(vk::Extent2D {
-                    width: Renderer::SHADOW_MAP_CASCADE_SIZE,
-                    height: Renderer::SHADOW_MAP_CASCADE_SIZE,
-                });
-                device.cmd_set_viewport(command_buffer, 0, &[shadow_viewport]);
-                device.cmd_set_scissor(command_buffer, 0, &[shadow_scissor]);
+            device.cmd_push_constants(
+                command_buffer,
+                self.layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                pc_bytes,
+            );
 
-                #[repr(C)]
-                struct PC {
-                    lvp: spark_math::Mat4,
-                    padding: u32,
-                    address: u64,
-                }
-                let frame = &renderer.frames[renderer.current_frame];
-                let pc = PC {
-                    lvp: light_view_projs[cascade_idx],
-                    padding: 0,
-                    address: frame.object_data_buffer.map_or(0, |b| b.address),
-                };
-                let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+            if let Some(ref indirect_buffer) = frame.indirect_commands_buffer {
+                if let Some(ib) = renderer.global_index_buffer.as_ref() {
+                    device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
 
-                device.cmd_push_constants(
-                    command_buffer,
-                    self.layout,
-                    vk::ShaderStageFlags::VERTEX,
-                    0,
-                    pc_bytes,
-                );
-
-                if let Some(indirect_buffer) = frame.indirect_commands_buffer {
-                    if let (Some(vb), Some(ib)) = (renderer.global_vertex_buffer, renderer.global_index_buffer) {
-                        device.cmd_bind_vertex_buffers(command_buffer, 0, &[vb.handle], &[0]);
-                        device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
-
-                        if let Some(count_buffer) = frame.draw_count_buffer {
-                            device.cmd_draw_indexed_indirect_count(
-                                command_buffer,
-                                indirect_buffer.handle,
-                                0,
-                                count_buffer.handle,
-                                0,
-                                object_count,
-                                std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
-                            );
-                        } else {
-                            device.cmd_draw_indexed_indirect(
-                                command_buffer,
-                                indirect_buffer.handle,
-                                0,
-                                object_count,
-                                std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
-                            );
-                        }
+                    if let Some(ref count_buffer) = frame.draw_count_buffer {
+                        device.cmd_draw_indexed_indirect_count(
+                            command_buffer,
+                            indirect_buffer.handle,
+                            0,
+                            count_buffer.handle,
+                            0,
+                            renderer.last_object_count,
+                            std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                        );
+                    } else {
+                        device.cmd_draw_indexed_indirect(
+                            command_buffer,
+                            indirect_buffer.handle,
+                            0,
+                            renderer.last_object_count,
+                            std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                        );
                     }
                 }
-
-                device.cmd_end_rendering(command_buffer);
             }
-            device.end_command_buffer(command_buffer).unwrap();
+
+            device.cmd_end_rendering(command_buffer);
         }
     }
 
-    pub fn destroy(&mut self, device: &ash::Device) {
-        unsafe {
-            if let Some(p) = self.pipeline {
-                device.destroy_pipeline(p, None);
-            }
-            device.destroy_pipeline_layout(self.layout, None);
-            device.destroy_sampler(self.sampler, None);
-            device.destroy_image_view(self.view, None);
-            device.destroy_image(self.image, None);
-            device.free_memory(self.memory, None);
+    fn record_commands_impl(
+        &self,
+        device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        light_view_projs: &[spark_math::Mat4; SHADOW_CASCADE_COUNT],
+        renderer: &Renderer,
+        _object_count: u32,
+        is_secondary: bool,
+    ) {
+        for (cascade_idx, &lvp) in light_view_projs.iter().enumerate() {
+            self.record_cascade_commands(device, command_buffer, lvp, renderer, cascade_idx, is_secondary);
         }
     }
+
 }

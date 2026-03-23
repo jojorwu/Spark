@@ -2,21 +2,12 @@ pub mod error;
 pub mod pipeline;
 pub mod passes;
 pub mod resource;
+pub mod factory;
 pub mod ui;
 pub mod vertex;
 pub mod vulkan;
 
 use crate::error::RendererError;
-use crate::passes::deferred::DeferredPass;
-use crate::passes::post_process::PostProcessPass;
-use crate::passes::shadow::ShadowPass;
-use crate::passes::culling::CullingPass;
-use crate::passes::hiz::HiZPass;
-use crate::passes::ssao::SSAOPass;
-use crate::passes::clustered::ClusteredPass;
-use crate::passes::taa::TAAPass;
-use crate::passes::grid::GridPass;
-use crate::passes::volumetric::VolumetricPass;
 use crate::pipeline::Pipeline;
 pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT, ObjectDataSSBO, MaterialDataSSBO};
 use crate::ui::EguiRenderer;
@@ -25,28 +16,23 @@ use crate::vulkan::device::VulkanDevice;
 use crate::vulkan::gbuffer::GBuffer;
 use crate::vulkan::swapchain::VulkanSwapchain;
 use crate::vulkan::texture::Texture;
+use spark_math::Vec4Swizzles;
 pub use ash;
 use ash::vk;
 use winit::window::Window;
 
-/// The main renderer of the Spark Engine.
+/// The main renderer of the Spark Engine, responsible for managing the Vulkan context,
+/// swapchain, and executing the rendering pipeline through a modular pass system.
 pub struct Renderer {
-    context: VulkanContext,
+    pub context: VulkanContext,
     pub device: VulkanDevice,
+    pub resource_tracker: crate::resource::ResourceTracker,
     swapchain: VulkanSwapchain,
     pub gbuffer: GBuffer,
     pub global_descriptor_set_layout: vk::DescriptorSetLayout,
     pub light_count: u32,
-    pub shadow_pass: ShadowPass,
-    pub deferred_pass: DeferredPass,
-    pub post_process_pass: PostProcessPass,
-    pub culling_pass: Option<CullingPass>,
-    pub hiz_pass: Option<HiZPass>,
-    pub ssao_pass: Option<SSAOPass>,
-    pub clustered_pass: Option<ClusteredPass>,
-    pub taa_pass: Option<TAAPass>,
-    pub grid_pass: Option<GridPass>,
-    pub volumetric_pass: Option<VolumetricPass>,
+    pub render_passes: Vec<Box<dyn crate::passes::RenderPass>>,
+    pub render_stages: Vec<Vec<usize>>,
     pub frames: [RenderFrame; MAX_FRAMES_IN_FLIGHT],
     pub pipeline_cache: vk::PipelineCache,
     current_frame: usize,
@@ -63,6 +49,9 @@ pub struct Renderer {
     pub scene_view_matrix_for_pos: spark_math::Mat4,
     pub prev_view_proj: spark_math::Mat4,
     pub frame_index: u64,
+    pub common_sampler: vk::Sampler,
+    pub common_shadow_view: vk::ImageView,
+    pub hiz_view: vk::ImageView,
     egui_renderer: Option<EguiRenderer>,
     pub bindless_descriptor_set_layout: vk::DescriptorSetLayout,
     pub bindless_descriptor_set: vk::DescriptorSet,
@@ -77,18 +66,25 @@ pub struct Renderer {
     pub enable_volumetric: bool,
     pub enable_grid: bool,
     pub enable_ibl: bool,
+    pub enable_bloom: bool,
+    pub main_light_view_proj: spark_math::Mat4,
+    pub current_view_proj: spark_math::Mat4,
+    pub last_object_count: u32,
+    pub last_transparent_count: u32,
+    pub current_image_index: u32,
+    pub pass_descriptor_versions: Vec<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
+    pub dummy_buffer: Buffer,
 }
 
-fn halton(index: u32, base: u32) -> f32 {
-    let mut result = 0.0;
-    let mut f = 1.0;
-    let mut i = index;
-    while i > 0 {
-        f = f / base as f32;
-        result += f * (i % base) as f32;
-        i = i / base;
-    }
-    result
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct GlobalUBO {
+    pub vp: spark_math::Mat4,
+    pub lvp: [spark_math::Mat4; 4],
+    pub inv_vp: spark_math::Mat4,
+    pub camera_pos: [f32; 4],
+    pub frustum: [spark_math::Vec4; 6],
+    pub cascade_splits: [f32; 4],
 }
 
 impl Renderer {
@@ -113,26 +109,33 @@ impl Renderer {
             window.inner_size().height,
         )?;
 
-        let shadow_pass = ShadowPass::new(&device.device, device.pdevice, &context.instance)?;
-
         let gbuffer = GBuffer::new(
-            &device.device,
-            device.pdevice,
-            &context.instance,
+            &device,
             swapchain.extent,
             device.msaa_samples,
             device.depth_format,
-        );
-
-        let post_process_pass = PostProcessPass::new(
-            &device.device,
-            device.pdevice,
-            &context.instance,
-            swapchain.format,
-            swapchain.extent,
         )?;
 
+        let common_sampler = unsafe {
+            device.device.create_sampler(
+                &vk::SamplerCreateInfo::default()
+                    .mag_filter(vk::Filter::LINEAR)
+                    .min_filter(vk::Filter::LINEAR)
+                    .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                    .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                    .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                    .border_color(vk::BorderColor::FLOAT_OPAQUE_WHITE)
+                    .mipmap_mode(vk::SamplerMipmapMode::LINEAR),
+                None,
+            )?
+        };
+
         let (av, fi, in_f) = Self::create_sync_objects_impl(&device.device);
+        let dummy_buffer = device.create_buffer(
+            64,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        ).map_err(|_| RendererError::NoSuitableDevice)?;
         let pipeline_cache = unsafe {
             device.device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)?
         };
@@ -213,11 +216,12 @@ impl Renderer {
             )? [0]
         };
 
+        let global_layouts = vec![global_descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         let global_descriptor_sets = unsafe {
             device.device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(descriptor_pool)
-                    .set_layouts(&[global_descriptor_set_layout, global_descriptor_set_layout]),
+                    .set_layouts(&global_layouts),
             )?
         };
 
@@ -242,14 +246,14 @@ impl Renderer {
                     indirect_commands_buffer: None,
                     object_data_buffer: None,
                     draw_count_buffer: None,
+                    transparent_indirect_buffer: None,
+                    transparent_object_buffer: None,
+                secondary_command_buffers: Vec::new(),
                 }
             })
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
-
-        let deferred_pass =
-            DeferredPass::new(&device.device, descriptor_pool, global_descriptor_set_layout)?;
 
         let egui_renderer = ui_shaders.map(|(v, f)| {
             EguiRenderer::new(
@@ -261,23 +265,16 @@ impl Renderer {
             )
         });
 
-        Ok(Self {
+        let mut renderer = Self {
             context,
             device,
+            resource_tracker: crate::resource::ResourceTracker::new(),
             swapchain,
             gbuffer,
             global_descriptor_set_layout,
             light_count: 0,
-            shadow_pass,
-            deferred_pass,
-            post_process_pass,
-            culling_pass: None,
-            hiz_pass: None,
-            ssao_pass: None,
-            clustered_pass: None,
-            taa_pass: None,
-            grid_pass: None,
-            volumetric_pass: None,
+            render_passes: Vec::new(),
+            render_stages: Vec::new(),
             frames,
             pipeline_cache,
             current_frame: 0,
@@ -294,6 +291,9 @@ impl Renderer {
             scene_view_matrix_for_pos: spark_math::Mat4::IDENTITY,
             prev_view_proj: spark_math::Mat4::IDENTITY,
             frame_index: 0,
+            common_sampler,
+            common_shadow_view: vk::ImageView::null(),
+            hiz_view: vk::ImageView::null(),
             egui_renderer,
             bindless_descriptor_set_layout,
             bindless_descriptor_set,
@@ -308,7 +308,21 @@ impl Renderer {
             enable_volumetric: true,
             enable_grid: true,
             enable_ibl: true,
-        })
+            enable_bloom: true,
+            main_light_view_proj: spark_math::Mat4::IDENTITY,
+            current_view_proj: spark_math::Mat4::IDENTITY,
+            last_object_count: 0,
+            last_transparent_count: 0,
+            current_image_index: 0,
+            pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).collect(),
+            dummy_buffer,
+        };
+
+        renderer.init_default_resources();
+        renderer.common_shadow_view = renderer.default_texture.as_ref().unwrap().view;
+        renderer.hiz_view = renderer.default_texture.as_ref().unwrap().view;
+
+        Ok(renderer)
     }
 
     pub fn set_global_buffers(&mut self, vertex: Buffer, index: Buffer) {
@@ -318,36 +332,6 @@ impl Renderer {
 
     pub fn set_material_buffer(&mut self, buffer: Buffer) {
         self.global_material_buffer = Some(buffer);
-    }
-
-    pub fn set_deferred_pipeline(&mut self, pipeline: vk::Pipeline) {
-        self.deferred_pass.pipeline = Some(pipeline);
-        self.update_deferred_descriptor_sets();
-    }
-
-    fn update_deferred_descriptor_sets(&self) {
-        let light_buffers: Vec<Buffer> = self.frames.iter().filter_map(|f| f.light_buffer).collect();
-        let object_buffers: Vec<Option<Buffer>> = self.frames.iter().map(|f| f.object_data_buffer).collect();
-
-        let irr_view = self.ibl_maps.as_ref().map(|m| m.irradiance_view).unwrap_or(self.shadow_pass.view);
-        let spec_view = self.ibl_maps.as_ref().map(|m| m.prefilter_view).unwrap_or(self.shadow_pass.view);
-        let brdf_view = self.ibl_maps.as_ref().map(|m| m.brdf_lut_view).unwrap_or(self.shadow_pass.view);
-
-        self.deferred_pass.update_descriptor_sets(
-            &self.device.device,
-            &self.gbuffer.albedo,
-            &self.gbuffer.normal,
-            &self.gbuffer.pbr,
-            &self.gbuffer.depth,
-            self.shadow_pass.view,
-            self.shadow_pass.sampler,
-            &light_buffers,
-            &object_buffers,
-            &self.gbuffer.ssao_blur,
-            irr_view,
-            spec_view,
-            brdf_view,
-        );
     }
 
     pub fn set_pipeline(&mut self, pipeline: Pipeline) {
@@ -410,126 +394,57 @@ impl Renderer {
         self.default_descriptor_set = ds;
     }
 
-    pub fn create_shadow_pipeline(&mut self, vert_spirv: &[u32], frag_spirv: &[u32]) {
-        self.shadow_pass.create_pipeline(
-            &self.device.device,
-            self.pipeline_cache,
-            vert_spirv,
-            frag_spirv,
-        );
-    }
 
-    pub fn create_culling_pipeline(&mut self, shader_code: &[u32]) {
-        self.culling_pass = Some(CullingPass::new(
-            &self.device.device,
-            self.descriptor_pool,
-            shader_code,
-            self.global_descriptor_set_layout,
-        ));
-    }
-
-    pub fn create_hiz_pipeline(&mut self, shader_code: &[u32]) {
-        self.hiz_pass = Some(HiZPass::new(
-            &self.device,
-            self.descriptor_pool,
-            shader_code,
-            self.swapchain.extent.width,
-            self.swapchain.extent.height,
-        ));
-    }
-
-    pub fn create_ssao_pipeline(&mut self, vert: &[u32], ssao: &[u32], blur: &[u32]) {
-        let mut pass = SSAOPass::new(self, self.descriptor_pool).unwrap();
-        pass.create_pipelines(&self.device.device, self.pipeline_cache, self.swapchain.extent, vert, ssao, blur);
-        self.ssao_pass = Some(pass);
-        self.update_ssao_descriptor_sets();
-    }
-
-    pub fn create_clustered_pipeline(&mut self, build: &[u32], cull: &[u32]) {
-        let pass = ClusteredPass::new(self, build, cull).unwrap();
-        self.clustered_pass = Some(pass);
-        self.update_clustered_descriptor_sets();
-    }
-
-    fn update_clustered_descriptor_sets(&self) {
-        if let (Some(pass), Some(lb)) = (&self.clustered_pass, self.frames[self.current_frame].light_buffer) {
-            pass.update_descriptor_sets(&self.device.device, &lb);
+    pub fn update_all_descriptor_sets(&mut self) {
+        for pass in &self.render_passes {
+            pass.update_descriptor_sets(self);
         }
+        self.ensure_global_descriptor_set();
     }
 
-    pub fn create_taa_pipeline(&mut self, vert: &[u32], frag: &[u32]) {
-        let pass = TAAPass::new(self, frag, vert).unwrap();
-        pass.update_descriptor_sets(&self.device.device, &self.gbuffer.hdr, &self.gbuffer.velocity, &self.gbuffer.depth, self.shadow_pass.sampler);
-        self.taa_pass = Some(pass);
-    }
-
-    pub fn create_grid_pipeline(&mut self, vert: &[u32], frag: &[u32]) {
-        self.grid_pass = Some(GridPass::new(
-            &self.device.device,
-            self.pipeline_cache,
-            vert,
-            frag,
-            self.global_descriptor_set_layout,
-            vk::Format::R16G16B16A16_SFLOAT,
-        ));
-    }
-
-    pub fn create_volumetric_pipeline(&mut self, shader_code: &[u32]) {
-        let pass = VolumetricPass::new(self, shader_code);
-        pass.update_descriptor_sets(self);
-        self.volumetric_pass = Some(pass);
-        self.update_post_process_descriptor_sets();
-    }
-
-    fn update_ssao_descriptor_sets(&self) {
-        if let Some(pass) = &self.ssao_pass {
-            pass.update_descriptor_sets(
-                &self.device.device,
-                &self.gbuffer.normal,
-                &self.gbuffer.depth,
-                &self.gbuffer.ssao,
-                self.shadow_pass.sampler,
-            );
+    pub fn update_pass_descriptors_if_needed(&mut self, current_frame: usize) {
+        let mut passes_to_update = Vec::new();
+        for (i, pass) in self.render_passes.iter().enumerate() {
+            if pass.needs_descriptor_update(self, current_frame) {
+                passes_to_update.push(i);
+            }
         }
-    }
 
-    pub fn create_post_process_pipeline(&mut self, vert_spirv: &[u32], frag_spirv: &[u32], bloom_frag_spirv: &[u32]) {
-        self.post_process_pass.create_pipelines(
-            &self.device.device,
-            self.pipeline_cache,
-            self.swapchain.extent,
-            vert_spirv,
-            frag_spirv,
-            bloom_frag_spirv,
-        );
-        self.update_post_process_descriptor_sets();
-    }
+        for idx in passes_to_update {
+            let pass_name = self.render_passes[idx].name().to_string();
+            self.render_passes[idx].update_descriptor_sets(self);
 
-    fn update_post_process_descriptor_sets(&self) {
-        let taa_images = self.taa_pass.as_ref().map(|t| &t.history_images);
-        let fog_images = self.volumetric_pass.as_ref().map(|f| &f.output_images);
-        self.post_process_pass.update_descriptor_sets(
-            &self.device.device,
-            &self.gbuffer.hdr,
-            self.shadow_pass.sampler,
-            taa_images,
-            fog_images,
-        );
+            // Note: This logic assumes that if update_descriptor_sets is called,
+            // the pass is now up-to-date with whatever resource it tracked in needs_descriptor_update.
+            self.pass_descriptor_versions[current_frame].lock().unwrap().insert(pass_name, 1);
+        }
     }
 
     pub fn ensure_global_descriptor_set(&mut self) {
-        let hiz_view = self.hiz_pass.as_ref().map(|h| h.pyramid_view).unwrap_or(self.shadow_pass.view); // Placeholder if no hiz
-
-        let (grid_buf, index_buf) = if let Some(pass) = &self.clustered_pass {
-            (Some(pass.light_grid_buffer), Some(pass.global_index_list))
+        let hiz_view = if self.hiz_view != vk::ImageView::null() {
+            self.hiz_view
         } else {
-            (None, None)
+            self.common_shadow_view
+        };
+
+        let (grid_buf, index_buf) = {
+            let mut g = None;
+            let mut idx = None;
+            for pass in &self.render_passes {
+                if let Some(b) = pass.get_resource_buffer("light_grid") {
+                    g = Some(b);
+                }
+                if let Some(b) = pass.get_resource_buffer("index_list") {
+                    idx = Some(b);
+                }
+            }
+            (g, idx)
         };
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let frame = &self.frames[i];
             if let (Some(global_buffer), Some(obj_buf), Some(ind_buf), Some(cnt_buf)) =
-                (frame.global_buffer, frame.object_data_buffer, frame.indirect_commands_buffer, frame.draw_count_buffer) {
+                (frame.global_buffer.as_ref(), frame.object_data_buffer.as_ref(), frame.indirect_commands_buffer.as_ref(), frame.draw_count_buffer.as_ref()) {
                 let ds = frame.global_descriptor_set;
                 let buf_info = [vk::DescriptorBufferInfo::default().buffer(global_buffer.handle).range(global_buffer.size)];
                 let obj_info = [vk::DescriptorBufferInfo::default().buffer(obj_buf.handle).range(obj_buf.size)];
@@ -539,7 +454,7 @@ impl Renderer {
                 let hiz_info = [vk::DescriptorImageInfo::default()
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .image_view(hiz_view)
-                    .sampler(self.shadow_pass.sampler)];
+                    .sampler(self.common_sampler)];
 
                 let mut writes = vec![
                     vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(0).descriptor_type(vk::DescriptorType::UNIFORM_BUFFER).buffer_info(&buf_info),
@@ -550,22 +465,23 @@ impl Renderer {
                 ];
 
                 let mat_info;
-                if let Some(mat_buf) = self.global_material_buffer {
+                if let Some(ref mat_buf) = self.global_material_buffer {
                     mat_info = [vk::DescriptorBufferInfo::default().buffer(mat_buf.handle).range(mat_buf.size)];
                     writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(5).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&mat_info));
                 }
 
                 let grid_info;
-                if let Some(gb) = grid_buf {
+                if let Some(ref gb) = grid_buf {
                     grid_info = [vk::DescriptorBufferInfo::default().buffer(gb.handle).range(gb.size)];
                     writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(6).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&grid_info));
                 }
 
                 let idx_info;
-                if let Some(ib) = index_buf {
+                if let Some(ref ib) = index_buf {
                     idx_info = [vk::DescriptorBufferInfo::default().buffer(ib.handle).range(ib.size)];
                     writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(7).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&idx_info));
                 }
+
                 unsafe {
                     self.device.device.update_descriptor_sets(&writes, &[]);
                 }
@@ -609,7 +525,7 @@ impl Renderer {
         }
     }
 
-    pub fn update_lights(&mut self, lights: &[(spark_math::Vec3, spark_math::Vec3, f32)]) {
+    pub fn update_lights_from_draw(&mut self, lights: &[crate::resource::LightDraw]) {
         let count = lights.len();
         if count == 0 {
             return;
@@ -623,9 +539,9 @@ impl Renderer {
         }
         let ld: Vec<LD> = lights
             .iter()
-            .map(|(p, c, i)| LD {
-                pos: [p.x, p.y, p.z, 1.0],
-                col: [c.x, c.y, c.z, *i],
+            .map(|l| LD {
+                pos: [l.position.x, l.position.y, l.position.z, 1.0],
+                col: [l.color.x, l.color.y, l.color.z, l.intensity],
             })
             .collect();
         let sz = (ld.len() * std::mem::size_of::<LD>()) as u64;
@@ -634,7 +550,7 @@ impl Renderer {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let needs_new_buffer = {
                 let frame = &self.frames[i];
-                frame.light_buffer.is_none() || frame.light_buffer.unwrap().size < sz
+                frame.light_buffer.is_none() || frame.light_buffer.as_ref().unwrap().size < sz
             };
 
             if needs_new_buffer {
@@ -645,7 +561,7 @@ impl Renderer {
                 );
 
                 let frame = &mut self.frames[i];
-                if let Some(old) = frame.light_buffer {
+                if let Some(old) = frame.light_buffer.take() {
                     self.device.destroy_buffer(old);
                 }
                 frame.light_buffer = Some(new_buffer);
@@ -654,11 +570,10 @@ impl Renderer {
         }
 
         if needs_reupdate {
-            self.update_deferred_descriptor_sets();
-                self.update_clustered_descriptor_sets();
+            self.update_all_descriptor_sets();
         }
 
-        let lb = self.frames[self.current_frame].light_buffer.unwrap();
+        let lb = self.frames[self.current_frame].light_buffer.as_ref().cloned().unwrap();
         self.upload_to_buffer(&lb, &ld);
     }
 
@@ -673,17 +588,17 @@ impl Renderer {
         (frame.instance_pool.len() - 1) as u32
     }
 
-    pub fn update_indirect_buffers(
+    pub fn update_transparent_buffers(
         &mut self,
         commands: &[vk::DrawIndexedIndirectCommand],
         object_data: &[ObjectDataSSBO],
     ) {
         let frame_idx = self.current_frame;
-        let cmd_sz = (commands.len() * std::mem::size_of::<vk::DrawIndexedIndirectCommand>()) as u64;
+        let cmd_sz = std::mem::size_of_val(commands) as u64;
 
-        let mut buffer = self.frames[frame_idx].indirect_commands_buffer;
-        if buffer.is_none() || buffer.unwrap().size < cmd_sz {
-            if let Some(old) = buffer {
+        let mut buffer = self.frames[frame_idx].transparent_indirect_buffer.clone();
+        if buffer.is_none() || buffer.as_ref().unwrap().size < cmd_sz {
+            if let Some(old) = self.frames[frame_idx].transparent_indirect_buffer.take() {
                 self.device.destroy_buffer(old);
             }
             buffer = Some(self.create_buffer(
@@ -691,14 +606,16 @@ impl Renderer {
                 vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             ));
-            self.frames[frame_idx].indirect_commands_buffer = buffer;
+            self.frames[frame_idx].transparent_indirect_buffer = buffer.clone();
         }
-        self.upload_to_buffer(&buffer.unwrap(), commands);
+        if !commands.is_empty() {
+            self.upload_to_buffer(&buffer.unwrap(), commands);
+        }
 
-        let obj_sz = (object_data.len() * std::mem::size_of::<ObjectDataSSBO>()) as u64;
-        let mut obj_buffer = self.frames[frame_idx].object_data_buffer;
-        if obj_buffer.is_none() || obj_buffer.unwrap().size < obj_sz {
-            if let Some(old) = obj_buffer {
+        let obj_sz = std::mem::size_of_val(object_data) as u64;
+        let mut obj_buffer = self.frames[frame_idx].transparent_object_buffer.clone();
+        if obj_buffer.is_none() || obj_buffer.as_ref().unwrap().size < obj_sz {
+            if let Some(old) = self.frames[frame_idx].transparent_object_buffer.take() {
                 self.device.destroy_buffer(old);
             }
             obj_buffer = Some(self.create_buffer(
@@ -706,7 +623,47 @@ impl Renderer {
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             ));
-            self.frames[frame_idx].object_data_buffer = obj_buffer;
+            self.frames[frame_idx].transparent_object_buffer = obj_buffer.clone();
+        }
+        if !object_data.is_empty() {
+            self.upload_to_buffer(&obj_buffer.unwrap(), object_data);
+        }
+    }
+
+    pub fn update_indirect_buffers(
+        &mut self,
+        commands: &[vk::DrawIndexedIndirectCommand],
+        object_data: &[ObjectDataSSBO],
+    ) {
+        let frame_idx = self.current_frame;
+        let cmd_sz = std::mem::size_of_val(commands) as u64;
+
+        let mut buffer = self.frames[frame_idx].indirect_commands_buffer.clone();
+        if buffer.is_none() || buffer.as_ref().unwrap().size < cmd_sz {
+            if let Some(old) = self.frames[frame_idx].indirect_commands_buffer.take() {
+                self.device.destroy_buffer(old);
+            }
+            buffer = Some(self.create_buffer(
+                cmd_sz.max(1024),
+                vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ));
+            self.frames[frame_idx].indirect_commands_buffer = buffer.clone();
+        }
+        self.upload_to_buffer(&buffer.unwrap(), commands);
+
+        let obj_sz = std::mem::size_of_val(object_data) as u64;
+        let mut obj_buffer = self.frames[frame_idx].object_data_buffer.clone();
+        if obj_buffer.is_none() || obj_buffer.as_ref().unwrap().size < obj_sz {
+            if let Some(old) = self.frames[frame_idx].object_data_buffer.take() {
+                self.device.destroy_buffer(old);
+            }
+            obj_buffer = Some(self.create_buffer(
+                obj_sz.max(1024),
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ));
+            self.frames[frame_idx].object_data_buffer = obj_buffer.clone();
         }
         self.upload_to_buffer(&obj_buffer.unwrap(), object_data);
 
@@ -729,7 +686,7 @@ impl Renderer {
             if self.frames[frame_idx].instance_pool[idx].size >= sz {
                 return idx as u32;
             }
-            let old = self.frames[frame_idx].instance_pool[idx];
+            let old = self.frames[frame_idx].instance_pool[idx].clone();
             self.device.destroy_buffer(old);
         }
 
@@ -737,7 +694,7 @@ impl Renderer {
             sz,
             vk::BufferUsageFlags::VERTEX_BUFFER,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        );
+        ).expect("Failed to create instance buffer");
 
         let frame = &mut self.frames[frame_idx];
         if idx < frame.instance_pool.len() {
@@ -751,12 +708,15 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     pub fn draw_frame(
         &mut self,
-        view_proj: spark_math::Mat4,
-        light_view_proj: spark_math::Mat4,
         window: &Window,
         egui_output: Option<(egui::FullOutput, egui::Context)>,
-        object_count: u32,
+        _object_count: u32,
+        delta: f32,
     ) {
+        // Retrieve view_proj and light_view_proj from the current frame's global buffer
+        // For simplicity, we'll keep them as parameters or fetch from UBO.
+        // Since prepare_frame just uploaded them, we can use them from there or just pass them.
+        // Let's modify prepare_frame to store them in the Renderer.
         let (image_available, in_flight, command_buffer, render_finished) = {
             let frame = &self.frames[self.current_frame];
             (frame.image_available, frame.in_flight, frame.command_buffer, frame.render_finished)
@@ -774,7 +734,10 @@ impl Renderer {
                 vk::Fence::null(),
             );
             let image_index = match result {
-                Ok((index, _)) => index,
+                Ok((index, _)) => {
+                    self.current_image_index = index;
+                    index
+                },
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                     let _ = self.recreate_swapchain(window);
                     return;
@@ -793,17 +756,15 @@ impl Renderer {
                 )
                 .expect("Failed to reset command buffer");
 
-            // Clean up secondary command buffers from previous frame
-            let thread_pools = self.device.thread_command_pools.clone();
-            for pool in thread_pools {
+            // Clean up secondary command buffers for the current frame
+            for pools in &self.device.thread_command_pools {
+                let pool = pools[self.current_frame];
                 self.device.device.reset_command_pool(pool, vk::CommandPoolResetFlags::empty()).unwrap();
             }
             self.record_command_buffer(
                 image_index,
-                view_proj,
-                light_view_proj,
                 egui_output,
-                object_count,
+                delta,
             );
             let s_available = [image_available];
             let s_finished = [render_finished];
@@ -836,396 +797,100 @@ impl Renderer {
                 }
                 Err(e) => panic!("Failed to present swapchain image: {:?}", e),
             }
-            self.prev_view_proj = view_proj;
+            let cvp = self.current_view_proj;
+            self.prev_view_proj = cvp;
             self.frame_index += 1;
             self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
         }
     }
 
+    pub fn set_common_shadow_view(&mut self, view: vk::ImageView) {
+        self.common_shadow_view = view;
+        self.update_all_descriptor_sets();
+    }
+
+    pub fn set_hiz_view(&mut self, view: vk::ImageView) {
+        self.hiz_view = view;
+        self.update_all_descriptor_sets();
+    }
+
     fn record_command_buffer(
         &mut self,
         image_index: u32,
-        view_proj: spark_math::Mat4,
-        light_view_proj: spark_math::Mat4,
         egui_output: Option<(egui::FullOutput, egui::Context)>,
-        object_count: u32,
+        delta: f32,
     ) {
+        use rayon::prelude::*;
         let command_buffer = self.frames[self.current_frame].command_buffer;
+        let cf = self.current_frame;
+
         unsafe {
             self.device
                 .device
                 .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
                 .unwrap();
 
-            // 0a. Hi-Z Pyramid Generation (Using previous frame depth)
-            if let Some(hiz) = &self.hiz_pass {
-                hiz.record_commands(
-                    &self.device.device,
-                    command_buffer,
-                    self.gbuffer.depth[(self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT].view,
-                    self.shadow_pass.sampler,
-                );
-            }
+            use crate::passes::RenderContext;
 
-            // 0b. Clustered Shading: Light Culling
-            if let Some(clustered) = &self.clustered_pass {
-                let view = self.scene_view_matrix_for_pos;
-                let proj = spark_math::Mat4::perspective_rh(
-                    45.0f32.to_radians(),
-                    self.swapchain.extent.width as f32 / self.swapchain.extent.height as f32,
-                    0.1,
-                    100.0,
-                );
-
-                clustered.record_build_commands(
-                    &self.device.device,
-                    command_buffer,
-                    proj.inverse(),
-                    [self.swapchain.extent.width as f32, self.swapchain.extent.height as f32],
-                    0.1,
-                    100.0
-                );
-
-                clustered.record_cull_commands(&self.device.device, command_buffer, view, self.light_count);
-            }
-
-            // 0c. Culling Pass (GPU-Driven)
-            if let Some(culling) = &self.culling_pass {
-                let global_ds = self.frames[self.current_frame].global_descriptor_set;
-                if let (Some(obj_buf), Some(ind_buf), Some(cnt_buf)) = (
-                    self.frames[self.current_frame].object_data_buffer,
-                    self.frames[self.current_frame].indirect_commands_buffer,
-                    self.frames[self.current_frame].draw_count_buffer
-                ) {
-                    culling.record_commands(
-                        &self.device.device,
-                        command_buffer,
-                        object_count,
-                        global_ds,
-                        &obj_buf,
-                        &ind_buf,
-                        &cnt_buf,
-                    );
-                }
-            }
-
-            // 1. Parallel Record Shadow, G-Buffer and Lighting Passes
-            let current_frame_idx = self.current_frame;
-
-            #[repr(C)]
-            struct PC {
-                count: u32,
-                metallic: f32,
-                roughness: f32,
-                width: f32,
-                height: f32,
-                padding: u32,
-                object_buffer_address: u64,
-                prev_view_proj: spark_math::Mat4,
-            }
-            let pc = PC {
-                count: self.light_count,
-                metallic: 0.5,
-                roughness: 0.5,
-                width: self.swapchain.extent.width as f32,
-                height: self.swapchain.extent.height as f32,
-                padding: 0,
-                object_buffer_address: self.frames[self.current_frame].object_data_buffer.map_or(0, |b| b.address),
-                prev_view_proj: self.prev_view_proj,
-            };
-            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
-
-            let ((scb_shadow, scb_gbuffer), scb_lighting) = rayon::join(
-                || rayon::join(
-                    || {
-                        let pool = self.get_thread_command_pool(0);
-                        let scb = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
-                        self.shadow_pass.record_commands(&self.device.device, scb, &[light_view_proj; 4], self, object_count, true);
-                        scb
-                    },
-                    || {
-                        let pool = self.get_thread_command_pool(1);
-                        let scb = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
-                        self.deferred_pass.record_gbuffer_commands(self, scb, pc_bytes, current_frame_idx, object_count);
-                        scb
-                    }
-                ),
-                || {
-                    let pool = self.get_thread_command_pool(2);
-                    let scb = self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY);
-                    self.deferred_pass.record_lighting_commands(self, scb, pc_bytes, current_frame_idx);
-                    scb
-                }
-            );
-
-            // 2. Main Pass (Geometry + Lighting) Orchestration
-
-            #[repr(C)]
-            #[derive(Copy, Clone)]
-            struct GlobalUBO {
-                vp: spark_math::Mat4,
-                lvp: [spark_math::Mat4; 4],
-                inv_vp: spark_math::Mat4,
-                camera_pos: [f32; 4],
-                frustum: [spark_math::Vec4; 6],
-                cascade_splits: [f32; 4],
-            }
-
-            let inv_v = self.scene_view_matrix_for_pos.inverse();
-            let camera_pos = [inv_v.w_axis.x, inv_v.w_axis.y, inv_v.w_axis.z, 1.0];
-
-            let mut frustum = [spark_math::Vec4::ZERO; 6];
-            let m = view_proj.transpose();
-            frustum[0] = m.w_axis + m.x_axis;
-            frustum[1] = m.w_axis - m.x_axis;
-            frustum[2] = m.w_axis + m.y_axis;
-            frustum[3] = m.w_axis - m.y_axis;
-            frustum[4] = m.w_axis + m.z_axis;
-            frustum[5] = m.w_axis - m.z_axis;
-
-            for plane in &mut frustum {
-                let len = spark_math::Vec3::new(plane.x, plane.y, plane.z).length();
-                *plane /= len;
-            }
-
-            let ubo = GlobalUBO {
-                vp: view_proj,
-                lvp: [light_view_proj; 4], // TODO: Calculate actual CSM projs
-                inv_vp: view_proj.inverse(),
-                camera_pos,
-                frustum,
-                cascade_splits: [0.1, 0.2, 0.5, 1.0], // Normalized linear depth
+            let ctx = RenderContext {
+                renderer: self,
+                command_buffer,
+                current_frame: cf,
+                image_index,
+                delta,
             };
 
-            {
-                let needs_init = self.frames[0].global_buffer.is_none();
-                if needs_init {
-                    for i in 0..MAX_FRAMES_IN_FLIGHT {
-                        let new_buffer = self.create_buffer(
-                            std::mem::size_of::<GlobalUBO>() as u64,
-                            vk::BufferUsageFlags::UNIFORM_BUFFER,
-                            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                        );
-                        self.frames[i].global_buffer = Some(new_buffer);
+            // 1. Record secondary command buffers in parallel
+            let pass_secondary_commands: Vec<Vec<vk::CommandBuffer>> = self.render_passes.par_iter().map(|pass| {
+                pass.record_secondary_commands(&ctx)
+            }).collect();
+
+            // 2. Execute commands sequentially within stages to preserve pass dependencies
+            for stage in &self.render_stages {
+                for &idx in stage {
+                    let pass = &self.render_passes[idx];
+
+                    // Automated Barrier Injection
+                    for (res_name, _access, _stage_flags) in pass.gpu_resource_access() {
+                        if let Some(_view) = pass.get_resource_view(&res_name, cf) {
+                            // Find corresponding image for the view (requires tracking in ResourceTracker)
+                            // For now, this logic is a placeholder for a more complete Resource Graph.
+                        }
                     }
-                    self.ensure_global_descriptor_set();
-                }
-                let gb = self.frames[self.current_frame].global_buffer.unwrap();
-                self.upload_to_buffer(&gb, &[ubo]);
-            }
 
-            // 2a. Execute Shadow Pass
-            if self.enable_shadows {
-                self.device.device.cmd_execute_commands(command_buffer, &[scb_shadow]);
-            }
-
-            // Barrier: Shadow Map to SHADER_READ_ONLY_OPTIMAL
-            let shadow_barrier = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(self.shadow_pass.image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::DEPTH,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                });
-            self.device.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[shadow_barrier],
-            );
-
-            // 2b. Execute G-Buffer Pass
-            self.device.device.cmd_execute_commands(command_buffer, &[scb_gbuffer]);
-
-            // Barrier: G-Buffer to SHADER_READ_ONLY_OPTIMAL
-            let gbuffer_barriers = [
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(self.gbuffer.albedo[self.current_frame].image)
-                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(self.gbuffer.normal[self.current_frame].image)
-                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(self.gbuffer.pbr[self.current_frame].image)
-                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(self.gbuffer.depth[self.current_frame].image)
-                    .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::DEPTH, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
-            ];
-            self.device.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &gbuffer_barriers,
-            );
-
-            // 2c. Execute SSAO Pass
-            if let Some(ssao) = &self.ssao_pass {
-                if self.enable_ssao {
-                let view = self.scene_view_matrix_for_pos;
-                let projection = spark_math::Mat4::perspective_rh(
-                    45.0f32.to_radians(),
-                    self.swapchain.extent.width as f32 / self.swapchain.extent.height as f32,
-                    0.1,
-                    100.0,
-                );
-                ssao.record_commands(
-                    self,
-                    command_buffer,
-                    self.swapchain.extent,
-                    self.current_frame,
-                    self.gbuffer.ssao[self.current_frame].view,
-                    self.gbuffer.ssao[self.current_frame].image,
-                    self.gbuffer.ssao_blur[self.current_frame].view,
-                    self.gbuffer.ssao_blur[self.current_frame].image,
-                    projection,
-                    view,
-                );
+                    if !pass_secondary_commands[idx].is_empty() {
+                        self.device.device.cmd_execute_commands(command_buffer, &pass_secondary_commands[idx]);
+                    }
+                    pass.record_commands(&ctx);
                 }
             }
 
-            // 2d. Execute Lighting Pass
-            self.device.device.cmd_execute_commands(command_buffer, &[scb_lighting]);
-
-            // Barrier: HDR to SHADER_READ_ONLY_OPTIMAL (lighting pass recorded into secondary might not do this transition on primary)
-            let hdr_to_shader_barrier = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(self.gbuffer.hdr[self.current_frame].image)
-                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-            self.device.device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &[hdr_to_shader_barrier]);
-
-            // Barrier: HDR Image to COLOR_ATTACHMENT_OPTIMAL for Egui
-            let hdr_barrier = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .image(self.gbuffer.hdr[self.current_frame].image)
-                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-            self.device.device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::DependencyFlags::empty(), &[], &[], &[hdr_barrier]);
-
-            if let Some((output, ctx)) = egui_output {
+            if let Some((output, egui_ctx)) = egui_output {
                 let ext = self.swapchain.extent;
                 if let Some(mut egui) = self.egui_renderer.take() {
-                    egui.draw(
-                        self,
-                        command_buffer,
-                        output,
-                        [ext.width as f32, ext.height as f32],
-                        &ctx,
-                    );
+                    egui.draw(self, command_buffer, output, [ext.width as f32, ext.height as f32], &egui_ctx);
                     self.egui_renderer = Some(egui);
                 }
             }
 
-            // Transition HDR image for post processing (after Egui)
-            let hdr_barrier = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(self.gbuffer.hdr[self.current_frame].image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1
-                });
-            self.device.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[hdr_barrier]
-            );
-
-            if let Some(taa) = &self.taa_pass {
-                if self.enable_taa {
-                    taa.record_commands(&self.device.device, command_buffer, self.swapchain.extent, self.current_frame);
-                }
-            }
-
-            if let Some(grid) = &self.grid_pass {
-                if self.enable_grid {
-                 let global_ds = self.frames[self.current_frame].global_descriptor_set;
-                 grid.record_commands(
-                    &self.device.device,
-                    command_buffer,
-                    self.swapchain.extent,
-                    global_ds,
-                    self.gbuffer.hdr[self.current_frame].view,
-                    self.gbuffer.depth[self.current_frame].view,
-                );
-                }
-            }
-
-            if let Some(volumetric) = &self.volumetric_pass {
-                if self.enable_volumetric {
-                let global_ds = self.frames[self.current_frame].global_descriptor_set;
-                volumetric.record_commands(
-                    &self.device.device,
-                    command_buffer,
-                    self.current_frame,
-                    global_ds,
-                    self.swapchain.extent,
-                );
-                }
-            }
-
-            let target_view = self.viewport_attachment.as_ref().map(|a| a.view);
-            self.post_process_pass.record_commands(
-                &self.device.device,
-                command_buffer,
-                image_index,
-                self.current_frame,
-                self.swapchain.views[image_index as usize],
-                self.swapchain.images[image_index as usize],
-                self.swapchain.extent,
-                target_view,
-                self.exposure,
-                self.gamma,
-            );
-
-            self.device
-                .device
-                .end_command_buffer(command_buffer)
-                .unwrap();
+            self.device.device.end_command_buffer(command_buffer).unwrap();
         }
     }
 
     pub fn create_viewport_attachment(&mut self, width: u32, height: u32) {
         if let Some(old) = self.viewport_attachment.take() {
-            old.destroy(&self.device.device);
+            old.destroy(&self.device.device, &self.device.allocator);
         }
 
         let format = vk::Format::R16G16B16A16_SFLOAT;
         let attachment = Attachment::create_image_resource(
-            &self.device.device,
-            &self.device.memory_properties,
+            &self.device,
             width,
             height,
             format,
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC,
             vk::SampleCountFlags::TYPE_1,
-        );
+        ).expect("Failed to create viewport attachment");
 
         self.viewport_attachment = Some(attachment);
     }
@@ -1243,24 +908,32 @@ impl Renderer {
                 window.inner_size().width,
                 window.inner_size().height,
             )?;
+            let extent = self.swapchain.extent;
             self.gbuffer.recreate(
-                &self.device.device,
-                self.device.pdevice,
-                &self.context.instance,
-                self.swapchain.extent,
+                &self.device,
+                extent,
                 self.device.msaa_samples,
                 self.device.depth_format,
-            );
-            self.update_deferred_descriptor_sets();
-            self.update_ssao_descriptor_sets();
-            self.update_post_process_descriptor_sets();
+            )?;
+
+            if self.viewport_attachment.is_some() {
+                self.create_viewport_attachment(extent.width, extent.height);
+            }
+
+            let mut render_passes = std::mem::take(&mut self.render_passes);
+            for pass in &mut render_passes {
+                pass.on_resize(self, extent);
+            }
+            self.render_passes = render_passes;
+
+            self.update_all_descriptor_sets();
         }
         Ok(())
     }
 
     fn cleanup_swapchain(&mut self) {
         unsafe {
-            self.gbuffer.destroy(&self.device.device);
+            self.gbuffer.destroy(&self.device.device, &self.device.allocator);
             self.swapchain
                 .loader
                 .destroy_swapchain(self.swapchain.handle, None);
@@ -1280,15 +953,18 @@ impl Renderer {
         );
         self.upload_to_buffer(&st, pix);
         let (i, m) = self.create_image_basic(
-            w,
-            h,
-            mip,
-            vk::Format::R8G8B8A8_SRGB,
-            vk::ImageTiling::OPTIMAL,
-            vk::ImageUsageFlags::TRANSFER_SRC
-                | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::SAMPLED,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            &crate::vulkan::device::ImageCreateParams {
+                width: w,
+                height: h,
+                mip_levels: mip,
+                format: vk::Format::R8G8B8A8_SRGB,
+                tiling: vk::ImageTiling::OPTIMAL,
+                usage: vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST
+                    | vk::ImageUsageFlags::SAMPLED,
+                properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                samples: vk::SampleCountFlags::TYPE_1,
+            }
         );
         self.transition_image_layout_basic(
             i,
@@ -1324,6 +1000,9 @@ impl Renderer {
         self.destroy_buffer(st);
 
         let bindless_index = self.next_bindless_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if bindless_index >= 10000 {
+            panic!("Exceeded maximum bindless texture count (10000)");
+        }
 
         let img_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -1341,7 +1020,7 @@ impl Renderer {
 
         Texture {
             image: i,
-            memory: m,
+            allocation: Some(m),
             view: v,
             sampler: s,
             mip_levels: mip,
@@ -1349,27 +1028,23 @@ impl Renderer {
         }
     }
 
-    pub fn destroy_texture(&mut self, t: Texture) {
+    pub fn destroy_texture(&mut self, mut t: Texture) {
         self.texture_descriptor_sets.remove(&t.view);
         unsafe {
             self.device.device.destroy_sampler(t.sampler, None);
             self.device.device.destroy_image_view(t.view, None);
             self.device.device.destroy_image(t.image, None);
-            self.device.device.free_memory(t.memory, None);
+            if let Some(alloc) = t.allocation.take() {
+                self.device.allocator.lock().unwrap().free(alloc).unwrap();
+            }
         }
     }
 
     pub fn create_image_basic(
         &self,
-        w: u32,
-        h: u32,
-        mip: u32,
-        f: vk::Format,
-        t: vk::ImageTiling,
-        u: vk::ImageUsageFlags,
-        p: vk::MemoryPropertyFlags,
-    ) -> (vk::Image, vk::DeviceMemory) {
-        self.device.create_image(w, h, mip, f, t, u, p)
+        params: &crate::vulkan::device::ImageCreateParams,
+    ) -> (vk::Image, gpu_allocator::vulkan::Allocation) {
+        self.device.create_image(params).expect("Failed to create image")
     }
 
     pub fn create_texture_sampler(&self, mip: u32) -> vk::Sampler {
@@ -1546,18 +1221,255 @@ impl Renderer {
         id
     }
 
+    /// Calculates the projection jitter for temporal anti-aliasing.
     pub fn get_jitter(&self) -> [f32; 2] {
-        let x = halton((self.frame_index % 16) as u32 + 1, 2) - 0.5;
-        let y = halton((self.frame_index % 16) as u32 + 1, 3) - 0.5;
+        let x = crate::vulkan::utils::halton((self.frame_index % 16) as u32 + 1, 2) - 0.5;
+        let y = crate::vulkan::utils::halton((self.frame_index % 16) as u32 + 1, 3) - 0.5;
         [x / self.swapchain.extent.width as f32, y / self.swapchain.extent.height as f32]
     }
+
+    pub fn add_render_pass<P: crate::passes::RenderPass + 'static>(&mut self, pass: P) {
+        self.render_passes.push(Box::new(pass));
+    }
+
+    pub fn sort_render_passes(&mut self) {
+        let mut visited = std::collections::HashSet::new();
+        let mut temp_visited = std::collections::HashSet::new();
+
+        let name_to_idx: std::collections::HashMap<String, usize> = self.render_passes.iter().enumerate()
+            .map(|(i, p)| (p.name().to_string(), i))
+            .collect();
+
+        fn visit(
+            idx: usize,
+            passes: &Vec<Box<dyn crate::passes::RenderPass>>,
+            name_to_idx: &std::collections::HashMap<String, usize>,
+            ordered: &mut Vec<usize>,
+            visited: &mut std::collections::HashSet<usize>,
+            temp_visited: &mut std::collections::HashSet<usize>,
+        ) {
+            if temp_visited.contains(&idx) {
+                panic!("Circular dependency detected in render passes!");
+            }
+            if !visited.contains(&idx) {
+                temp_visited.insert(idx);
+                for dep in passes[idx].dependencies() {
+                    if let Some(&dep_idx) = name_to_idx.get(dep) {
+                        visit(dep_idx, passes, name_to_idx, ordered, visited, temp_visited);
+                    }
+                }
+                temp_visited.remove(&idx);
+                visited.insert(idx);
+                ordered.push(idx);
+            }
+        }
+
+        let mut indices = Vec::new();
+        for i in 0..self.render_passes.len() {
+            visit(i, &self.render_passes, &name_to_idx, &mut indices, &mut visited, &mut temp_visited);
+        }
+
+        let mut old_passes: Vec<Option<Box<dyn crate::passes::RenderPass>>> = self.render_passes.drain(..).map(Some).collect();
+        for idx in indices {
+            self.render_passes.push(old_passes[idx].take().unwrap());
+        }
+
+        self.build_render_stages();
+    }
+
+    fn build_render_stages(&mut self) {
+        let name_to_idx: std::collections::HashMap<String, usize> = self.render_passes.iter().enumerate()
+            .map(|(i, p)| (p.name().to_string(), i))
+            .collect();
+
+        let mut pass_stages = vec![0; self.render_passes.len()];
+        let mut max_stage = 0;
+
+        for (i, pass) in self.render_passes.iter().enumerate() {
+            let mut stage = 0;
+            for dep in pass.dependencies() {
+                if let Some(&dep_idx) = name_to_idx.get(dep) {
+                    stage = stage.max(pass_stages[dep_idx] + 1);
+                }
+            }
+            pass_stages[i] = stage;
+            max_stage = max_stage.max(stage);
+        }
+
+        self.render_stages = vec![Vec::new(); max_stage + 1];
+        for (i, &stage) in pass_stages.iter().enumerate() {
+            self.render_stages[stage].push(i);
+        }
+    }
+
+    /// Calculates the six frustum planes from a view-projection matrix.
+    fn calculate_frustum_planes(view_proj: spark_math::Mat4) -> [spark_math::Vec4; 6] {
+        let mut frustum = [spark_math::Vec4::ZERO; 6];
+        let m = view_proj.transpose();
+        frustum[0] = m.w_axis + m.x_axis;
+        frustum[1] = m.w_axis - m.x_axis;
+        frustum[2] = m.w_axis + m.y_axis;
+        frustum[3] = m.w_axis - m.y_axis;
+        frustum[4] = m.w_axis + m.z_axis;
+        frustum[5] = m.w_axis - m.z_axis;
+
+        for plane in &mut frustum {
+            let len = spark_math::Vec3::new(plane.x, plane.y, plane.z).length();
+            *plane /= len;
+        }
+        frustum
+    }
+
+    pub fn prepare_frame(
+        &mut self,
+        packet: crate::resource::FramePacket,
+    ) -> u32 {
+        use rayon::prelude::*;
+        self.scene_view_matrix_for_pos = packet.view_matrix;
+
+        // 1. Prepare GPU Indirect and Object buffers in parallel
+        let (object_ssbos, indirect_commands): (Vec<_>, Vec<_>) = packet.opaque_meshes.par_iter().enumerate().map(|(i, mesh)| {
+             let m = mesh.model.transpose();
+             let ssbo = ObjectDataSSBO {
+                model_row0: m.row(0),
+                model_row1: m.row(1),
+                model_row2: m.row(2),
+                sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
+                index_count: mesh.index_count,
+                first_index: mesh.first_index,
+                vertex_offset: mesh.vertex_offset,
+                material_index: mesh.material_index,
+            };
+            let cmd = vk::DrawIndexedIndirectCommand {
+                index_count: mesh.index_count,
+                instance_count: 1,
+                first_index: mesh.first_index,
+                vertex_offset: mesh.vertex_offset,
+                first_instance: i as u32,
+            };
+            (ssbo, cmd)
+        }).unzip();
+
+        self.update_indirect_buffers(&indirect_commands, &object_ssbos);
+        let total_objects = object_ssbos.len() as u32;
+
+        // 1.1 Prepare Transparent buffers (with simple back-to-front sorting)
+        let mut transparent_meshes = packet.transparent_meshes;
+        let view_pos = packet.view_matrix.inverse().w_axis.xyz();
+        transparent_meshes.sort_by(|a, b| {
+            let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
+            let dist_b = (b.model.w_axis.xyz() - view_pos).length_squared();
+            dist_b.partial_cmp(&dist_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let (trans_ssbos, trans_cmds): (Vec<_>, Vec<_>) = transparent_meshes.par_iter().enumerate().map(|(i, mesh)| {
+             let m = mesh.model.transpose();
+             let ssbo = ObjectDataSSBO {
+                model_row0: m.row(0),
+                model_row1: m.row(1),
+                model_row2: m.row(2),
+                sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
+                index_count: mesh.index_count,
+                first_index: mesh.first_index,
+                vertex_offset: mesh.vertex_offset,
+                material_index: mesh.material_index,
+            };
+            let cmd = vk::DrawIndexedIndirectCommand {
+                index_count: mesh.index_count,
+                instance_count: 1,
+                first_index: mesh.first_index,
+                vertex_offset: mesh.vertex_offset,
+                first_instance: i as u32,
+            };
+            (ssbo, cmd)
+        }).unzip();
+        self.update_transparent_buffers(&trans_cmds, &trans_ssbos);
+        self.last_transparent_count = trans_ssbos.len() as u32;
+
+        // 2. Update Lights
+        self.update_lights_from_draw(&packet.lights);
+
+        // 3. Update Global UBO
+        let extent = self.get_extent();
+        let jitter = self.get_jitter();
+
+        // Use camera projection from packet if available, otherwise default.
+        let mut projection = if packet.projection_matrix != spark_math::Mat4::IDENTITY {
+            packet.projection_matrix
+        } else {
+            spark_math::Mat4::perspective_rh(
+                45.0f32.to_radians(),
+                extent.width as f32 / extent.height as f32,
+                0.1,
+                100.0,
+            )
+        };
+        projection.col_mut(2).x += jitter[0] * projection.col(0).x;
+        projection.col_mut(2).y += jitter[1] * projection.col(1).y;
+        let view_proj = projection * packet.view_matrix;
+        self.current_view_proj = view_proj;
+
+        let light_pos = spark_math::Vec3::new(10.0, 10.0, 10.0);
+        let light_view = spark_math::Mat4::look_at_rh(
+            light_pos,
+            spark_math::Vec3::ZERO,
+            spark_math::Vec3::Y,
+        );
+        let light_proj = spark_math::Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 0.1, 100.0);
+        self.main_light_view_proj = light_proj * light_view;
+
+        let inv_v = packet.view_matrix.inverse();
+        let camera_pos = [inv_v.w_axis.x, inv_v.w_axis.y, inv_v.w_axis.z, 1.0];
+        let frustum = Self::calculate_frustum_planes(view_proj);
+
+        let ubo = GlobalUBO {
+            vp: view_proj,
+            lvp: [self.main_light_view_proj; 4],
+            inv_vp: view_proj.inverse(),
+            camera_pos,
+            frustum,
+            cascade_splits: [0.1, 0.2, 0.5, 1.0],
+        };
+
+        if self.frames[0].global_buffer.is_none() {
+            for i in 0..MAX_FRAMES_IN_FLIGHT {
+                let new_buffer = self.create_buffer(
+                    std::mem::size_of::<GlobalUBO>() as u64,
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                );
+                self.frames[i].global_buffer = Some(new_buffer);
+            }
+            self.ensure_global_descriptor_set();
+        }
+        let gb = self.frames[self.current_frame].global_buffer.as_ref().cloned().unwrap();
+        self.upload_to_buffer(&gb, &[ubo]);
+
+        // 4. Prepare Passes
+        let cf = self.current_frame;
+
+        for pass in &self.render_passes {
+            pass.prepare(self, cf);
+        }
+
+        self.last_object_count = total_objects;
+        total_objects
+    }
+
     /// Returns the raw ash::Device.
     pub fn get_device(&self) -> &ash::Device {
         &self.device.device
     }
 
-    pub fn get_thread_command_pool(&self, thread_idx: usize) -> vk::CommandPool {
-        self.device.thread_command_pools[thread_idx % self.device.thread_command_pools.len()]
+    pub fn get_thread_command_pool(&self) -> vk::CommandPool {
+        let thread_idx = rayon::current_thread_index().unwrap_or(0);
+        let pools = &self.device.thread_command_pools[thread_idx % self.device.thread_command_pools.len()];
+        pools[self.current_frame]
+    }
+
+    pub fn allocate_secondary_command_buffer(&self) -> vk::CommandBuffer {
+        let pool = self.get_thread_command_pool();
+        self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY)
     }
 
     /// Uploads data to a GPU buffer.
@@ -1574,7 +1486,7 @@ impl Renderer {
         usage: vk::BufferUsageFlags,
         properties: vk::MemoryPropertyFlags,
     ) -> Buffer {
-        self.device.create_buffer(sz, usage, properties)
+        self.device.create_buffer(sz, usage, properties).expect("Failed to create buffer")
     }
     pub fn destroy_buffer(&self, buffer: Buffer) {
         self.device.destroy_buffer(buffer);
@@ -1679,15 +1591,17 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_buffer_struct() {
         let buffer = Buffer {
             handle: vk::Buffer::null(),
-            memory: vk::DeviceMemory::null(),
+            allocation: Arc::new(Mutex::new(None)),
             size: 1024,
             ptr: std::ptr::null_mut(),
             address: 0,
+            version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         assert_eq!(buffer.size, 1024);
         assert_eq!(buffer.handle, vk::Buffer::null());
@@ -1709,6 +1623,11 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
             self.device.device.device_wait_idle().ok();
+
+            for mut pass in std::mem::take(&mut self.render_passes) {
+                pass.destroy(self);
+            }
+
             self.cleanup_swapchain();
 
             for frame in &mut self.frames {
@@ -1735,10 +1654,6 @@ impl Drop for Renderer {
                 self.device.device.destroy_fence(frame.in_flight, None);
             }
 
-            self.shadow_pass.destroy(&self.device.device);
-            self.deferred_pass.destroy(&self.device.device);
-            self.post_process_pass.destroy(&self.device.device);
-
             if let Some(p) = self.pipeline.take() {
                 self.device
                     .device
@@ -1757,9 +1672,6 @@ impl Drop for Renderer {
                 .destroy_descriptor_pool(self.descriptor_pool, None);
             if let Some(mut e) = self.egui_renderer.take() {
                 e.destroy(self);
-            }
-            if let Some(cp) = self.culling_pass.take() {
-                cp.destroy(&self.device.device);
             }
             if let Some(t) = self.default_texture.take() {
                 self.destroy_texture(t);

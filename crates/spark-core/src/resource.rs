@@ -1,33 +1,103 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::marker::PhantomData;
 use image::DynamicImage;
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Handle<T> {
+    id: u32,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T> Clone for Handle<T> {
+    fn clone(&self) -> Self { *self }
+}
+
+impl<T> Copy for Handle<T> {}
+
+impl<T> PartialEq for Handle<T> {
+    fn eq(&self, other: &Self) -> bool { self.id == other.id }
+}
+
+impl<T> Eq for Handle<T> {}
+
+impl<T> std::hash::Hash for Handle<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl<T> Handle<T> {
+    pub fn new(id: u32) -> Self {
+        Self { id, _marker: PhantomData }
+    }
+    pub fn id(&self) -> u32 { self.id }
+}
+
+pub struct AssetStorage<T> {
+    assets: Vec<T>,
+}
+
+impl<T> AssetStorage<T> {
+    pub fn new() -> Self { Self { assets: Vec::new() } }
+}
+
+impl<T> Default for AssetStorage<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> AssetStorage<T> {
+    pub fn add(&mut self, asset: T) -> Handle<T> {
+        let id = self.assets.len() as u32;
+        self.assets.push(asset);
+        Handle::new(id)
+    }
+    pub fn get(&self, handle: Handle<T>) -> Option<&T> {
+        self.assets.get(handle.id as usize)
+    }
+}
 
 pub struct ResourceManager {
-    pub textures: HashMap<PathBuf, DynamicImage>,
-    pub texture_indices: HashMap<PathBuf, u32>,
-    pub gpu_textures: Vec<spark_renderer::vulkan::texture::Texture>,
-    pub scenes: HashMap<PathBuf, gltf::Document>,
-    pub meshes: Vec<spark_renderer::Buffer>,
+    pub textures: AssetStorage<DynamicImage>,
+    pub gpu_textures: AssetStorage<spark_renderer::vulkan::texture::Texture>,
+    pub texture_path_map: HashMap<PathBuf, Handle<spark_renderer::vulkan::texture::Texture>>,
     pub all_vertices: Vec<spark_renderer::vertex::Vertex>,
     pub all_indices: Vec<u32>,
     pub all_materials: Vec<spark_renderer::MaterialDataSSBO>,
     pub needs_upload: bool,
+    pub registry: ResourceRegistry,
+}
+
+#[derive(Default)]
+pub struct ResourceRegistry {
+    pub active_meshes: HashMap<Handle<spark_renderer::vertex::Vertex>, u32>,
 }
 
 impl ResourceManager {
     pub fn new() -> Self {
         Self {
-            textures: HashMap::new(),
-            texture_indices: HashMap::new(),
-            gpu_textures: Vec::new(),
-            scenes: HashMap::new(),
-            meshes: Vec::new(),
+            textures: AssetStorage::new(),
+            gpu_textures: AssetStorage::new(),
+            texture_path_map: HashMap::new(),
             all_vertices: Vec::new(),
             all_indices: Vec::new(),
             all_materials: Vec::new(),
             needs_upload: false,
+            registry: ResourceRegistry::default(),
         }
     }
+}
+
+impl Default for ResourceManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ResourceManager {
 
     pub fn upload_global_buffers(&mut self, renderer: &mut spark_renderer::Renderer) {
         use spark_renderer::ash::vk;
@@ -47,23 +117,22 @@ impl ResourceManager {
         let v_sz = (self.all_vertices.len() * std::mem::size_of::<spark_renderer::vertex::Vertex>()) as u64;
         let vb = renderer.create_buffer(
             v_sz,
-            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
-        // Stage and upload
         let staging_v = renderer.create_buffer(
             v_sz,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
         renderer.upload_to_buffer(&staging_v, &self.all_vertices);
-        self.copy_buffer(renderer, staging_v, vb);
+        self.copy_buffer(renderer, staging_v.clone(), vb.clone());
         renderer.destroy_buffer(staging_v);
 
         let i_sz = (self.all_indices.len() * 4) as u64;
         let ib = renderer.create_buffer(
             i_sz,
-            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
         let staging_i = renderer.create_buffer(
@@ -72,7 +141,7 @@ impl ResourceManager {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
         renderer.upload_to_buffer(&staging_i, &self.all_indices);
-        self.copy_buffer(renderer, staging_i, ib);
+        self.copy_buffer(renderer, staging_i.clone(), ib.clone());
         renderer.destroy_buffer(staging_i);
 
         let m_sz = (self.all_materials.len() * std::mem::size_of::<spark_renderer::MaterialDataSSBO>()) as u64;
@@ -87,7 +156,7 @@ impl ResourceManager {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
         renderer.upload_to_buffer(&staging_m, &self.all_materials);
-        self.copy_buffer(renderer, staging_m, mb);
+        self.copy_buffer(renderer, staging_m.clone(), mb.clone());
         renderer.destroy_buffer(staging_m);
 
         renderer.set_global_buffers(vb, ib);
@@ -117,25 +186,70 @@ impl ResourceManager {
         self.all_vertices.clear();
         self.all_indices.clear();
         self.all_materials.clear();
-        log::info!("Loading glTF scene: {:?}", path);
-        let (doc, buffers, _) = gltf::import(&path).expect("Failed to load glTF");
+        GltfLoader::load_scene(self, path, scene_tree, renderer);
+    }
 
-        let parent_dir = path.parent().unwrap_or_else(|| std::path::Path::new("")).to_path_buf();
-        for gltf_scene in doc.scenes() {
-            for node in gltf_scene.nodes() {
-                self.process_gltf_node(node, &buffers, scene_tree, scene_tree.root, renderer, &parent_dir);
+    pub fn upload_texture(
+        &mut self,
+        path: &Path,
+        renderer: &spark_renderer::Renderer,
+    ) -> Handle<spark_renderer::vulkan::texture::Texture> {
+        if let Some(&handle) = self.texture_path_map.get(path) {
+            return handle;
+        }
+        log::info!("Loading and uploading texture: {:?}", path);
+        let img = image::open(path).unwrap_or_else(|e| {
+            log::warn!("Failed to load texture {:?}: {}. Using fallback.", path, e);
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 255, 255])))
+        });
+        let texture = renderer.create_texture_from_image(&img);
+        let handle = self.gpu_textures.add(texture);
+        self.texture_path_map.insert(path.to_path_buf(), handle);
+        handle
+    }
+}
+
+pub struct GltfLoader;
+
+impl GltfLoader {
+    pub fn load_scene(
+        rm: &mut ResourceManager,
+        path: PathBuf,
+        scene_tree: &mut crate::scene::Scene,
+        renderer: &spark_renderer::Renderer,
+    ) {
+        use rayon::prelude::*;
+        log::info!("Loading glTF scene: {:?}", path);
+        let (doc, buffers, images) = gltf::import(&path).expect("Failed to load glTF");
+        let parent_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+
+        // Pre-load images in parallel
+        let loaded_images: Vec<_> = images.par_iter().map(|data| {
+            image::load_from_memory(&data.pixels).unwrap_or_else(|_| {
+                image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, 1))
+            })
+        }).collect();
+
+        for img in loaded_images {
+            rm.textures.add(img);
+        }
+
+        let default_scene = doc.default_scene().or(doc.scenes().next());
+        if let Some(scene) = default_scene {
+            for node in scene.nodes() {
+                Self::process_node(rm, node, &buffers, scene_tree, scene_tree.root, renderer, &parent_dir);
             }
         }
     }
 
-    fn process_gltf_node(
-        &mut self,
+    fn process_node(
+        rm: &mut ResourceManager,
         node: gltf::Node,
         buffers: &[gltf::buffer::Data],
         scene_tree: &mut crate::scene::Scene,
         parent: crate::scene::NodeKey,
         renderer: &spark_renderer::Renderer,
-        parent_dir: &std::path::Path,
+        parent_dir: &Path,
     ) {
         use crate::scene::{Node, MeshComponent, Component};
         use spark_math::{Mat4, Vec3, Quat, Vec4};
@@ -153,10 +267,12 @@ impl ResourceManager {
             for primitive in mesh.primitives() {
                 use spark_renderer::vertex::Vertex;
                 let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-
-                let positions = reader.read_positions().unwrap().collect::<Vec<_>>();
-                let v_offset = self.all_vertices.len() as i32;
-                let i_start = self.all_indices.len() as u32;
+                let positions = match reader.read_positions() {
+                    Some(p) => p.collect::<Vec<_>>(),
+                    None => continue,
+                };
+                let v_offset = rm.all_vertices.len() as i32;
+                let i_start = rm.all_indices.len() as u32;
 
                 let mut max_dist_sq = 0.0f32;
                 let normals = reader.read_normals().map(|n| n.collect::<Vec<_>>());
@@ -165,9 +281,7 @@ impl ResourceManager {
                 for i in 0..positions.len() {
                     let p = positions[i];
                     let dist_sq = p[0]*p[0] + p[1]*p[1] + p[2]*p[2];
-                    if dist_sq > max_dist_sq {
-                        max_dist_sq = dist_sq;
-                    }
+                    if dist_sq > max_dist_sq { max_dist_sq = dist_sq; }
 
                     let n = if let Some(ref normals) = normals {
                         spark_math::Vec3::from_array(normals[i])
@@ -181,18 +295,18 @@ impl ResourceManager {
                         spark_math::Vec2::ZERO
                     };
 
-                    self.all_vertices.push(Vertex {
-                        pos: spark_math::Vec3::from_array(p),
-                        normal: n,
-                        color: spark_math::Vec3::ONE,
-                        tex_coord: tc,
-                    });
+                    rm.all_vertices.push(Vertex::pack(
+                        spark_math::Vec3::from_array(p),
+                        n,
+                        tc,
+                        spark_math::Vec3::ONE,
+                    ));
                 }
 
                 let index_count = if let Some(indices) = reader.read_indices() {
                     let idxs: Vec<u32> = indices.into_u32().collect();
                     let count = idxs.len() as u32;
-                    self.all_indices.extend(idxs);
+                    rm.all_indices.extend(idxs);
                     count
                 } else {
                     positions.len() as u32
@@ -223,37 +337,59 @@ impl ResourceManager {
 
                 if let Some(tex) = pbr.base_color_texture() {
                     if let gltf::image::Source::Uri { uri, .. } = tex.texture().source().source() {
-                        mat_ssbo.albedo_texture = self.upload_texture(parent_dir.join(uri), renderer) as i32;
+                        let handle = rm.upload_texture(&parent_dir.join(uri), renderer);
+                        if let Some(tex) = rm.gpu_textures.get(handle) {
+                            mat_ssbo.albedo_texture = tex.bindless_index as i32;
+                        }
                     }
                 }
                 if let Some(tex) = gltf_mat.normal_texture() {
                     if let gltf::image::Source::Uri { uri, .. } = tex.texture().source().source() {
-                        mat_ssbo.normal_texture = self.upload_texture(parent_dir.join(uri), renderer) as i32;
+                        let handle = rm.upload_texture(&parent_dir.join(uri), renderer);
+                        if let Some(tex) = rm.gpu_textures.get(handle) {
+                            mat_ssbo.normal_texture = tex.bindless_index as i32;
+                        }
                     }
                 }
                 if let Some(tex) = pbr.metallic_roughness_texture() {
                     if let gltf::image::Source::Uri { uri, .. } = tex.texture().source().source() {
-                        mat_ssbo.metallic_roughness_texture = self.upload_texture(parent_dir.join(uri), renderer) as i32;
+                        let handle = rm.upload_texture(&parent_dir.join(uri), renderer);
+                        if let Some(tex) = rm.gpu_textures.get(handle) {
+                            mat_ssbo.metallic_roughness_texture = tex.bindless_index as i32;
+                        }
+                    }
+                }
+                if let Some(tex) = gltf_mat.emissive_texture() {
+                    if let gltf::image::Source::Uri { uri, .. } = tex.texture().source().source() {
+                        let handle = rm.upload_texture(&parent_dir.join(uri), renderer);
+                        if let Some(tex) = rm.gpu_textures.get(handle) {
+                            mat_ssbo.emissive_texture = tex.bindless_index as i32;
+                        }
+                    }
+                }
+                if let Some(tex) = gltf_mat.occlusion_texture() {
+                    if let gltf::image::Source::Uri { uri, .. } = tex.texture().source().source() {
+                        let handle = rm.upload_texture(&parent_dir.join(uri), renderer);
+                        if let Some(tex) = rm.gpu_textures.get(handle) {
+                            mat_ssbo.occlusion_texture = tex.bindless_index as i32;
+                        }
                     }
                 }
 
-                self.all_materials.push(mat_ssbo);
-                let mat_idx = (self.all_materials.len() - 1) as u32;
-
-                let bounding_radius = max_dist_sq.sqrt();
+                rm.all_materials.push(mat_ssbo);
+                let mat_idx = (rm.all_materials.len() - 1) as u32;
 
                 let mesh_comp = MeshComponent {
                     vertex_count: positions.len() as u32,
                     index_count,
                     first_index: i_start,
                     vertex_offset: v_offset,
-                    texture_id: None,
+                    texture_handle: None,
                     material_index: Some(mat_idx),
-                    bounding_radius
+                    bounding_radius: max_dist_sq.sqrt()
                 };
                 components.push(Box::new(mesh_comp) as Box<dyn Component>);
-                self.needs_upload = true;
-                break;
+                rm.needs_upload = true;
             }
         }
 
@@ -267,32 +403,8 @@ impl ResourceManager {
         };
 
         let key = scene_tree.add_node(parent, spark_node);
-
         for child in node.children() {
-            self.process_gltf_node(child, buffers, scene_tree, key, renderer, parent_dir);
+            Self::process_node(rm, child, buffers, scene_tree, key, renderer, parent_dir);
         }
-    }
-
-    pub fn load_texture(&mut self, path: PathBuf) -> &DynamicImage {
-        self.textures.entry(path.clone()).or_insert_with(|| {
-            log::info!("Loading texture: {:?}", path);
-            image::open(path).expect("Failed to load texture")
-        })
-    }
-
-    pub fn upload_texture(
-        &mut self,
-        path: PathBuf,
-        renderer: &spark_renderer::Renderer,
-    ) -> u32 {
-        if let Some(&index) = self.texture_indices.get(&path) {
-            return index;
-        }
-        let img = self.load_texture(path.clone());
-        let texture = renderer.create_texture_from_image(img);
-        let index = texture.bindless_index;
-        self.gpu_textures.push(texture);
-        self.texture_indices.insert(path, index);
-        index
     }
 }

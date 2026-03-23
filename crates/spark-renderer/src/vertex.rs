@@ -1,58 +1,47 @@
 use ash::vk;
-use spark_math::{Vec2, Vec3};
+use spark_math::Vec3;
 use std::mem;
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[repr(C, align(4))]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Vertex {
-    pub pos: Vec3,
-    pub normal: Vec3,
-    pub color: Vec3,
-    pub tex_coord: Vec2,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct InstanceData {
-    pub model: spark_math::Mat4,
-}
-
-impl InstanceData {
-    pub fn get_binding_description() -> vk::VertexInputBindingDescription {
-        vk::VertexInputBindingDescription::default()
-            .binding(1)
-            .stride(mem::size_of::<InstanceData>() as u32)
-            .input_rate(vk::VertexInputRate::INSTANCE)
-    }
-
-    pub fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 4] {
-        [
-            // Mat4 takes 4 locations
-            vk::VertexInputAttributeDescription::default()
-                .binding(1)
-                .location(4)
-                .format(vk::Format::R32G32B32A32_SFLOAT)
-                .offset(0),
-            vk::VertexInputAttributeDescription::default()
-                .binding(1)
-                .location(5)
-                .format(vk::Format::R32G32B32A32_SFLOAT)
-                .offset(16),
-            vk::VertexInputAttributeDescription::default()
-                .binding(1)
-                .location(6)
-                .format(vk::Format::R32G32B32A32_SFLOAT)
-                .offset(32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(1)
-                .location(7)
-                .format(vk::Format::R32G32B32A32_SFLOAT)
-                .offset(48),
-        ]
-    }
+    pub pos: [f32; 3],
+    pub normal: u32,    // Packed 10_10_10_2
+    pub tex_coord: u32, // Packed 16_16
+    pub color: u32,     // Packed 8_8_8_8
 }
 
 impl Vertex {
+    pub fn pack(pos: Vec3, normal: Vec3, tex_coord: spark_math::Vec2, color: Vec3) -> Self {
+        let pack_normal = |n: Vec3| -> u32 {
+            let n = n.normalize();
+            let x = ((n.x * 0.5 + 0.5) * 1023.0) as u32;
+            let y = ((n.y * 0.5 + 0.5) * 1023.0) as u32;
+            let z = ((n.z * 0.5 + 0.5) * 1023.0) as u32;
+            x | (y << 10) | (z << 20)
+        };
+
+        let pack_tc = |tc: spark_math::Vec2| -> u32 {
+            let x = (tc.x * 65535.0) as u32 & 0xFFFF;
+            let y = (tc.y * 65535.0) as u32 & 0xFFFF;
+            x | (y << 16)
+        };
+
+        let pack_color = |c: Vec3| -> u32 {
+            let r = (c.x * 255.0) as u32 & 0xFF;
+            let g = (c.y * 255.0) as u32 & 0xFF;
+            let b = (c.z * 255.0) as u32 & 0xFF;
+            r | (g << 8) | (b << 16) | (255 << 24)
+        };
+
+        Self {
+            pos: pos.to_array(),
+            normal: pack_normal(normal),
+            tex_coord: pack_tc(tex_coord),
+            color: pack_color(color),
+        }
+    }
+
     pub fn get_binding_description() -> vk::VertexInputBindingDescription {
         vk::VertexInputBindingDescription::default()
             .binding(0)
@@ -70,18 +59,18 @@ impl Vertex {
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(1)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(12), // normal
+                .format(vk::Format::A2B10G10R10_UNORM_PACK32)
+                .offset(12),
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(2)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(24), // color
+                .format(vk::Format::R16G16_UNORM)
+                .offset(16),
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(3)
-                .format(vk::Format::R32G32_SFLOAT)
-                .offset(36), // tex_coord
+                .format(vk::Format::R8G8B8A8_UNORM)
+                .offset(20),
         ]
     }
 }

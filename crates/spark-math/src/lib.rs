@@ -23,7 +23,9 @@ impl Frustum {
         planes[5] = m.row(3) - m.row(2);
 
         for plane in &mut planes {
-            *plane /= plane.xyz().length();
+            let xyz = Vec3::new(plane.x, plane.y, plane.z);
+            let length = xyz.length();
+            *plane /= length;
         }
 
         Self { planes }
@@ -31,7 +33,8 @@ impl Frustum {
 
     pub fn intersects_sphere(&self, center: Vec3, radius: f32) -> bool {
         for plane in &self.planes {
-            if plane.xyz().dot(center) + plane.w + radius < 0.0 {
+            let xyz = Vec3::new(plane.x, plane.y, plane.z);
+            if xyz.dot(center) + plane.w + radius < 0.0 {
                 return false;
             }
         }
@@ -76,3 +79,5 @@ impl Ray {
         }
     }
 }
+
+pub use glam::Vec4Swizzles as _;

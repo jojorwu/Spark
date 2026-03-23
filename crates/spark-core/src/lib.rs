@@ -1,10 +1,47 @@
 pub mod scene;
 pub mod task;
-pub mod plugin;
 pub mod resource;
 pub mod event;
 pub mod logger;
 pub mod systems;
+pub mod systems_events;
+pub mod event_mapper;
+pub mod input;
+pub mod command;
+pub mod event_bus;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Access {
+    None,
+    Read,
+    Write,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResourceAccess {
+    pub scene: Access,
+    pub renderer: Access,
+    pub resource_manager: Access,
+}
+
+impl ResourceAccess {
+    pub const NONE: Self = Self {
+        scene: Access::None,
+        renderer: Access::None,
+        resource_manager: Access::None,
+    };
+
+    pub fn conflicts_with(&self, other: &Self) -> bool {
+        let scene_conflict = (self.scene == Access::Write && other.scene != Access::None) ||
+                             (other.scene == Access::Write && self.scene != Access::None);
+        let renderer_conflict = (self.renderer == Access::Write && other.renderer != Access::None) ||
+                                (other.renderer == Access::Write && self.renderer != Access::None);
+        let resource_manager_conflict = (self.resource_manager == Access::Write && other.resource_manager != Access::None) ||
+                                        (other.resource_manager == Access::Write && self.resource_manager != Access::None);
+
+        scene_conflict || renderer_conflict || resource_manager_conflict
+    }
+}
 
 use winit::{
     event::{Event, WindowEvent},
@@ -13,14 +50,46 @@ use winit::{
 };
 use crate::scene::Scene;
 use crate::task::TaskSystem;
-use crate::plugin::PluginManager;
 use crate::resource::ResourceManager;
 use crate::event::EventQueue;
 use spark_renderer::Renderer;
-use spark_math::Vec4Swizzles;
 
-pub trait System {
-    fn update(&mut self, engine: &mut Engine, delta: f32);
+/// Context passed to systems during initialization and cleanup.
+pub struct InitContext<'a> {
+    pub scene: &'a mut Scene,
+    pub renderer: &'a mut Renderer,
+    pub resource_manager: &'a mut ResourceManager,
+    pub task_system: &'a TaskSystem,
+}
+
+/// Context passed to systems during the update phase.
+pub struct FrameContext<'a> {
+    pub scene: &'a mut Scene,
+    pub renderer: &'a mut Renderer,
+    pub resource_manager: &'a mut ResourceManager,
+    pub task_system: &'a TaskSystem,
+    pub delta: f32,
+    pub event_proxy: crate::systems_events::events::EventProxy<'a>,
+    pub input: &'a crate::input::InputManager,
+    pub command_queue: &'a mut crate::command::CommandQueue,
+    pub event_bus: &'a crate::event_bus::EventBus,
+}
+
+/// A trait representing a system that processes engine state.
+pub trait System: Send + Sync {
+    fn name(&self) -> &str;
+    fn version(&self) -> &str { "0.1.0" }
+    fn on_init(&mut self, _ctx: &mut InitContext) {}
+    fn update(&mut self, ctx: &mut FrameContext);
+    fn on_stop(&mut self, _ctx: &mut InitContext) {}
+    fn dependencies(&self) -> Vec<&'static str> { Vec::new() }
+    fn resource_access(&self) -> ResourceAccess {
+        ResourceAccess {
+            scene: Access::Write,
+            renderer: Access::Write,
+            resource_manager: Access::Write,
+        }
+    }
 }
 
 pub struct Engine {
@@ -29,12 +98,15 @@ pub struct Engine {
     pub scene: Scene,
     pub renderer: Renderer,
     pub task_system: TaskSystem,
-    pub plugin_manager: PluginManager,
     pub resource_manager: ResourceManager,
     pub event_queue: EventQueue,
+    pub input_manager: crate::input::InputManager,
+    pub command_queue: crate::command::CommandQueue,
+    pub event_bus: crate::event_bus::EventBus,
+    pub system_registry: crate::systems::SystemRegistry,
     pub last_frame_time: instant::Instant,
     pub current_fps: f32,
-    pub systems: Vec<Box<dyn System>>,
+    pub system_events: Vec<crate::systems_events::events::SystemEvent>,
 }
 
 impl Engine {
@@ -51,9 +123,12 @@ impl Engine {
         let renderer = Renderer::new(&window, ui_shaders)?;
         let scene = Scene::new();
         let task_system = TaskSystem::new();
-        let plugin_manager = PluginManager::new();
         let resource_manager = ResourceManager::new();
         let event_queue = EventQueue::new();
+        let input_manager = crate::input::InputManager::new();
+        let command_queue = crate::command::CommandQueue::new();
+        let event_bus = crate::event_bus::EventBus::new();
+        let system_registry = crate::systems::SystemRegistry::new();
 
         Ok(Self {
             window,
@@ -61,17 +136,33 @@ impl Engine {
             scene,
             renderer,
             task_system,
-            plugin_manager,
             resource_manager,
             event_queue,
+            input_manager,
+            command_queue,
+            event_bus,
+            system_registry,
             last_frame_time: instant::Instant::now(),
             current_fps: 0.0,
-            systems: Vec::new(),
+            system_events: Vec::new(),
         })
     }
 
     pub fn add_system<S: System + 'static>(&mut self, system: S) {
-        self.systems.push(Box::new(system));
+        self.system_registry.add_system(system);
+    }
+
+    pub fn add_boxed_system(&mut self, system: Box<dyn System>) {
+        self.system_registry.add_boxed_system(system);
+    }
+
+    fn handle_window_event(&mut self, event: &WindowEvent, elwt: &winit::event_loop::EventLoopWindowTarget<()>) {
+        if let WindowEvent::CloseRequested = event {
+            elwt.exit();
+            return;
+        }
+
+        crate::event_mapper::EventMapper::map_window_event(event, &mut self.event_queue);
     }
 
     pub fn run<F>(mut self, mut ui_callback: F)
@@ -79,7 +170,16 @@ impl Engine {
         F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
     {
         let event_loop = self.event_loop.take().unwrap();
-        self.plugin_manager.init_plugins(&mut self.scene);
+
+        {
+            let mut init_ctx = InitContext {
+                scene: &mut self.scene,
+                renderer: &mut self.renderer,
+                resource_manager: &mut self.resource_manager,
+                task_system: &self.task_system,
+            };
+            crate::systems::Scheduler::init(&mut self.system_registry, &mut init_ctx);
+        }
 
         event_loop.run(move |event, elwt| {
             let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene, &mut self.resource_manager, &mut self.renderer, self.current_fps);
@@ -87,156 +187,104 @@ impl Engine {
                 // UI consumed the event
             }
 
-            use crate::event::EngineEvent;
             match &event {
-                Event::WindowEvent {
-                    event: WindowEvent::CloseRequested,
-                    ..
-                } => {
-                    elwt.exit();
-                }
                 Event::WindowEvent { event, .. } => {
-                    match event {
-                        WindowEvent::Resized(size) => {
-                            self.event_queue.push(EngineEvent::WindowResized { width: size.width, height: size.height });
-                        }
-                        WindowEvent::KeyboardInput {
-                            event: input_event,
-                            ..
-                        } => {
-                            // Map to EngineEvent
-                            log::info!("Keyboard input: {:?}", input_event);
-                        }
-                        WindowEvent::CursorMoved {
-                            position,
-                            ..
-                        } => {
-                            self.event_queue.push(EngineEvent::MouseMoved { x: position.x, y: position.y });
-                        }
-                        _ => {}
-                    }
+                    self.handle_window_event(event, elwt);
                 }
                 Event::AboutToWait => {
-                    // Logic that uses event_queue would go here
-                    self.event_queue.clear();
                     let now = instant::Instant::now();
                     let delta = now.duration_since(self.last_frame_time).as_secs_f32();
                     self.last_frame_time = now;
                     self.current_fps = 0.9 * self.current_fps + 0.1 * (1.0 / delta.max(0.001));
 
-                    self.plugin_manager.update_plugins(&mut self.scene, delta);
+                    self.update_phase(delta);
+                    self.render_phase(egui_output, delta);
 
-                    // To avoid mutable borrow of self while iterating systems, we'd need to decoupling data
-                    // For now, move systems to local and iterate.
-                    let mut systems = std::mem::take(&mut self.systems);
-                    for system in &mut systems {
-                        system.update(&mut self, delta);
-                    }
-                    self.systems = systems;
-
-                    let extent = self.renderer.get_extent();
-                    let jitter = self.renderer.get_jitter();
-                    let mut projection = spark_math::Mat4::perspective_rh(
-                        45.0f32.to_radians(),
-                        extent.width as f32 / extent.height as f32,
-                        0.1,
-                        100.0,
-                    );
-                    projection.col_mut(2).x += jitter[0] * projection.col(0).x;
-                    projection.col_mut(2).y += jitter[1] * projection.col(1).y;
-
-                    // Use the cached view matrix
-                    let view_matrix = self.scene.last_view_matrix;
-
-                    // Single pass for rendering data collection (no CPU culling)
-                    let (renderables_raw, instanced_raw, _, lights) = self.scene.collect_render_data(None);
-
-                    // Prepare GPU Indirect and Object buffers
-                    let mut indirect_commands = Vec::new();
-                    let mut object_ssbos = Vec::new();
-
-                    for (model, _vc, ic, fi, vo, _tex_id, vb_id, br) in &renderables_raw {
-                         object_ssbos.push(spark_renderer::ObjectDataSSBO {
-                            model: *model,
-                            sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, *br),
-                            index_count: *ic,
-                            first_index: *fi,
-                            vertex_offset: *vo,
-                            material_index: vb_id.unwrap_or(0),
-                        });
-                        indirect_commands.push(spark_renderer::ash::vk::DrawIndexedIndirectCommand {
-                            index_count: *ic,
-                            instance_count: 1,
-                            first_index: *fi,
-                            vertex_offset: *vo,
-                            first_instance: (object_ssbos.len() - 1) as u32,
-                        });
-                    }
-
-                    for (ic, fi, vo, _tex_id, vb_id, br, transforms) in &instanced_raw {
-                        for transform in transforms {
-                             object_ssbos.push(spark_renderer::ObjectDataSSBO {
-                                model: *transform,
-                                sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, *br),
-                                index_count: *ic,
-                                first_index: *fi,
-                                vertex_offset: *vo,
-                                material_index: vb_id.unwrap_or(0),
-                            });
-                            indirect_commands.push(spark_renderer::ash::vk::DrawIndexedIndirectCommand {
-                                index_count: *ic,
-                                instance_count: 1,
-                                first_index: *fi,
-                                vertex_offset: *vo,
-                                first_instance: (object_ssbos.len() - 1) as u32,
-                            });
-                        }
-                    }
-                    self.renderer.update_indirect_buffers(&indirect_commands, &object_ssbos);
-                    let total_objects = object_ssbos.len() as u32;
-
-                    let view_proj = projection * view_matrix;
-
-                    // Calculate Light View-Projection for Shadows
-                    let light_pos = spark_math::Vec3::new(10.0, 10.0, 10.0);
-                    let light_view = spark_math::Mat4::look_at_rh(
-                        light_pos,
-                        spark_math::Vec3::ZERO,
-                        spark_math::Vec3::Y,
-                    );
-                    let light_proj = spark_math::Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 0.1, 100.0);
-                    let light_view_proj = light_proj * light_view;
-
-                    let _main_light = lights.first().cloned().unwrap_or((
-                        spark_math::Mat4::IDENTITY,
-                        crate::scene::LightType::Directional,
-                        spark_math::Vec3::ONE,
-                        1.0,
-                        10.0
-                    ));
-
-                    // Convert lights for renderer
-                    let renderer_lights: Vec<(spark_math::Vec3, spark_math::Vec3, f32)> = lights.iter().map(|(trans, _type, col, intensity, _range)| {
-                        (trans.w_axis.xyz(), *col, *intensity)
-                    }).collect();
-                    self.renderer.update_lights(&renderer_lights);
-
-                    self.renderer.scene_view_matrix_for_pos = view_matrix;
-
-                    self.renderer.draw_frame(
-                        view_proj,
-                        light_view_proj,
-                        &self.window,
-                        egui_output,
-                        total_objects
-                    );
-
-                    // Clear temporary instance buffers for next frame
-                    // In a real engine, we'd reuse them or use a ring buffer.
-                    self.renderer.clear_instance_buffers();
+                    self.event_queue.clear();
                 }
                 _ => (),
             }
+
+            if elwt.exiting() {
+                 let mut init_ctx = InitContext {
+                    scene: &mut self.scene,
+                    renderer: &mut self.renderer,
+                    resource_manager: &mut self.resource_manager,
+                    task_system: &self.task_system,
+                };
+                crate::systems::Scheduler::shutdown(&mut self.system_registry, &mut init_ctx);
+            }
         }).expect("Event loop failed");
+    }
+
+    fn update_phase(&mut self, delta: f32) {
+        self.input_manager.update(&self.event_queue.events);
+
+        let mut system_events = std::mem::take(&mut self.system_events);
+        system_events.clear(); // Reset for this frame
+
+        {
+            let mut ctx = FrameContext {
+                scene: &mut self.scene,
+                renderer: &mut self.renderer,
+                resource_manager: &mut self.resource_manager,
+                task_system: &self.task_system,
+                delta,
+                event_proxy: crate::systems_events::events::EventProxy {
+                    events: &self.event_queue.events,
+                    outgoing: &mut system_events,
+                },
+                input: &self.input_manager,
+                command_queue: &mut self.command_queue,
+                event_bus: &self.event_bus,
+            };
+
+            crate::systems::Scheduler::run(&mut self.system_registry, &mut ctx);
+        }
+
+        self.system_events = system_events;
+
+        // Execute all deferred commands after system updates
+        self.command_queue.execute_all(&mut self.scene, &mut self.resource_manager);
+    }
+
+    fn render_phase(&mut self, egui_output: Option<(egui::FullOutput, egui::Context)>, delta: f32) {
+        // Find active camera to calculate frustum
+        let mut camera_matrix = spark_math::Mat4::IDENTITY;
+        let mut projection_matrix = spark_math::Mat4::IDENTITY;
+
+        for node in self.scene.nodes.values() {
+            for component in &node.components {
+                if let Some(camera) = component.as_any().downcast_ref::<crate::scene::CameraComponent>() {
+                    let view = node.global_transform.inverse();
+                    projection_matrix = spark_math::Mat4::perspective_rh(
+                        camera.fov.to_radians(),
+                        self.renderer.get_extent().width as f32 / self.renderer.get_extent().height as f32,
+                        camera.near,
+                        camera.far,
+                    );
+                    camera_matrix = projection_matrix * view;
+                    break;
+                }
+            }
+        }
+
+        let frustum_obj = spark_math::Frustum::from_matrix(camera_matrix);
+        let frustum_ref = if camera_matrix != spark_math::Mat4::IDENTITY { Some(&frustum_obj) } else { None };
+
+        // Collect visibility and light data
+        let mut packet = self.scene.collect_frame_packet(frustum_ref, &self.resource_manager);
+        packet.projection_matrix = projection_matrix;
+        let total_objects = self.renderer.prepare_frame(packet);
+
+        // Draw the frame
+        self.renderer.draw_frame(
+            &self.window,
+            egui_output,
+            total_objects,
+            delta
+        );
+
+        self.renderer.clear_instance_buffers();
     }
 }

@@ -1,6 +1,5 @@
 use slotmap::{SlotMap, new_key_type};
 use spark_math::{Mat4, Vec4Swizzles};
-use rayon::prelude::*;
 use serde::{Serialize, Deserialize};
 
 new_key_type! {
@@ -22,7 +21,7 @@ pub struct MeshComponent {
     pub index_count: u32,
     pub first_index: u32,
     pub vertex_offset: i32,
-    pub texture_id: Option<u32>,
+    pub texture_handle: Option<crate::resource::Handle<spark_renderer::vulkan::texture::Texture>>,
     pub material_index: Option<u32>,
     pub bounding_radius: f32,
 }
@@ -101,20 +100,32 @@ pub struct Scene {
     pub last_view_matrix: Mat4,
 }
 
+type TextureHandle = crate::resource::Handle<spark_renderer::vulkan::texture::Texture>;
+
+pub type RenderableData = (Mat4, u32, u32, u32, i32, Option<TextureHandle>, Option<u32>, f32);
+pub type InstancedKey = (u32, u32, i32, Option<TextureHandle>, Option<u32>, u32);
+
 struct SceneDataCollector {
-    renderables: Vec<(Mat4, u32, u32, u32, i32, Option<u32>, Option<u32>, f32)>,
-    instanced: std::collections::HashMap<(u32, u32, i32, Option<u32>, Option<u32>, u32), Vec<Mat4>>,
+    renderables: Vec<RenderableData>,
+    instanced: std::collections::HashMap<InstancedKey, Vec<Mat4>>,
     lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>,
 }
 
 impl SceneDataCollector {
-    fn merge(mut self, other: Self) -> Self {
+    fn new() -> Self {
+        Self {
+            renderables: Vec::new(),
+            instanced: std::collections::HashMap::new(),
+            lights: Vec::new(),
+        }
+    }
+
+    fn merge(&mut self, other: SceneDataCollector) {
         self.renderables.extend(other.renderables);
+        self.lights.extend(other.lights);
         for (key, transforms) in other.instanced {
             self.instanced.entry(key).or_default().extend(transforms);
         }
-        self.lights.extend(other.lights);
-        self
     }
 }
 
@@ -132,6 +143,15 @@ impl Scene {
 
         Self { nodes, root, last_view_matrix: Mat4::IDENTITY }
     }
+}
+
+impl Default for Scene {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Scene {
 
     pub fn add_node(&mut self, parent: NodeKey, mut node: Node) -> NodeKey {
         node.parent = Some(parent);
@@ -229,53 +249,105 @@ impl Scene {
         closest_node.map(|key| (key, min_t))
     }
 
-    /// Collects renderables, instanced meshes, and lights from the scene tree, performing frustum culling.
-    /// This method is parallelized using Rayon for high performance in large scenes.
-    pub fn collect_render_data(
-        &self,
-        frustum: Option<&spark_math::Frustum>,
-    ) -> (
-        Vec<(Mat4, u32, u32, u32, i32, Option<u32>, Option<u32>, f32)>,
-        Vec<(u32, u32, i32, Option<u32>, Option<u32>, f32, Vec<Mat4>)>,
-        Mat4,
-        Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>
-    ) {
-        let data = self.collect_data_parallel(self.root, frustum);
+    /// Collects a Packet for the renderer.
+    pub fn collect_frame_packet(&self, frustum: Option<&spark_math::Frustum>, resource_manager: &crate::resource::ResourceManager) -> spark_renderer::resource::FramePacket {
+        use rayon::prelude::*;
+        let data = self.collect_data_recursive(self.root, frustum);
 
-        let instanced_data = data.instanced.into_iter()
-            .map(|((ic, fi, vo, tex_id, vb_id, br_bits), transforms)| {
-                let br = f32::from_bits(br_bits);
-                (ic, fi, vo, tex_id, vb_id, br, transforms)
-            })
-            .collect();
+        // Parallel processing of renderables
+        let (opaque_meshes, transparent_meshes): (Vec<_>, Vec<_>) = data.renderables.par_iter().map(|r| {
+            let mat_idx = r.6.unwrap_or(0);
+            let is_transparent = resource_manager.all_materials.get(mat_idx as usize).map_or(false, |m| (m.flags & 1) != 0);
 
-        (data.renderables, instanced_data, self.last_view_matrix, data.lights)
+            let draw = spark_renderer::resource::MeshDraw {
+                model: r.0,
+                vertex_count: r.1,
+                index_count: r.2,
+                first_index: r.3,
+                vertex_offset: r.4,
+                material_index: mat_idx,
+                bounding_radius: r.7,
+            };
+            (draw, is_transparent)
+        }).partition(|(_, is_trans)| !*is_trans);
+
+        // Strip the boolean from the partition result
+        let mut opaque_meshes: Vec<_> = opaque_meshes.into_iter().map(|(d, _)| d).collect();
+        let mut transparent_meshes: Vec<_> = transparent_meshes.into_iter().map(|(d, _)| d).collect();
+
+        // Parallel sort transparent meshes back-to-front
+        let view_pos = self.last_view_matrix.inverse().w_axis.xyz();
+        transparent_meshes.par_sort_by(|a, b| {
+            let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
+            let dist_b = (b.model.w_axis.xyz() - view_pos).length_squared();
+            dist_b.partial_cmp(&dist_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Parallel processing of instanced data
+        let instanced_results: Vec<_> = data.instanced.par_iter().flat_map(|((ic, fi, vo, _tex, mat_idx, br_bits), transforms)| {
+            let br = f32::from_bits(*br_bits);
+            let midx = mat_idx.unwrap_or(0);
+            let is_transparent = resource_manager.all_materials.get(midx as usize).map_or(false, |m| (m.flags & 1) != 0);
+
+            transforms.iter().map(move |&t| {
+                let draw = spark_renderer::resource::MeshDraw {
+                    model: t,
+                    vertex_count: 0,
+                    index_count: *ic,
+                    first_index: *fi,
+                    vertex_offset: *vo,
+                    material_index: midx,
+                    bounding_radius: br,
+                };
+                (draw, is_transparent)
+            }).collect::<Vec<_>>()
+        }).collect();
+
+        for (draw, is_trans) in instanced_results {
+            if is_trans {
+                transparent_meshes.push(draw);
+            } else {
+                opaque_meshes.push(draw);
+            }
+        }
+
+        let lights = data.lights.into_iter().map(|(t, _type, color, intensity, _range)| {
+            let translation = spark_math::Vec3::new(t.w_axis.x, t.w_axis.y, t.w_axis.z);
+            spark_renderer::resource::LightDraw {
+                position: translation,
+                color,
+                intensity,
+            }
+        }).collect();
+
+        spark_renderer::resource::FramePacket {
+            view_matrix: self.last_view_matrix,
+            projection_matrix: spark_math::Mat4::IDENTITY, // Placeholder, usually set by render_phase
+            opaque_meshes,
+            transparent_meshes,
+            lights,
+        }
     }
 
-    fn collect_data_parallel(
+    fn collect_data_recursive(
         &self,
         node_key: NodeKey,
         frustum: Option<&spark_math::Frustum>,
     ) -> SceneDataCollector {
-        let mut data = SceneDataCollector {
-            renderables: Vec::new(),
-            instanced: std::collections::HashMap::new(),
-            lights: Vec::new(),
-        };
-
+        let mut data = SceneDataCollector::new();
         if let Some(node) = self.nodes.get(node_key) {
             for component in &node.components {
                 let any = component.as_any();
                 if let Some(mesh) = any.downcast_ref::<MeshComponent>() {
                     let visible = if let Some(f) = frustum {
-                        let translation = node.global_transform.w_axis.xyz();
+                        let translation = spark_math::Vec3::new(node.global_transform.w_axis.x, node.global_transform.w_axis.y, node.global_transform.w_axis.z);
                         f.intersects_sphere(translation, mesh.bounding_radius)
                     } else {
                         true
                     };
                     if visible {
                         if mesh.material_index.is_some() {
-                            data.instanced.entry((mesh.index_count, mesh.first_index, mesh.vertex_offset, mesh.texture_id, mesh.material_index, (mesh.bounding_radius).to_bits())).or_default().push(node.global_transform);
+                            data.instanced.entry((mesh.index_count, mesh.first_index, mesh.vertex_offset, mesh.texture_handle, mesh.material_index, (mesh.bounding_radius).to_bits())).or_default().push(node.global_transform);
                         } else {
                             data.renderables.push((
                                 node.global_transform,
@@ -283,7 +355,7 @@ impl Scene {
                                 mesh.index_count,
                                 mesh.first_index,
                                 mesh.vertex_offset,
-                                mesh.texture_id,
+                                mesh.texture_handle,
                                 mesh.material_index,
                                 mesh.bounding_radius,
                             ));
@@ -294,22 +366,45 @@ impl Scene {
                 }
             }
 
-            if !node.children.is_empty() {
-                let children_data: SceneDataCollector = node.children.par_iter()
-                    .map(|&child_key| self.collect_data_parallel(child_key, frustum))
-                    .reduce(|| SceneDataCollector {
-                        renderables: Vec::new(),
-                        instanced: std::collections::HashMap::new(),
-                        lights: Vec::new(),
-                    }, |a, b| a.merge(b));
-
-                data.renderables.extend(children_data.renderables);
-                for (key, transforms) in children_data.instanced {
-                    data.instanced.entry(key).or_default().extend(transforms);
+            if node.children.len() >= 100 {
+                use rayon::prelude::*;
+                let child_datas: Vec<_> = node.children.par_iter().map(|&ck| {
+                    self.collect_data_recursive(ck, frustum)
+                }).collect();
+                for cd in child_datas {
+                    data.merge(cd);
                 }
-                data.lights.extend(children_data.lights);
+            } else {
+                for &child_key in &node.children {
+                    data.merge(self.collect_data_recursive(child_key, frustum));
+                }
             }
         }
         data
+    }
+
+    pub fn pick_node_parallel(&self, ray: &spark_math::Ray) -> Option<(NodeKey, f32)> {
+        use rayon::prelude::*;
+        let nodes: Vec<_> = self.nodes.iter().collect();
+        nodes.into_par_iter()
+            .filter_map(|(key, node)| {
+                let mut radius = 0.5f32;
+                let mut has_bounds = false;
+
+                for component in &node.components {
+                    if let Some(mesh) = component.as_any().downcast_ref::<MeshComponent>() {
+                        radius = mesh.bounding_radius;
+                        has_bounds = true;
+                    } else if component.as_any().is::<LightComponent>() || component.as_any().is::<CameraComponent>() {
+                        has_bounds = true;
+                    }
+                }
+
+                if !has_bounds { return None; }
+
+                let center = spark_math::Vec3::new(node.global_transform.w_axis.x, node.global_transform.w_axis.y, node.global_transform.w_axis.z);
+                ray.intersect_sphere(center, radius).map(|t| (key, t))
+            })
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
     }
 }

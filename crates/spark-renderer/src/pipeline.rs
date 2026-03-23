@@ -13,29 +13,35 @@ pub struct PostProcessPipeline {
     pub descriptor_set_layout: vk::DescriptorSetLayout,
 }
 
+pub struct PipelineCreateParams<'a> {
+    pub extent: vk::Extent2D,
+    pub vert_shader_code: &'a [u32],
+    pub frag_shader_code: &'a [u32],
+    pub msaa_samples: vk::SampleCountFlags,
+    pub is_deferred_lighting: bool,
+    pub input_attachments_count: u32,
+    pub pipeline_cache: vk::PipelineCache,
+    pub global_ds_layout: vk::DescriptorSetLayout,
+    pub bindless_ds_layout: vk::DescriptorSetLayout,
+}
+
 impl Pipeline {
     pub fn new(
         device: &Device,
-        _extent: vk::Extent2D,
-        vert_shader_code: &[u32],
-        frag_shader_code: &[u32],
-        msaa_samples: vk::SampleCountFlags,
-        is_deferred_lighting: bool,
-        input_attachments_count: u32,
-        pipeline_cache: vk::PipelineCache,
-        global_ds_layout: vk::DescriptorSetLayout, // Pass this in
-        bindless_ds_layout: vk::DescriptorSetLayout, // Pass this in
+        params: &PipelineCreateParams,
     ) -> Self {
+        let vert_shader_code = params.vert_shader_code;
+        let frag_shader_code = params.frag_shader_code;
+        let msaa_samples = params.msaa_samples;
+        let is_deferred_lighting = params.is_deferred_lighting;
+        let input_attachments_count = params.input_attachments_count;
+        let pipeline_cache = params.pipeline_cache;
+        let global_ds_layout = params.global_ds_layout;
+        let bindless_ds_layout = params.bindless_ds_layout;
         let vert_shader_module = Self::create_shader_module(device, vert_shader_code);
         let frag_shader_module = Self::create_shader_module(device, frag_shader_code);
 
         let main_function_name = CString::new("main").unwrap();
-
-        use crate::vertex::Vertex;
-        let binding_descriptions = [
-            Vertex::get_binding_description(),
-        ];
-        let attribute_descriptions = Vertex::get_attribute_descriptions();
 
         let shader_stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -48,13 +54,7 @@ impl Pipeline {
                 .name(&main_function_name),
         ];
 
-        let vertex_input_info = if is_deferred_lighting {
-            vk::PipelineVertexInputStateCreateInfo::default()
-        } else {
-            vk::PipelineVertexInputStateCreateInfo::default()
-                .vertex_binding_descriptions(&binding_descriptions)
-                .vertex_attribute_descriptions(&attribute_descriptions)
-        };
+        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
 
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
