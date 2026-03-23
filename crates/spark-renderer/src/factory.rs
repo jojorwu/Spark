@@ -118,21 +118,21 @@ impl Renderer {
         self.set_hiz_view(hiz_view);
         self.set_common_shadow_view(shadow_view);
 
-        self.add_render_pass(hiz_pass);
-        self.add_render_pass(clustered_pass);
-        self.add_render_pass(culling_pass);
-        self.add_render_pass(shadow_pass);
-        self.add_render_pass(gbuffer_pass);
-        self.add_render_pass(ssao_pass);
-        self.add_render_pass(lighting_pass);
-        self.add_render_pass(grid_pass);
-        self.add_render_pass(volumetric_pass);
-        self.add_render_pass(forward_pass);
-        self.add_render_pass(particle_pass);
-        self.add_render_pass(taa_pass);
-        self.add_render_pass(post_process_pass);
+        self.add_render_pass(hiz_pass, &[], &["HiZ"]);
+        self.add_render_pass(clustered_pass, &[], &["ClusteredData"]);
+        self.add_render_pass(culling_pass, &["HiZ"], &["CullingData"]);
+        self.add_render_pass(shadow_pass, &[], &["ShadowMap"]);
+        self.add_render_pass(gbuffer_pass, &[], &["GBuffer"]);
+        self.add_render_pass(ssao_pass, &["GBuffer"], &["SSAO"]);
+        self.add_render_pass(lighting_pass, &["GBuffer", "ShadowMap", "ClusteredData", "SSAO"], &["HDRColor"]);
+        self.add_render_pass(grid_pass, &["GBuffer"], &["GridColor"]);
+        self.add_render_pass(volumetric_pass, &["ShadowMap", "ClusteredData"], &["VolumetricColor"]);
+        self.add_render_pass(forward_pass, &["GBuffer"], &["ForwardColor"]);
+        self.add_render_pass(particle_pass, &["GBuffer"], &["ParticleColor"]);
+        self.add_render_pass(taa_pass, &["HDRColor", "GBuffer"], &["TAAColor"]);
+        self.add_render_pass(post_process_pass, &["TAAColor"], &["FinalColor"]);
 
-        self.sort_render_passes();
+        self.compile_render_graph();
         self.update_all_descriptor_sets();
 
         let gbuffer_vert = shaders.gbuffer_vert;

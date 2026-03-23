@@ -79,32 +79,32 @@ impl GBufferPass {
 
                 let color_attachments = [
                     vk::RenderingAttachmentInfo::default()
-                        .image_view(renderer.gbuffer.albedo[current_frame].view)
+                        .image_view(renderer.gbuffer_albedo[current_frame].view)
                         .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                         .load_op(vk::AttachmentLoadOp::CLEAR)
                         .store_op(vk::AttachmentStoreOp::STORE)
                         .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }),
                     vk::RenderingAttachmentInfo::default()
-                        .image_view(renderer.gbuffer.normal[current_frame].view)
+                        .image_view(renderer.gbuffer_normal[current_frame].view)
                         .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                         .load_op(vk::AttachmentLoadOp::CLEAR)
                         .store_op(vk::AttachmentStoreOp::STORE)
                         .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }),
                     vk::RenderingAttachmentInfo::default()
-                        .image_view(renderer.gbuffer.pbr[current_frame].view)
+                        .image_view(renderer.gbuffer_pbr[current_frame].view)
                         .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                         .load_op(vk::AttachmentLoadOp::CLEAR)
                         .store_op(vk::AttachmentStoreOp::STORE)
                         .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }),
                     vk::RenderingAttachmentInfo::default()
-                        .image_view(renderer.gbuffer.velocity[current_frame].view)
+                        .image_view(renderer.gbuffer_velocity[current_frame].view)
                         .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                         .load_op(vk::AttachmentLoadOp::CLEAR)
                         .store_op(vk::AttachmentStoreOp::STORE)
                         .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }),
                 ];
                 let depth_attachment = vk::RenderingAttachmentInfo::default()
-                    .image_view(renderer.gbuffer.depth[current_frame].view)
+                    .image_view(renderer.gbuffer_depth[current_frame].view)
                     .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
                     .store_op(vk::AttachmentStoreOp::STORE)
@@ -202,22 +202,22 @@ impl RenderPass for GBufferPass {
             vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(renderer.gbuffer.albedo[current_frame].image)
+                .image(renderer.gbuffer_albedo[current_frame].image)
                 .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
             vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(renderer.gbuffer.normal[current_frame].image)
+                .image(renderer.gbuffer_normal[current_frame].image)
                 .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
             vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(renderer.gbuffer.pbr[current_frame].image)
+                .image(renderer.gbuffer_pbr[current_frame].image)
                 .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
             vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(renderer.gbuffer.depth[current_frame].image)
+                .image(renderer.gbuffer_depth[current_frame].image)
                 .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::DEPTH, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 }),
         ];
         unsafe {

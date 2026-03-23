@@ -70,8 +70,8 @@ impl RenderPass for SSAOPass {
     fn update_descriptor_sets(&self, renderer: &Renderer) {
         self.update_descriptor_sets_impl(
             &renderer.device.device,
-            &renderer.gbuffer.normal,
-            &renderer.gbuffer.depth,
+            &renderer.gbuffer_normal,
+            &renderer.gbuffer_depth,
             &self.ssao_images,
             renderer.common_sampler,
         );

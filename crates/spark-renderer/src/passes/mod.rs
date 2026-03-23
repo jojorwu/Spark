@@ -69,4 +69,10 @@ pub trait RenderPass: Send + Sync {
 
     /// Cleans up resources managed by this pass.
     fn destroy(&mut self, _renderer: &mut Renderer) {}
+
+    /// Returns the input resource names for this pass.
+    fn inputs(&self) -> Vec<&'static str> { Vec::new() }
+
+    /// Returns the output resource names for this pass.
+    fn outputs(&self) -> Vec<&'static str> { Vec::new() }
 }

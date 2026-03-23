@@ -18,8 +18,8 @@ impl RenderPass for GridPass {
             command_buffer,
             renderer.swapchain.extent,
             global_ds,
-            renderer.gbuffer.hdr[current_frame].view,
-            renderer.gbuffer.depth[current_frame].view,
+            renderer.gbuffer_hdr[current_frame].view,
+            renderer.gbuffer_depth[current_frame].view,
         );
     }
 

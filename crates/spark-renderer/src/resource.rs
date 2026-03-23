@@ -243,6 +243,41 @@ impl Attachment {
             version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
+
+    pub fn recreate(
+        &mut self,
+        device: &crate::vulkan::device::VulkanDevice,
+        width: u32,
+        height: u32,
+        format: vk::Format,
+    ) -> Result<(), crate::error::RendererError> {
+        unsafe {
+            device.device.destroy_image_view(self.view, None);
+            device.device.destroy_image(self.image, None);
+            if let Some(alloc) = self.allocation.lock().unwrap().take() {
+                device.allocator.lock().unwrap().free(alloc).unwrap();
+            }
+        }
+
+        let (img, allocation) = device.create_image(&crate::vulkan::device::ImageCreateParams {
+            width,
+            height,
+            mip_levels: 1,
+            format,
+            tiling: vk::ImageTiling::OPTIMAL,
+            usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::INPUT_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::STORAGE,
+            properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            samples: vk::SampleCountFlags::TYPE_1,
+        })?;
+
+        self.image = img;
+        *self.allocation.lock().unwrap() = Some(allocation);
+        self.view = device.create_image_view(img, format, 1);
+        self.extent = vk::Extent2D { width, height };
+        self.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        Ok(())
+    }
 }
 
 pub fn create_frame_attachments(

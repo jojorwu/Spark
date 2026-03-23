@@ -1,6 +1,7 @@
 pub mod error;
 pub mod pipeline;
 pub mod passes;
+pub mod graph;
 pub mod resource;
 pub mod factory;
 pub mod ui;
@@ -29,11 +30,15 @@ pub struct Renderer {
     pub device: VulkanDevice,
     pub resource_tracker: crate::resource::ResourceTracker,
     swapchain: VulkanSwapchain,
-    pub gbuffer: GBuffer,
+    pub gbuffer_hdr: Vec<crate::resource::Attachment>,
+    pub gbuffer_albedo: Vec<crate::resource::Attachment>,
+    pub gbuffer_normal: Vec<crate::resource::Attachment>,
+    pub gbuffer_pbr: Vec<crate::resource::Attachment>,
+    pub gbuffer_velocity: Vec<crate::resource::Attachment>,
+    pub gbuffer_depth: Vec<crate::resource::Attachment>,
     pub global_descriptor_set_layout: vk::DescriptorSetLayout,
     pub light_count: u32,
-    pub render_passes: Vec<Box<dyn crate::passes::RenderPass>>,
-    pub render_stages: Vec<Vec<usize>>,
+    pub render_graph: crate::graph::RenderGraph,
     pub frames: [RenderFrame; MAX_FRAMES_IN_FLIGHT],
     pub pipeline_cache: vk::PipelineCache,
     current_frame: usize,
@@ -116,6 +121,7 @@ impl Renderer {
             device.msaa_samples,
             device.depth_format,
         )?;
+        let GBuffer { hdr, albedo, normal, pbr, velocity, depth } = gbuffer;
 
         let common_sampler = unsafe {
             device.device.create_sampler(
@@ -271,11 +277,15 @@ impl Renderer {
             device,
             resource_tracker: crate::resource::ResourceTracker::new(),
             swapchain,
-            gbuffer,
+            gbuffer_hdr: hdr,
+            gbuffer_albedo: albedo,
+            gbuffer_normal: normal,
+            gbuffer_pbr: pbr,
+            gbuffer_velocity: velocity,
+            gbuffer_depth: depth,
             global_descriptor_set_layout,
             light_count: 0,
-            render_passes: Vec::new(),
-            render_stages: Vec::new(),
+            render_graph: crate::graph::RenderGraph::new(),
             frames,
             pipeline_cache,
             current_frame: 0,
@@ -397,23 +407,23 @@ impl Renderer {
 
 
     pub fn update_all_descriptor_sets(&mut self) {
-        for pass in &self.render_passes {
-            pass.update_descriptor_sets(self);
+        for pass_node in &self.render_graph.passes {
+            pass_node.pass.update_descriptor_sets(self);
         }
         self.ensure_global_descriptor_set();
     }
 
     pub fn update_pass_descriptors_if_needed(&mut self, current_frame: usize) {
         let mut passes_to_update = Vec::new();
-        for (i, pass) in self.render_passes.iter().enumerate() {
-            if pass.needs_descriptor_update(self, current_frame) {
+        for (i, pass_node) in self.render_graph.passes.iter().enumerate() {
+            if pass_node.pass.needs_descriptor_update(self, current_frame) {
                 passes_to_update.push(i);
             }
         }
 
         for idx in passes_to_update {
-            let pass_name = self.render_passes[idx].name().to_string();
-            self.render_passes[idx].update_descriptor_sets(self);
+            let pass_name = self.render_graph.passes[idx].pass.name().to_string();
+            self.render_graph.passes[idx].pass.update_descriptor_sets(self);
 
             // Note: This logic assumes that if update_descriptor_sets is called,
             // the pass is now up-to-date with whatever resource it tracked in needs_descriptor_update.
@@ -431,11 +441,11 @@ impl Renderer {
         let (grid_buf, index_buf) = {
             let mut g = None;
             let mut idx = None;
-            for pass in &self.render_passes {
-                if let Some(b) = pass.get_resource_buffer("light_grid") {
+            for pass_node in &self.render_graph.passes {
+                if let Some(b) = pass_node.pass.get_resource_buffer("light_grid") {
                     g = Some(b);
                 }
-                if let Some(b) = pass.get_resource_buffer("index_list") {
+                if let Some(b) = pass_node.pass.get_resource_buffer("index_list") {
                     idx = Some(b);
                 }
             }
@@ -842,28 +852,19 @@ impl Renderer {
             };
 
             // 1. Record secondary command buffers in parallel
-            let pass_secondary_commands: Vec<Vec<vk::CommandBuffer>> = self.render_passes.par_iter().map(|pass| {
-                pass.record_secondary_commands(&ctx)
+            let pass_secondary_commands: Vec<Vec<vk::CommandBuffer>> = self.render_graph.passes.par_iter().map(|pass_node| {
+                pass_node.pass.record_secondary_commands(&ctx)
             }).collect();
 
-            // 2. Execute commands sequentially within stages to preserve pass dependencies
-            for stage in &self.render_stages {
-                for &idx in stage {
-                    let pass = &self.render_passes[idx];
+            // 2. Execute passes in sorted order
+            for &idx in &self.render_graph.sorted_passes {
+                if idx >= self.render_graph.passes.len() { continue; }
+                let pass_node = &self.render_graph.passes[idx];
 
-                    // Automated Barrier Injection
-                    for (res_name, _access, _stage_flags) in pass.gpu_resource_access() {
-                        if let Some(_view) = pass.get_resource_view(&res_name, cf) {
-                            // Find corresponding image for the view (requires tracking in ResourceTracker)
-                            // For now, this logic is a placeholder for a more complete Resource Graph.
-                        }
-                    }
-
-                    if !pass_secondary_commands[idx].is_empty() {
-                        self.device.device.cmd_execute_commands(command_buffer, &pass_secondary_commands[idx]);
-                    }
-                    pass.record_commands(&ctx);
+                if !pass_secondary_commands[idx].is_empty() {
+                    self.device.device.cmd_execute_commands(command_buffer, &pass_secondary_commands[idx]);
                 }
+                pass_node.pass.record_commands(&ctx);
             }
 
             if let Some((output, egui_ctx)) = egui_output {
@@ -910,22 +911,24 @@ impl Renderer {
                 window.inner_size().height,
             )?;
             let extent = self.swapchain.extent;
-            self.gbuffer.recreate(
-                &self.device,
-                extent,
-                self.device.msaa_samples,
-                self.device.depth_format,
-            )?;
+            // Recreate G-Buffer attachments
+            for attachment in &mut self.gbuffer_hdr { attachment.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16B16A16_SFLOAT)?; }
+            for attachment in &mut self.gbuffer_albedo { attachment.recreate(&self.device, extent.width, extent.height, vk::Format::R8G8B8A8_UNORM)?; }
+            for attachment in &mut self.gbuffer_normal { attachment.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16B16A16_SFLOAT)?; }
+            for attachment in &mut self.gbuffer_pbr { attachment.recreate(&self.device, extent.width, extent.height, vk::Format::R8G8B8A8_UNORM)?; }
+            for attachment in &mut self.gbuffer_velocity { attachment.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16_SFLOAT)?; }
+            for attachment in &mut self.gbuffer_depth { attachment.recreate(&self.device, extent.width, extent.height, self.device.depth_format)?; }
 
             if self.viewport_attachment.is_some() {
                 self.create_viewport_attachment(extent.width, extent.height);
             }
 
-            let mut render_passes = std::mem::take(&mut self.render_passes);
-            for pass in &mut render_passes {
+            let pass_count = self.render_graph.passes.len();
+            for i in 0..pass_count {
+                let mut pass = std::mem::replace(&mut self.render_graph.passes[i].pass, Box::new(crate::passes::gbuffer::GBufferPass::new()));
                 pass.on_resize(self, extent);
+                self.render_graph.passes[i].pass = pass;
             }
-            self.render_passes = render_passes;
 
             self.update_all_descriptor_sets();
         }
@@ -934,7 +937,13 @@ impl Renderer {
 
     fn cleanup_swapchain(&mut self) {
         unsafe {
-            self.gbuffer.destroy(&self.device.device, &self.device.allocator);
+            for attachment in std::mem::take(&mut self.gbuffer_hdr) { attachment.destroy(&self.device.device, &self.device.allocator); }
+            for attachment in std::mem::take(&mut self.gbuffer_albedo) { attachment.destroy(&self.device.device, &self.device.allocator); }
+            for attachment in std::mem::take(&mut self.gbuffer_normal) { attachment.destroy(&self.device.device, &self.device.allocator); }
+            for attachment in std::mem::take(&mut self.gbuffer_pbr) { attachment.destroy(&self.device.device, &self.device.allocator); }
+            for attachment in std::mem::take(&mut self.gbuffer_velocity) { attachment.destroy(&self.device.device, &self.device.allocator); }
+            for attachment in std::mem::take(&mut self.gbuffer_depth) { attachment.destroy(&self.device.device, &self.device.allocator); }
+
             self.swapchain
                 .loader
                 .destroy_swapchain(self.swapchain.handle, None);
@@ -1210,6 +1219,15 @@ impl Renderer {
     pub fn get_msaa_samples(&self) -> vk::SampleCountFlags {
         self.device.msaa_samples
     }
+
+    pub fn get_pass_resource_view(&self, pass_name: &str, resource_name: &str, frame_index: usize) -> Option<vk::ImageView> {
+        for pass_node in &self.render_graph.passes {
+            if pass_node.pass.name() == pass_name {
+                return pass_node.pass.get_resource_view(resource_name, frame_index);
+            }
+        }
+        None
+    }
     /// Returns the current swapchain extent.
     pub fn get_extent(&self) -> vk::Extent2D {
         self.swapchain.extent
@@ -1229,78 +1247,12 @@ impl Renderer {
         [x / self.swapchain.extent.width as f32, y / self.swapchain.extent.height as f32]
     }
 
-    pub fn add_render_pass<P: crate::passes::RenderPass + 'static>(&mut self, pass: P) {
-        self.render_passes.push(Box::new(pass));
+    pub fn add_render_pass<P: crate::passes::RenderPass + 'static>(&mut self, pass: P, inputs: &[&str], outputs: &[&str]) {
+        self.render_graph.add_pass(pass, inputs, outputs);
     }
 
-    pub fn sort_render_passes(&mut self) {
-        let mut visited = std::collections::HashSet::new();
-        let mut temp_visited = std::collections::HashSet::new();
-
-        let name_to_idx: std::collections::HashMap<String, usize> = self.render_passes.iter().enumerate()
-            .map(|(i, p)| (p.name().to_string(), i))
-            .collect();
-
-        fn visit(
-            idx: usize,
-            passes: &Vec<Box<dyn crate::passes::RenderPass>>,
-            name_to_idx: &std::collections::HashMap<String, usize>,
-            ordered: &mut Vec<usize>,
-            visited: &mut std::collections::HashSet<usize>,
-            temp_visited: &mut std::collections::HashSet<usize>,
-        ) {
-            if temp_visited.contains(&idx) {
-                panic!("Circular dependency detected in render passes!");
-            }
-            if !visited.contains(&idx) {
-                temp_visited.insert(idx);
-                for dep in passes[idx].dependencies() {
-                    if let Some(&dep_idx) = name_to_idx.get(dep) {
-                        visit(dep_idx, passes, name_to_idx, ordered, visited, temp_visited);
-                    }
-                }
-                temp_visited.remove(&idx);
-                visited.insert(idx);
-                ordered.push(idx);
-            }
-        }
-
-        let mut indices = Vec::new();
-        for i in 0..self.render_passes.len() {
-            visit(i, &self.render_passes, &name_to_idx, &mut indices, &mut visited, &mut temp_visited);
-        }
-
-        let mut old_passes: Vec<Option<Box<dyn crate::passes::RenderPass>>> = self.render_passes.drain(..).map(Some).collect();
-        for idx in indices {
-            self.render_passes.push(old_passes[idx].take().unwrap());
-        }
-
-        self.build_render_stages();
-    }
-
-    fn build_render_stages(&mut self) {
-        let name_to_idx: std::collections::HashMap<String, usize> = self.render_passes.iter().enumerate()
-            .map(|(i, p)| (p.name().to_string(), i))
-            .collect();
-
-        let mut pass_stages = vec![0; self.render_passes.len()];
-        let mut max_stage = 0;
-
-        for (i, pass) in self.render_passes.iter().enumerate() {
-            let mut stage = 0;
-            for dep in pass.dependencies() {
-                if let Some(&dep_idx) = name_to_idx.get(dep) {
-                    stage = stage.max(pass_stages[dep_idx] + 1);
-                }
-            }
-            pass_stages[i] = stage;
-            max_stage = max_stage.max(stage);
-        }
-
-        self.render_stages = vec![Vec::new(); max_stage + 1];
-        for (i, &stage) in pass_stages.iter().enumerate() {
-            self.render_stages[stage].push(i);
-        }
+    pub fn compile_render_graph(&mut self) {
+        self.render_graph.compile();
     }
 
     /// Calculates the six frustum planes from a view-projection matrix.
@@ -1455,8 +1407,8 @@ impl Renderer {
         // 4. Prepare Passes
         let cf = self.current_frame;
 
-        for pass in &self.render_passes {
-            pass.prepare(self, cf);
+        for pass_node in &self.render_graph.passes {
+            pass_node.pass.prepare(self, cf);
         }
 
         self.last_object_count = total_objects;
@@ -1631,8 +1583,8 @@ impl Drop for Renderer {
         unsafe {
             self.device.device.device_wait_idle().ok();
 
-            for mut pass in std::mem::take(&mut self.render_passes) {
-                pass.destroy(self);
+            for mut pass_node in std::mem::take(&mut self.render_graph.passes) {
+                pass_node.pass.destroy(self);
             }
 
             self.cleanup_swapchain();

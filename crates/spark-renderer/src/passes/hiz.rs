@@ -24,7 +24,7 @@ impl RenderPass for HiZPass {
 
     fn needs_descriptor_update(&self, renderer: &Renderer, frame_index: usize) -> bool {
         let prev_frame = (frame_index + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT;
-        let depth_version = renderer.gbuffer.depth[prev_frame].version.load(std::sync::atomic::Ordering::Relaxed);
+        let depth_version = renderer.gbuffer_depth[prev_frame].version.load(std::sync::atomic::Ordering::Relaxed);
 
         let pass_versions = renderer.pass_descriptor_versions[frame_index].lock().unwrap();
         if let Some(&v) = pass_versions.get(self.name()) {
@@ -51,7 +51,7 @@ impl RenderPass for HiZPass {
         self.record_commands_impl(
             renderer,
             command_buffer,
-            renderer.gbuffer.depth[prev_frame].view,
+            renderer.gbuffer_depth[prev_frame].view,
             renderer.common_sampler,
             current_frame,
         );
@@ -310,7 +310,7 @@ impl HiZPass {
                 device.update_descriptor_sets(&writes, &[]);
 
                 // Track depth version
-                let depth_version = renderer.gbuffer.depth[(frame_index + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT].version.load(std::sync::atomic::Ordering::Relaxed);
+                let depth_version = renderer.gbuffer_depth[(frame_index + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT].version.load(std::sync::atomic::Ordering::Relaxed);
                 renderer.pass_descriptor_versions[frame_index].lock().unwrap().insert(self.name().to_string(), depth_version);
 
                 device.cmd_bind_descriptor_sets(
