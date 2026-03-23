@@ -288,7 +288,7 @@ impl EditorUI {
                             let path = entry.path();
                             if path.is_file() {
                                 let label = path.file_name().unwrap().to_string_lossy();
-                                let is_gltf = path.extension().map_or(false, |ext| ext == "gltf" || ext == "glb");
+                                let is_gltf = path.extension().is_some_and(|ext| ext == "gltf" || ext == "glb");
 
                                 ui.horizontal(|ui| {
                                     let icon = if is_gltf { "📦" } else { "📄" };

@@ -91,13 +91,12 @@ impl SystemRegistry {
             let mut conflict = true;
             while conflict {
                 conflict = false;
-                for j in 0..i {
-                    if system_stages[j] == stage {
-                        if system.resource_access().conflicts_with(&self.systems[j].resource_access()) {
-                            stage += 1;
-                            conflict = true;
-                            break;
-                        }
+                for (j, &stage_j) in system_stages.iter().enumerate().take(i) {
+                    if stage_j == stage
+                        && system.resource_access().conflicts_with(&self.systems[j].resource_access()) {
+                        stage += 1;
+                        conflict = true;
+                        break;
                     }
                 }
             }
@@ -113,23 +112,6 @@ impl SystemRegistry {
     }
 }
 
-pub struct SendPtr<T: ?Sized>(pub *mut T);
-unsafe impl<T: ?Sized> Send for SendPtr<T> {}
-unsafe impl<T: ?Sized> Sync for SendPtr<T> {}
-
-impl<T: ?Sized> SendPtr<T> {
-    pub unsafe fn as_mut(&self) -> &mut T {
-        &mut *self.0
-    }
-}
-
-impl<T: ?Sized> Clone for SendPtr<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<T: ?Sized> Copy for SendPtr<T> {}
 
 impl Default for SystemRegistry {
     fn default() -> Self {
@@ -137,6 +119,10 @@ impl Default for SystemRegistry {
     }
 }
 
+/// The core scheduler responsible for orchestrating system initialization, execution, and shutdown.
+///
+/// The scheduler ensures systems are executed in an order that respects their dependencies
+/// and minimizes resource access conflicts through stage-based dispatch.
 pub struct Scheduler;
 
 impl Scheduler {

@@ -199,59 +199,7 @@ impl Scene {
 
     /// Updates global transforms for all nodes in the scene tree and caches the active camera's view matrix.
     pub fn update_all_transforms(&mut self) {
-        // Collect nodes by depth level for parallel processing.
-        let mut levels = Vec::new();
-        let mut current_level = vec![self.root];
-
-        while !current_level.is_empty() {
-            let mut next_level = Vec::new();
-            for &node_key in &current_level {
-                if let Some(node) = self.nodes.get(node_key) {
-                    next_level.extend(node.children.iter().cloned());
-                }
-            }
-            levels.push(current_level);
-            current_level = next_level;
-        }
-
-        // Process each level sequentially, but nodes within a level in parallel.
-        for level in levels {
-            use rayon::prelude::*;
-            use crate::systems::SendPtr;
-
-            // To safely update nodes in parallel, we need to bypass the SlotMap's borrow checker.
-            // Since we're processing level by level and parents are already updated,
-            // and no two nodes in the same level have a parent-child relationship,
-            // this is logically safe but requires unsafe code to satisfy the compiler.
-
-            let nodes_ptr = SendPtr(&mut self.nodes as *mut SlotMap<NodeKey, Node>);
-            let last_view_matrix_ptr = SendPtr(&mut self.last_view_matrix as *mut Mat4);
-
-            level.par_iter().for_each(|&node_key| {
-                let nodes = unsafe { nodes_ptr.as_mut() };
-                let last_view_matrix = unsafe { last_view_matrix_ptr.as_mut() };
-
-                if let Some(node) = nodes.get(node_key) {
-                    let parent_global = if let Some(parent_key) = node.parent {
-                        nodes.get(parent_key).map(|p| p.global_transform).unwrap_or(Mat4::IDENTITY)
-                    } else {
-                        Mat4::IDENTITY
-                    };
-
-                    // We need a mutable reference to the node, but we can't get it from the SlotMap while others are reading.
-                    // However, we know that no two threads are accessing the same node.
-                    let node_mut = unsafe { &mut *(nodes.get_mut(node_key).unwrap() as *mut Node) };
-                    node_mut.global_transform = parent_global * node_mut.local_transform;
-
-                    let current_global = node_mut.global_transform;
-                    for component in &node_mut.components {
-                        if (**component).as_any().is::<CameraComponent>() {
-                            *last_view_matrix = current_global.inverse();
-                        }
-                    }
-                }
-            });
-        }
+        self.update_transforms(self.root);
     }
 
     pub fn save_to_file(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -306,7 +254,7 @@ impl Scene {
         // Parallel processing of renderables
         let (opaque_meshes, transparent_meshes): (Vec<_>, Vec<_>) = data.renderables.par_iter().map(|r| {
             let mat_idx = r.6.unwrap_or(0);
-            let is_transparent = resource_manager.all_materials.get(mat_idx as usize).map_or(false, |m| (m.flags & 1) != 0);
+            let is_transparent = resource_manager.all_materials.get(mat_idx as usize).is_some_and(|m| (m.flags & 1) != 0);
 
             let draw = spark_renderer::resource::MeshDraw {
                 model: r.0,
@@ -336,7 +284,7 @@ impl Scene {
         let instanced_results: Vec<_> = data.instanced.par_iter().flat_map(|((ic, fi, vo, _tex, mat_idx, br_bits), transforms)| {
             let br = f32::from_bits(*br_bits);
             let midx = mat_idx.unwrap_or(0);
-            let is_transparent = resource_manager.all_materials.get(midx as usize).map_or(false, |m| (m.flags & 1) != 0);
+            let is_transparent = resource_manager.all_materials.get(midx as usize).is_some_and(|m| (m.flags & 1) != 0);
 
             transforms.iter().map(move |&t| {
                 let draw = spark_renderer::resource::MeshDraw {

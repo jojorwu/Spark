@@ -155,11 +155,18 @@ pub struct ResourceTracker {
     pub image_layouts: std::collections::HashMap<vk::Image, vk::ImageLayout>,
 }
 
+impl Default for ResourceTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResourceTracker {
     pub fn new() -> Self {
         Self { image_layouts: std::collections::HashMap::new() }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn transition_image(
         &mut self,
         cb: vk::CommandBuffer,

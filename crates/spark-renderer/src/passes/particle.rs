@@ -111,9 +111,9 @@ impl ParticlePass {
             )?
         };
 
-        for i in 0..crate::MAX_FRAMES_IN_FLIGHT {
+        for descriptor_set in ds.iter().take(crate::MAX_FRAMES_IN_FLIGHT) {
             let info = [vk::DescriptorBufferInfo::default().buffer(particle_buffer.handle).range(particle_buffer.size)];
-            let write = [vk::WriteDescriptorSet::default().dst_set(ds[i]).dst_binding(0).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&info)];
+            let write = [vk::WriteDescriptorSet::default().dst_set(*descriptor_set).dst_binding(0).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&info)];
             unsafe { device.update_descriptor_sets(&write, &[]); }
         }
 

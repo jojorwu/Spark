@@ -326,7 +326,7 @@ impl VulkanDevice {
         if b.ptr.is_null() {
             panic!("Buffer is not host-visible for upload");
         }
-        let data_size = (data.len() * std::mem::size_of::<T>()) as u64;
+        let data_size = std::mem::size_of_val(data) as u64;
         if data_size > b.size {
             panic!("Data size exceeds buffer size");
         }

@@ -16,6 +16,7 @@ use crate::vulkan::device::VulkanDevice;
 use crate::vulkan::gbuffer::GBuffer;
 use crate::vulkan::swapchain::VulkanSwapchain;
 use crate::vulkan::texture::Texture;
+use rayon::prelude::*;
 use spark_math::Vec4Swizzles;
 pub use ash;
 use ash::vk;
@@ -1320,11 +1321,17 @@ impl Renderer {
         frustum
     }
 
+    /// Prepares the GPU for a new frame by updating buffers and sorting meshes.
+    ///
+    /// # Arguments
+    /// * `packet` - The frame data collected from the scene.
+    ///
+    /// # Returns
+    /// * The total number of opaque objects to be rendered.
     pub fn prepare_frame(
         &mut self,
         packet: crate::resource::FramePacket,
     ) -> u32 {
-        use rayon::prelude::*;
         self.scene_view_matrix_for_pos = packet.view_matrix;
 
         // 1. Prepare GPU Indirect and Object buffers in parallel
