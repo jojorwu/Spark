@@ -30,6 +30,7 @@ pub struct PassShaders {
     pub particle_comp: Vec<u32>,
     pub particle_vert: Vec<u32>,
     pub particle_frag: Vec<u32>,
+    pub ssr_comp: Vec<u32>,
 }
 
 impl Renderer {
@@ -94,6 +95,8 @@ impl Renderer {
 
         let volumetric_pass = crate::passes::volumetric::VolumetricPass::new(self, &shaders.volumetric)?;
 
+        let ssr_pass = crate::passes::ssr::SSRPass::new(self, &shaders.ssr_comp)?;
+
         let mut post_process_pass = crate::passes::post_process::PostProcessPass::new(
             self, self.swapchain.format, extent
         ).map_err(|_| RendererError::NoSuitableDevice)?;
@@ -129,6 +132,7 @@ impl Renderer {
         self.add_render_pass(volumetric_pass, &["ShadowMap", "ClusteredData"], &["VolumetricColor"]);
         self.add_render_pass(forward_pass, &["GBuffer"], &["ForwardColor"]);
         self.add_render_pass(particle_pass, &["GBuffer"], &["ParticleColor"]);
+        self.add_render_pass(ssr_pass, &["GBuffer", "HDRColor", "HiZ"], &["SSR"]);
         self.add_render_pass(taa_pass, &["HDRColor", "GBuffer"], &["TAAColor"]);
         self.add_render_pass(post_process_pass, &["TAAColor"], &["FinalColor"]);
 

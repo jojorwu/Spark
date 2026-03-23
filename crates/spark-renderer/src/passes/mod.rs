@@ -11,6 +11,7 @@ pub mod grid;
 pub mod volumetric;
 pub mod forward;
 pub mod particle;
+pub mod ssr;
 
 use ash::vk;
 use crate::Renderer;

@@ -856,16 +856,8 @@ impl Renderer {
                 pass_node.pass.record_secondary_commands(&ctx)
             }).collect();
 
-            // 2. Execute passes in sorted order
-            for &idx in &self.render_graph.sorted_passes {
-                if idx >= self.render_graph.passes.len() { continue; }
-                let pass_node = &self.render_graph.passes[idx];
-
-                if !pass_secondary_commands[idx].is_empty() {
-                    self.device.device.cmd_execute_commands(command_buffer, &pass_secondary_commands[idx]);
-                }
-                pass_node.pass.record_commands(&ctx);
-            }
+            // 2. Execute RenderGraph
+            self.render_graph.execute(&ctx, &pass_secondary_commands);
 
             if let Some((output, egui_ctx)) = egui_output {
                 let ext = self.swapchain.extent;
@@ -923,12 +915,11 @@ impl Renderer {
                 self.create_viewport_attachment(extent.width, extent.height);
             }
 
-            let pass_count = self.render_graph.passes.len();
-            for i in 0..pass_count {
-                let mut pass = std::mem::replace(&mut self.render_graph.passes[i].pass, Box::new(crate::passes::gbuffer::GBufferPass::new()));
-                pass.on_resize(self, extent);
-                self.render_graph.passes[i].pass = pass;
+            let mut passes = std::mem::take(&mut self.render_graph.passes);
+            for node in &mut passes {
+                node.pass.on_resize(self, extent);
             }
+            self.render_graph.passes = passes;
 
             self.update_all_descriptor_sets();
         }

@@ -8,6 +8,7 @@ layout(location = 3) in vec3 inColor;
 layout(location = 4) in flat uint inMaterialIndex;
 layout(location = 5) in vec4 inCurrPos;
 layout(location = 6) in vec4 inPrevPos;
+layout(location = 7) in vec3 inTangent;
 
 struct MaterialData {
     vec4 albedoFactor;
@@ -58,11 +59,15 @@ void main() {
         discard;
     }
 
-    vec3 normal = normalize(inNormal);
+    vec3 N = normalize(inNormal);
+    vec3 T = normalize(inTangent);
+    vec3 B = cross(N, T);
+    mat3 TBN = mat3(T, B, N);
+
+    vec3 normal = N;
     if (mat.normalTexture >= 0) {
         vec3 tangentNormal = texture(textures[nonuniformEXT(mat.normalTexture)], inTexCoord).xyz * 2.0 - 1.0;
-        // Basic TBN calculation if needed, or just use world space normals for now
-        // For simplicity in this step, we'll stick to vertex normals if no TBN is passed.
+        normal = normalize(TBN * tangentNormal);
     }
 
     float metallic = mat.metallicFactor;

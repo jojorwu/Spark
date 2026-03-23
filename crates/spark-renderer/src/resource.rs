@@ -259,13 +259,20 @@ impl Attachment {
             }
         }
 
+        let is_depth = format == vk::Format::D32_SFLOAT || format == vk::Format::D32_SFLOAT_S8_UINT || format == vk::Format::D24_UNORM_S8_UINT;
+        let usage = if is_depth {
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC
+        } else {
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::INPUT_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::STORAGE
+        };
+
         let (img, allocation) = device.create_image(&crate::vulkan::device::ImageCreateParams {
             width,
             height,
             mip_levels: 1,
             format,
             tiling: vk::ImageTiling::OPTIMAL,
-            usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::INPUT_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::STORAGE,
+            usage,
             properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
             samples: vk::SampleCountFlags::TYPE_1,
         })?;

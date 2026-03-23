@@ -270,6 +270,7 @@ impl GltfLoader {
 
                 let mut max_dist_sq = 0.0f32;
                 let normals = reader.read_normals().map(|n| n.collect::<Vec<_>>());
+                let tangents = reader.read_tangents().map(|t| t.collect::<Vec<_>>());
                 let tex_coords = reader.read_tex_coords(0).map(|t| t.into_f32().collect::<Vec<_>>());
 
                 for i in 0..positions.len() {
@@ -289,11 +290,18 @@ impl GltfLoader {
                         spark_math::Vec2::ZERO
                     };
 
+                    let tan = if let Some(ref tangents) = tangents {
+                        spark_math::Vec3::new(tangents[i][0], tangents[i][1], tangents[i][2])
+                    } else {
+                        spark_math::Vec3::X
+                    };
+
                     rm.all_vertices.push(Vertex::pack(
                         spark_math::Vec3::from_array(p),
                         n,
                         tc,
                         spark_math::Vec3::ONE,
+                        tan,
                     ));
                 }
 

@@ -99,7 +99,7 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 /**
  * Percentage-Closer Filtering (PCF) for soft shadows with Cascaded Shadow Maps.
  */
-float calculateShadow(vec3 worldPos, float linearDepth) {
+float calculateShadow(vec3 worldPos, float linearDepth, vec3 N) {
     uint cascadeIdx = 0;
     for (uint i = 0; i < 3; ++i) {
         if (linearDepth > global.cascadeSplits[i]) {
@@ -109,20 +109,29 @@ float calculateShadow(vec3 worldPos, float linearDepth) {
 
     vec4 shadowCoord = global.lightViewProj[cascadeIdx] * vec4(worldPos, 1.0);
     shadowCoord.xyz /= shadowCoord.w;
-
     shadowCoord.xy = shadowCoord.xy * 0.5 + 0.5;
+
+    if (shadowCoord.z > 1.0) return 1.0;
+
+    // Directional light direction (assumed constant for all cascades)
+    // We can extract it from the view matrix part of lightViewProj
+    vec3 L = normalize(vec3(global.lightViewProj[0][0][2], global.lightViewProj[0][1][2], global.lightViewProj[0][2][2]));
+
+    // Slope-scaled bias to prevent shadow acne
+    float bias = max(0.002 * (1.0 - dot(N, L)), 0.0005);
+    if (cascadeIdx == 3) bias *= 2.0; // Increase bias for far cascade
 
     float shadow = 0.0;
     vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
-    float bias = 0.005;
 
-    for(int x = -1; x <= 1; ++x) {
-        for(int y = -1; y <= 1; ++y) {
+    // 5x5 PCF kernel
+    for(int x = -2; x <= 2; ++x) {
+        for(int y = -2; y <= 2; ++y) {
             float pcfDepth = texture(shadowMap, vec3(shadowCoord.xy + vec2(x, y) * texelSize, cascadeIdx)).r;
-            shadow += shadowCoord.z - bias > pcfDepth ? 0.5 : 1.0;
+            shadow += shadowCoord.z - bias > pcfDepth ? 0.0 : 1.0;
         }
     }
-    return shadow / 9.0;
+    return shadow / 25.0;
 }
 
 /**
@@ -135,7 +144,7 @@ vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metalli
     F0 = mix(F0, albedo, metallic);
 
     vec3 Lo = vec3(0.0);
-    float shadow = calculateShadow(worldPos, depth);
+    float shadow = calculateShadow(worldPos, depth, N);
 
     // Clustered Light Lookup
     // 16x9x24 grid

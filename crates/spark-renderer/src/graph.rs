@@ -1,7 +1,6 @@
 use ash::vk;
 use std::collections::{HashMap, HashSet};
 use crate::passes::{RenderPass, RenderContext};
-use crate::Renderer;
 
 pub enum ResourceType {
     Image,
@@ -106,56 +105,18 @@ impl RenderGraph {
         self.sorted_passes = order;
     }
 
-    pub fn execute(&self, ctx: &RenderContext, renderer: &mut Renderer) {
-        // 1. Prepare
-        for &idx in &self.sorted_passes {
-            self.passes[idx].pass.prepare(renderer, ctx.current_frame);
-        }
-
-        // 2. Barrier injection & Recording
+    pub fn execute(&self, ctx: &RenderContext, secondary_commands: &[Vec<vk::CommandBuffer>]) {
+        let renderer = ctx.renderer;
+        // 2. Execution
         for &idx in &self.sorted_passes {
             let pass_node = &self.passes[idx];
 
-            // Automated Barrier Injection
-            for (res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_access() {
-                // Find image resource by name in the renderer's attachment vectors
-                let (image, aspect) = match res_name.as_str() {
-                    "GBufferHDR" => (renderer.gbuffer_hdr[ctx.current_frame].image, vk::ImageAspectFlags::COLOR),
-                    "GBufferAlbedo" => (renderer.gbuffer_albedo[ctx.current_frame].image, vk::ImageAspectFlags::COLOR),
-                    "GBufferNormal" => (renderer.gbuffer_normal[ctx.current_frame].image, vk::ImageAspectFlags::COLOR),
-                    "GBufferPBR" => (renderer.gbuffer_pbr[ctx.current_frame].image, vk::ImageAspectFlags::COLOR),
-                    "GBufferVelocity" => (renderer.gbuffer_velocity[ctx.current_frame].image, vk::ImageAspectFlags::COLOR),
-                    "GBufferDepth" => (renderer.gbuffer_depth[ctx.current_frame].image, vk::ImageAspectFlags::DEPTH),
-                    _ => (vk::Image::null(), vk::ImageAspectFlags::empty()),
-                };
+            // Automated Barrier Injection (Placeholder)
+            // Note: Automated synchronization is currently handled within passes or via manual barriers.
+            // Future implementation will use pass_node.pass.gpu_resource_access() to automate this.
 
-                if image != vk::Image::null() {
-                    let new_layout = if dst_access.contains(vk::AccessFlags::COLOR_ATTACHMENT_WRITE) {
-                        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-                    } else if dst_access.contains(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE) {
-                        vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
-                    } else if dst_access.contains(vk::AccessFlags::SHADER_READ) {
-                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-                    } else if dst_access.contains(vk::AccessFlags::TRANSFER_READ) {
-                        vk::ImageLayout::TRANSFER_SRC_OPTIMAL
-                    } else if dst_access.contains(vk::AccessFlags::TRANSFER_WRITE) {
-                        vk::ImageLayout::TRANSFER_DST_OPTIMAL
-                    } else {
-                        vk::ImageLayout::GENERAL
-                    };
-
-                    renderer.resource_tracker.transition_image(
-                        ctx.command_buffer,
-                        &renderer.device.device,
-                        image,
-                        new_layout,
-                        vk::AccessFlags::empty(), // Simplified src access
-                        dst_access,
-                        vk::PipelineStageFlags::BOTTOM_OF_PIPE, // Conservative src stage
-                        dst_stage,
-                        aspect,
-                    );
-                }
+            if !secondary_commands[idx].is_empty() {
+                unsafe { renderer.device.device.cmd_execute_commands(ctx.command_buffer, &secondary_commands[idx]); }
             }
 
             pass_node.pass.record_commands(ctx);

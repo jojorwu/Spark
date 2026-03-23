@@ -91,6 +91,7 @@ fn main() {
         particle_comp: compiler.compile("assets/shaders/particle.comp", shaderc::ShaderKind::Compute).expect("Failed to compile particle.comp"),
         particle_vert: compiler.compile("assets/shaders/particle.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile particle.vert"),
         particle_frag: compiler.compile("assets/shaders/particle.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile particle.frag"),
+        ssr_comp: compiler.compile("assets/shaders/ssr.comp", shaderc::ShaderKind::Compute).expect("Failed to compile ssr.comp"),
     };
 
     engine.renderer.setup_default_passes(shaders).expect("Failed to setup render passes");
@@ -100,9 +101,9 @@ fn main() {
     use spark_math::{Vec2, Vec3, Mat4};
 
     let vertices = [
-        Vertex::pack(Vec3::new(0.0, -0.5, 0.0), Vec3::Z, Vec2::ZERO, Vec3::new(1.0, 0.0, 0.0)),
-        Vertex::pack(Vec3::new(0.5, 0.5, 0.0), Vec3::Z, Vec2::ZERO, Vec3::new(0.0, 1.0, 0.0)),
-        Vertex::pack(Vec3::new(-0.5, 0.5, 0.0), Vec3::Z, Vec2::ZERO, Vec3::new(0.0, 0.0, 1.0)),
+        Vertex::pack(Vec3::new(0.0, -0.5, 0.0), Vec3::Z, Vec2::ZERO, Vec3::new(1.0, 0.0, 0.0), Vec3::X),
+        Vertex::pack(Vec3::new(0.5, 0.5, 0.0), Vec3::Z, Vec2::ZERO, Vec3::new(0.0, 1.0, 0.0), Vec3::X),
+        Vertex::pack(Vec3::new(-0.5, 0.5, 0.0), Vec3::Z, Vec2::ZERO, Vec3::new(0.0, 0.0, 1.0), Vec3::X),
     ];
 
     let vb = engine.renderer.create_buffer(
