@@ -411,14 +411,7 @@ impl EditorUI {
     }
 
     fn delete_node(&mut self, scene: &mut Scene, key: NodeKey) {
-        if let Some(node) = scene.nodes.get(key) {
-            if let Some(parent_key) = node.parent {
-                if let Some(parent) = scene.nodes.get_mut(parent_key) {
-                    parent.children.retain(|&k| k != key);
-                }
-            }
-        }
-        scene.nodes.remove(key);
+        scene.remove_node(key);
     }
 
     fn draw_inspector_panel(&mut self, scene: &mut Scene, _renderer: &mut spark_renderer::Renderer) {

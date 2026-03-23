@@ -25,15 +25,7 @@ pub struct RemoveNodeCommand {
 
 impl Command for RemoveNodeCommand {
     fn apply(&mut self, scene: &mut Scene, _rm: &mut ResourceManager) {
-        // Simple implementation: remove from parent and then from map
-        if let Some(node) = scene.nodes.get(self.key) {
-            if let Some(parent_key) = node.parent {
-                if let Some(parent) = scene.nodes.get_mut(parent_key) {
-                    parent.children.retain(|&k| k != self.key);
-                }
-            }
-        }
-        scene.nodes.remove(self.key);
+        scene.remove_node(self.key);
     }
 }
 
@@ -68,7 +60,10 @@ impl CommandQueue {
     }
 
     pub fn execute_all(&self, scene: &mut Scene, resource_manager: &mut ResourceManager) {
-        let mut commands = self.commands.lock().unwrap();
+        let mut commands = {
+            let mut guard = self.commands.lock().unwrap();
+            std::mem::take(&mut *guard)
+        };
         for mut command in commands.drain(..) {
             command.apply(scene, resource_manager);
         }

@@ -153,6 +153,26 @@ impl Default for Scene {
 
 impl Scene {
 
+    pub fn remove_node(&mut self, key: NodeKey) {
+        let (children, parent_key) = if let Some(node) = self.nodes.get(key) {
+            (node.children.clone(), node.parent)
+        } else {
+            return;
+        };
+
+        for child in children {
+            self.remove_node(child);
+        }
+
+        if let Some(pk) = parent_key {
+            if let Some(parent) = self.nodes.get_mut(pk) {
+                parent.children.retain(|&k| k != key);
+            }
+        }
+
+        self.nodes.remove(key);
+    }
+
     pub fn add_node(&mut self, parent: NodeKey, mut node: Node) -> NodeKey {
         node.parent = Some(parent);
         let key = self.nodes.insert(node);
@@ -365,27 +385,34 @@ impl Scene {
 
             if !node.children.is_empty() {
                 if node.children.len() > 1 {
-                    // Use rayon::join to parallelize the recursion for multiple children.
-                    // This is more efficient than par_iter for smaller branching factors.
-                    let (first, rest) = node.children.split_first().unwrap();
-                    let (first_data, rest_data) = rayon::join(
-                        || self.collect_data_recursive(*first, frustum),
-                        || {
-                            let mut combined = SceneDataCollector::new();
-                            for &ck in rest {
-                                combined.merge(self.collect_data_recursive(ck, frustum));
-                            }
-                            combined
-                        }
-                    );
-                    data.merge(first_data);
-                    data.merge(rest_data);
+                    data.merge(self.collect_data_parallel(&node.children, frustum));
                 } else {
                     data.merge(self.collect_data_recursive(node.children[0], frustum));
                 }
             }
         }
         data
+    }
+
+    fn collect_data_parallel(
+        &self,
+        children: &[NodeKey],
+        frustum: Option<&spark_math::Frustum>,
+    ) -> SceneDataCollector {
+        if children.len() <= 1 {
+            return self.collect_data_recursive(children[0], frustum);
+        }
+
+        let mid = children.len() / 2;
+        let (left, right) = children.split_at(mid);
+
+        let (mut left_data, right_data) = rayon::join(
+            || self.collect_data_parallel(left, frustum),
+            || self.collect_data_parallel(right, frustum)
+        );
+
+        left_data.merge(right_data);
+        left_data
     }
 
     pub fn pick_node_parallel(&self, ray: &spark_math::Ray) -> Option<(NodeKey, f32)> {

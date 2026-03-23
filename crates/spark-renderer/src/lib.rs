@@ -1690,6 +1690,27 @@ impl Drop for Renderer {
             if let Some(ib) = self.index_buffer.take() {
                 self.device.destroy_buffer(ib);
             }
+
+            if let Some(vb) = self.global_vertex_buffer.take() {
+                self.device.destroy_buffer(vb);
+            }
+            if let Some(ib) = self.global_index_buffer.take() {
+                self.device.destroy_buffer(ib);
+            }
+            if let Some(mb) = self.global_material_buffer.take() {
+                self.device.destroy_buffer(mb);
+            }
+
+            self.device.device.destroy_sampler(self.common_sampler, None);
+            self.device.device.destroy_descriptor_set_layout(self.bindless_descriptor_set_layout, None);
+            self.device.destroy_buffer(std::mem::replace(&mut self.dummy_buffer, Buffer {
+                handle: vk::Buffer::null(),
+                allocation: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                size: 0,
+                ptr: std::ptr::null_mut(),
+                address: 0,
+                version: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            }));
         }
     }
 }
