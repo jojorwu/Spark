@@ -10,6 +10,39 @@ pub mod input;
 pub mod command;
 pub mod event_bus;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Access {
+    None,
+    Read,
+    Write,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResourceAccess {
+    pub scene: Access,
+    pub renderer: Access,
+    pub resource_manager: Access,
+}
+
+impl ResourceAccess {
+    pub const NONE: Self = Self {
+        scene: Access::None,
+        renderer: Access::None,
+        resource_manager: Access::None,
+    };
+
+    pub fn conflicts_with(&self, other: &Self) -> bool {
+        let scene_conflict = (self.scene == Access::Write && other.scene != Access::None) ||
+                             (other.scene == Access::Write && self.scene != Access::None);
+        let renderer_conflict = (self.renderer == Access::Write && other.renderer != Access::None) ||
+                                (other.renderer == Access::Write && self.renderer != Access::None);
+        let resource_manager_conflict = (self.resource_manager == Access::Write && other.resource_manager != Access::None) ||
+                                        (other.resource_manager == Access::Write && self.resource_manager != Access::None);
+
+        scene_conflict || renderer_conflict || resource_manager_conflict
+    }
+}
+
 use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
@@ -50,6 +83,13 @@ pub trait System: Send + Sync {
     fn update(&mut self, ctx: &mut FrameContext);
     fn on_stop(&mut self, _ctx: &mut InitContext) {}
     fn dependencies(&self) -> Vec<&'static str> { Vec::new() }
+    fn resource_access(&self) -> ResourceAccess {
+        ResourceAccess {
+            scene: Access::Write,
+            renderer: Access::Write,
+            resource_manager: Access::Write,
+        }
+    }
 }
 
 pub struct Engine {
@@ -209,8 +249,32 @@ impl Engine {
     }
 
     fn render_phase(&mut self, egui_output: Option<(egui::FullOutput, egui::Context)>, delta: f32) {
+        // Find active camera to calculate frustum
+        let mut camera_matrix = spark_math::Mat4::IDENTITY;
+        let mut projection_matrix = spark_math::Mat4::IDENTITY;
+
+        for node in self.scene.nodes.values() {
+            for component in &node.components {
+                if let Some(camera) = component.as_any().downcast_ref::<crate::scene::CameraComponent>() {
+                    let view = node.global_transform.inverse();
+                    projection_matrix = spark_math::Mat4::perspective_rh(
+                        camera.fov.to_radians(),
+                        self.renderer.get_extent().width as f32 / self.renderer.get_extent().height as f32,
+                        camera.near,
+                        camera.far,
+                    );
+                    camera_matrix = projection_matrix * view;
+                    break;
+                }
+            }
+        }
+
+        let frustum_obj = spark_math::Frustum::from_matrix(camera_matrix);
+        let frustum_ref = if camera_matrix != spark_math::Mat4::IDENTITY { Some(&frustum_obj) } else { None };
+
         // Collect visibility and light data
-        let packet = self.scene.collect_frame_packet(None, &self.resource_manager);
+        let mut packet = self.scene.collect_frame_packet(frustum_ref, &self.resource_manager);
+        packet.projection_matrix = projection_matrix;
         let total_objects = self.renderer.prepare_frame(packet);
 
         // Draw the frame

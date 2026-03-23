@@ -5,6 +5,13 @@ pub struct ComponentSystem;
 
 impl System for ComponentSystem {
     fn name(&self) -> &str { "ComponentSystem" }
+    fn resource_access(&self) -> crate::ResourceAccess {
+        crate::ResourceAccess {
+            scene: crate::Access::Write,
+            renderer: crate::Access::None,
+            resource_manager: crate::Access::None,
+        }
+    }
     fn update(&mut self, ctx: &mut crate::FrameContext) {
         // Component updates:
         // Due to the borrowing rules, we must take components out of the scene tree,

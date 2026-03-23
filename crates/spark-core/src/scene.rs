@@ -322,6 +322,7 @@ impl Scene {
 
         spark_renderer::resource::FramePacket {
             view_matrix: self.last_view_matrix,
+            projection_matrix: spark_math::Mat4::IDENTITY, // Placeholder, usually set by render_phase
             opaque_meshes,
             transparent_meshes,
             lights,

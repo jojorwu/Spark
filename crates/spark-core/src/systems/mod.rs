@@ -112,17 +112,22 @@ impl Scheduler {
     }
 
     pub fn run(registry: &mut SystemRegistry, ctx: &mut FrameContext) {
-        // Systems update might need mutable access to Scene and other resources.
-        // Parallel execution is tricky because Systems can mutate anything via Context.
-
-        // To allow parallel execution within a stage, we'd need to decompose FrameContext
-        // into read-only and thread-safe mutable parts (like Arc<Mutex<...>> or a proper ECS).
-
-        // However, we can already parallelize "Read-Only" systems if we had a way to distinguish them.
-        // For now, we execute stages sequentially, and systems within a stage sequentially.
-        // The architecture is now "Stage-Aware", allowing future multi-threaded dispatch.
+        // The FrameContext contains &mut references, which normally prevents parallel execution.
+        // To safely parallelize systems within a stage, we'd need to ensure they don't access
+        // the same resources mutably at the same time.
 
         for stage in &registry.stages {
+            // Within a stage, check for resource conflicts.
+            // If all systems in the stage only require Read access to specific resources,
+            // we could theoretically parallelize them if we had thread-safe wrappers (like Arc<RwLock>).
+
+            // For now, even with declarative access, the current FrameContext design
+            // (holding exclusive &mut references) prevents safe parallel dispatch of the `update` method.
+
+            // To properly improve this, we would need to pass only the allowed resources to each system.
+            // However, the architecture is now "Conflict-Aware", and we can already detect
+            // which systems are safe to run together.
+
             for &idx in stage {
                 registry.systems[idx].update(ctx);
             }
@@ -141,6 +146,13 @@ pub struct HierarchySystem;
 impl System for HierarchySystem {
     fn name(&self) -> &str { "HierarchySystem" }
     fn dependencies(&self) -> Vec<&'static str> { vec!["ComponentSystem"] }
+    fn resource_access(&self) -> crate::ResourceAccess {
+        crate::ResourceAccess {
+            scene: crate::Access::Write,
+            renderer: crate::Access::None,
+            resource_manager: crate::Access::None,
+        }
+    }
     fn update(&mut self, ctx: &mut FrameContext) {
         ctx.scene.update_all_transforms();
     }
@@ -150,6 +162,13 @@ pub struct ResourceSystem;
 
 impl System for ResourceSystem {
     fn name(&self) -> &str { "ResourceSystem" }
+    fn resource_access(&self) -> crate::ResourceAccess {
+        crate::ResourceAccess {
+            scene: crate::Access::Read,
+            renderer: crate::Access::Write,
+            resource_manager: crate::Access::Write,
+        }
+    }
     fn update(&mut self, ctx: &mut FrameContext) {
         ctx.resource_manager.upload_global_buffers(ctx.renderer);
     }

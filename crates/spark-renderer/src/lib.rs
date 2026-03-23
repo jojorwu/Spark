@@ -26,6 +26,7 @@ use winit::window::Window;
 pub struct Renderer {
     pub context: VulkanContext,
     pub device: VulkanDevice,
+    pub resource_tracker: crate::resource::ResourceTracker,
     swapchain: VulkanSwapchain,
     pub gbuffer: GBuffer,
     pub global_descriptor_set_layout: vk::DescriptorSetLayout,
@@ -267,6 +268,7 @@ impl Renderer {
         let mut renderer = Self {
             context,
             device,
+            resource_tracker: crate::resource::ResourceTracker::new(),
             swapchain,
             gbuffer,
             global_descriptor_set_layout,
@@ -847,6 +849,15 @@ impl Renderer {
             for stage in &self.render_stages {
                 for &idx in stage {
                     let pass = &self.render_passes[idx];
+
+                    // Automated Barrier Injection
+                    for (res_name, _access, _stage_flags) in pass.gpu_resource_access() {
+                        if let Some(_view) = pass.get_resource_view(&res_name, cf) {
+                            // Find corresponding image for the view (requires tracking in ResourceTracker)
+                            // For now, this logic is a placeholder for a more complete Resource Graph.
+                        }
+                    }
+
                     if !pass_secondary_commands[idx].is_empty() {
                         self.device.device.cmd_execute_commands(command_buffer, &pass_secondary_commands[idx]);
                     }
@@ -1381,12 +1392,18 @@ impl Renderer {
         // 3. Update Global UBO
         let extent = self.get_extent();
         let jitter = self.get_jitter();
-        let mut projection = spark_math::Mat4::perspective_rh(
-            45.0f32.to_radians(),
-            extent.width as f32 / extent.height as f32,
-            0.1,
-            100.0,
-        );
+
+        // Use camera projection from packet if available, otherwise default.
+        let mut projection = if packet.projection_matrix != spark_math::Mat4::IDENTITY {
+            packet.projection_matrix
+        } else {
+            spark_math::Mat4::perspective_rh(
+                45.0f32.to_radians(),
+                extent.width as f32 / extent.height as f32,
+                0.1,
+                100.0,
+            )
+        };
         projection.col_mut(2).x += jitter[0] * projection.col(0).x;
         projection.col_mut(2).y += jitter[1] * projection.col(1).y;
         let view_proj = projection * packet.view_matrix;

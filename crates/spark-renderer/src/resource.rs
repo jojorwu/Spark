@@ -82,6 +82,7 @@ pub struct LightDraw {
 
 pub struct FramePacket {
     pub view_matrix: spark_math::Mat4,
+    pub projection_matrix: spark_math::Mat4,
     pub opaque_meshes: Vec<MeshDraw>,
     pub transparent_meshes: Vec<MeshDraw>,
     pub lights: Vec<LightDraw>,
@@ -148,6 +149,51 @@ pub struct ClusterAABB {
 pub struct LightGrid {
     pub offset: u32,
     pub count: u32,
+}
+
+pub struct ResourceTracker {
+    pub image_layouts: std::collections::HashMap<vk::Image, vk::ImageLayout>,
+}
+
+impl ResourceTracker {
+    pub fn new() -> Self {
+        Self { image_layouts: std::collections::HashMap::new() }
+    }
+
+    pub fn transition_image(
+        &mut self,
+        cb: vk::CommandBuffer,
+        device: &ash::Device,
+        image: vk::Image,
+        new_layout: vk::ImageLayout,
+        src_access: vk::AccessFlags,
+        dst_access: vk::AccessFlags,
+        src_stage: vk::PipelineStageFlags,
+        dst_stage: vk::PipelineStageFlags,
+        aspect_mask: vk::ImageAspectFlags,
+    ) {
+        let old_layout = *self.image_layouts.get(&image).unwrap_or(&vk::ImageLayout::UNDEFINED);
+        if old_layout == new_layout { return; }
+
+        let barrier = vk::ImageMemoryBarrier::default()
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .src_access_mask(src_access)
+            .dst_access_mask(dst_access)
+            .image(image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        unsafe {
+            device.cmd_pipeline_barrier(cb, src_stage, dst_stage, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+        }
+        self.image_layouts.insert(image, new_layout);
+    }
 }
 
 impl Attachment {

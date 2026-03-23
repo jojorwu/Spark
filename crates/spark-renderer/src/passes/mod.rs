@@ -28,6 +28,9 @@ pub trait RenderPass: Send + Sync {
     /// Returns the unique name of the rendering pass.
     fn name(&self) -> &str;
 
+    /// Declarative GPU resource requirements for the pass.
+    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> { Vec::new() }
+
     /// Returns true if the pass is currently enabled and should be executed.
     fn is_enabled(&self, _renderer: &Renderer) -> bool {
         true
