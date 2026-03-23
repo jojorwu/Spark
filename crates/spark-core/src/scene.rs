@@ -199,10 +199,59 @@ impl Scene {
 
     /// Updates global transforms for all nodes in the scene tree and caches the active camera's view matrix.
     pub fn update_all_transforms(&mut self) {
-        // For simple parent-child propagation, sequential is usually fine.
-        // But for true multi-threading with Rayon, we'd need a more decoupled approach.
-        // For now, we'll keep the recursive update but ensure we can scale.
-        self.update_transforms(self.root);
+        // Collect nodes by depth level for parallel processing.
+        let mut levels = Vec::new();
+        let mut current_level = vec![self.root];
+
+        while !current_level.is_empty() {
+            let mut next_level = Vec::new();
+            for &node_key in &current_level {
+                if let Some(node) = self.nodes.get(node_key) {
+                    next_level.extend(node.children.iter().cloned());
+                }
+            }
+            levels.push(current_level);
+            current_level = next_level;
+        }
+
+        // Process each level sequentially, but nodes within a level in parallel.
+        for level in levels {
+            use rayon::prelude::*;
+            use crate::systems::SendPtr;
+
+            // To safely update nodes in parallel, we need to bypass the SlotMap's borrow checker.
+            // Since we're processing level by level and parents are already updated,
+            // and no two nodes in the same level have a parent-child relationship,
+            // this is logically safe but requires unsafe code to satisfy the compiler.
+
+            let nodes_ptr = SendPtr(&mut self.nodes as *mut SlotMap<NodeKey, Node>);
+            let last_view_matrix_ptr = SendPtr(&mut self.last_view_matrix as *mut Mat4);
+
+            level.par_iter().for_each(|&node_key| {
+                let nodes = unsafe { nodes_ptr.as_mut() };
+                let last_view_matrix = unsafe { last_view_matrix_ptr.as_mut() };
+
+                if let Some(node) = nodes.get(node_key) {
+                    let parent_global = if let Some(parent_key) = node.parent {
+                        nodes.get(parent_key).map(|p| p.global_transform).unwrap_or(Mat4::IDENTITY)
+                    } else {
+                        Mat4::IDENTITY
+                    };
+
+                    // We need a mutable reference to the node, but we can't get it from the SlotMap while others are reading.
+                    // However, we know that no two threads are accessing the same node.
+                    let node_mut = unsafe { &mut *(nodes.get_mut(node_key).unwrap() as *mut Node) };
+                    node_mut.global_transform = parent_global * node_mut.local_transform;
+
+                    let current_global = node_mut.global_transform;
+                    for component in &node_mut.components {
+                        if (**component).as_any().is::<CameraComponent>() {
+                            *last_view_matrix = current_global.inverse();
+                        }
+                    }
+                }
+            });
+        }
     }
 
     pub fn save_to_file(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -366,17 +415,25 @@ impl Scene {
                 }
             }
 
-            if node.children.len() >= 100 {
-                use rayon::prelude::*;
-                let child_datas: Vec<_> = node.children.par_iter().map(|&ck| {
-                    self.collect_data_recursive(ck, frustum)
-                }).collect();
-                for cd in child_datas {
-                    data.merge(cd);
-                }
-            } else {
-                for &child_key in &node.children {
-                    data.merge(self.collect_data_recursive(child_key, frustum));
+            if !node.children.is_empty() {
+                if node.children.len() > 1 {
+                    // Use rayon::join to parallelize the recursion for multiple children.
+                    // This is more efficient than par_iter for smaller branching factors.
+                    let (first, rest) = node.children.split_first().unwrap();
+                    let (first_data, rest_data) = rayon::join(
+                        || self.collect_data_recursive(*first, frustum),
+                        || {
+                            let mut combined = SceneDataCollector::new();
+                            for &ck in rest {
+                                combined.merge(self.collect_data_recursive(ck, frustum));
+                            }
+                            combined
+                        }
+                    );
+                    data.merge(first_data);
+                    data.merge(rest_data);
+                } else {
+                    data.merge(self.collect_data_recursive(node.children[0], frustum));
                 }
             }
         }

@@ -71,7 +71,7 @@ pub struct FrameContext<'a> {
     pub delta: f32,
     pub event_proxy: crate::systems_events::events::EventProxy<'a>,
     pub input: &'a crate::input::InputManager,
-    pub command_queue: &'a mut crate::command::CommandQueue,
+    pub command_queue: &'a crate::command::CommandQueue,
     pub event_bus: &'a crate::event_bus::EventBus,
 }
 
@@ -106,7 +106,7 @@ pub struct Engine {
     pub system_registry: crate::systems::SystemRegistry,
     pub last_frame_time: instant::Instant,
     pub current_fps: f32,
-    pub system_events: Vec<crate::systems_events::events::SystemEvent>,
+    pub system_events: std::sync::Mutex<Vec<crate::systems_events::events::SystemEvent>>,
 }
 
 impl Engine {
@@ -144,7 +144,7 @@ impl Engine {
             system_registry,
             last_frame_time: instant::Instant::now(),
             current_fps: 0.0,
-            system_events: Vec::new(),
+            system_events: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -220,8 +220,7 @@ impl Engine {
     fn update_phase(&mut self, delta: f32) {
         self.input_manager.update(&self.event_queue.events);
 
-        let mut system_events = std::mem::take(&mut self.system_events);
-        system_events.clear(); // Reset for this frame
+        self.system_events.lock().unwrap().clear(); // Reset for this frame
 
         {
             let mut ctx = FrameContext {
@@ -232,17 +231,15 @@ impl Engine {
                 delta,
                 event_proxy: crate::systems_events::events::EventProxy {
                     events: &self.event_queue.events,
-                    outgoing: &mut system_events,
+                    outgoing: &self.system_events,
                 },
                 input: &self.input_manager,
-                command_queue: &mut self.command_queue,
+                command_queue: &self.command_queue,
                 event_bus: &self.event_bus,
             };
 
             crate::systems::Scheduler::run(&mut self.system_registry, &mut ctx);
         }
-
-        self.system_events = system_events;
 
         // Execute all deferred commands after system updates
         self.command_queue.execute_all(&mut self.scene, &mut self.resource_manager);

@@ -1356,7 +1356,7 @@ impl Renderer {
         // 1.1 Prepare Transparent buffers (with simple back-to-front sorting)
         let mut transparent_meshes = packet.transparent_meshes;
         let view_pos = packet.view_matrix.inverse().w_axis.xyz();
-        transparent_meshes.sort_by(|a, b| {
+        transparent_meshes.par_sort_by(|a, b| {
             let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
             let dist_b = (b.model.w_axis.xyz() - view_pos).length_squared();
             dist_b.partial_cmp(&dist_a).unwrap_or(std::cmp::Ordering::Equal)

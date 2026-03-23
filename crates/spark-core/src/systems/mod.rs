@@ -78,11 +78,30 @@ impl SystemRegistry {
 
         for (i, system) in self.systems.iter().enumerate() {
             let mut stage = 0;
+
+            // 1. Dependency constraints
             for dep in system.dependencies() {
                 if let Some(&dep_idx) = name_to_idx.get(dep) {
                     stage = stage.max(system_stages[dep_idx] + 1);
                 }
             }
+
+            // 2. Resource conflict constraints
+            // A system cannot be in the same stage as another system it conflicts with.
+            let mut conflict = true;
+            while conflict {
+                conflict = false;
+                for j in 0..i {
+                    if system_stages[j] == stage {
+                        if system.resource_access().conflicts_with(&self.systems[j].resource_access()) {
+                            stage += 1;
+                            conflict = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
             system_stages[i] = stage;
             max_stage = max_stage.max(stage);
         }
@@ -94,6 +113,23 @@ impl SystemRegistry {
     }
 }
 
+pub struct SendPtr<T: ?Sized>(pub *mut T);
+unsafe impl<T: ?Sized> Send for SendPtr<T> {}
+unsafe impl<T: ?Sized> Sync for SendPtr<T> {}
+
+impl<T: ?Sized> SendPtr<T> {
+    pub unsafe fn as_mut(&self) -> &mut T {
+        &mut *self.0
+    }
+}
+
+impl<T: ?Sized> Clone for SendPtr<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: ?Sized> Copy for SendPtr<T> {}
 
 impl Default for SystemRegistry {
     fn default() -> Self {
@@ -112,22 +148,7 @@ impl Scheduler {
     }
 
     pub fn run(registry: &mut SystemRegistry, ctx: &mut FrameContext) {
-        // The FrameContext contains &mut references, which normally prevents parallel execution.
-        // To safely parallelize systems within a stage, we'd need to ensure they don't access
-        // the same resources mutably at the same time.
-
         for stage in &registry.stages {
-            // Within a stage, check for resource conflicts.
-            // If all systems in the stage only require Read access to specific resources,
-            // we could theoretically parallelize them if we had thread-safe wrappers (like Arc<RwLock>).
-
-            // For now, even with declarative access, the current FrameContext design
-            // (holding exclusive &mut references) prevents safe parallel dispatch of the `update` method.
-
-            // To properly improve this, we would need to pass only the allowed resources to each system.
-            // However, the architecture is now "Conflict-Aware", and we can already detect
-            // which systems are safe to run together.
-
             for &idx in stage {
                 registry.systems[idx].update(ctx);
             }

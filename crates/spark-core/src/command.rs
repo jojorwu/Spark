@@ -52,21 +52,24 @@ impl Command for AddComponentCommand {
     }
 }
 
+use std::sync::Mutex;
+
 pub struct CommandQueue {
-    commands: Vec<Box<dyn Command>>,
+    commands: Mutex<Vec<Box<dyn Command>>>,
 }
 
 impl CommandQueue {
     pub fn new() -> Self {
-        Self { commands: Vec::new() }
+        Self { commands: Mutex::new(Vec::new()) }
     }
 
-    pub fn push<C: Command + 'static>(&mut self, command: C) {
-        self.commands.push(Box::new(command));
+    pub fn push<C: Command + 'static>(&self, command: C) {
+        self.commands.lock().unwrap().push(Box::new(command));
     }
 
-    pub fn execute_all(&mut self, scene: &mut Scene, resource_manager: &mut ResourceManager) {
-        for mut command in self.commands.drain(..) {
+    pub fn execute_all(&self, scene: &mut Scene, resource_manager: &mut ResourceManager) {
+        let mut commands = self.commands.lock().unwrap();
+        for mut command in commands.drain(..) {
             command.apply(scene, resource_manager);
         }
     }
