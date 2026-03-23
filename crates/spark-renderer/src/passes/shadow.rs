@@ -20,11 +20,12 @@ use super::{RenderPass, RenderContext};
 impl RenderPass for ShadowPass {
     fn name(&self) -> &str { "ShadowPass" }
     fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_shadows }
+    fn outputs(&self) -> Vec<&'static str> { vec!["ShadowMap"] }
 
     fn record_secondary_commands(&self, ctx: &RenderContext) -> Vec<vk::CommandBuffer> {
         let renderer = ctx.renderer;
         let device = &renderer.device.device;
-        let lvp = renderer.main_light_view_proj;
+        let lvps = renderer.frames[ctx.current_frame].light_view_projs;
 
         let mut buffers = Vec::new();
         for cascade_idx in 0..SHADOW_CASCADE_COUNT {
@@ -37,7 +38,7 @@ impl RenderPass for ShadowPass {
 
             unsafe {
                 device.begin_command_buffer(cb, &begin).unwrap();
-                self.record_cascade_commands(device, cb, lvp, renderer, cascade_idx, true);
+                self.record_cascade_commands(device, cb, lvps[cascade_idx], renderer, cascade_idx, true);
                 device.end_command_buffer(cb).unwrap();
             }
             buffers.push(cb);

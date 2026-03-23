@@ -90,7 +90,7 @@ pub struct GlobalUBO {
     pub inv_vp: spark_math::Mat4,
     pub camera_pos: [f32; 4],
     pub frustum: [spark_math::Vec4; 6],
-    pub cascade_splits: [f32; 4],
+    pub cascade_splits: spark_math::Vec4,
 }
 
 impl Renderer {
@@ -256,6 +256,7 @@ impl Renderer {
                     transparent_indirect_buffer: None,
                     transparent_object_buffer: None,
                 secondary_command_buffers: Vec::new(),
+                light_view_projs: [spark_math::Mat4::IDENTITY; 4],
                 }
             })
             .collect::<Vec<_>>()
@@ -1359,14 +1360,52 @@ impl Renderer {
         let view_proj = projection * packet.view_matrix;
         self.current_view_proj = view_proj;
 
-        let light_pos = spark_math::Vec3::new(10.0, 10.0, 10.0);
+        let cascade_splits = [10.0, 25.0, 50.0, 100.0];
+        let mut light_view_projs = [spark_math::Mat4::IDENTITY; 4];
+
+        let light_dir = spark_math::Vec3::new(0.5, -1.0, 0.5).normalize();
         let light_view = spark_math::Mat4::look_at_rh(
-            light_pos,
+            -light_dir * 50.0,
             spark_math::Vec3::ZERO,
             spark_math::Vec3::Y,
         );
-        let light_proj = spark_math::Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 0.1, 100.0);
-        self.main_light_view_proj = light_proj * light_view;
+
+        let inv_vp = view_proj.inverse();
+        for i in 0..4 {
+            let _split = cascade_splits[i];
+            let mut frustum_corners = [spark_math::Vec3::ZERO; 8];
+            let mut idx = 0;
+            for x in &[-1.0, 1.0] {
+                for y in &[-1.0, 1.0] {
+                    for z in &[0.0, 1.0] {
+                        let pt = inv_vp * spark_math::Vec4::new(*x, *y, *z, 1.0);
+                        frustum_corners[idx] = pt.xyz() / pt.w;
+                        idx += 1;
+                    }
+                }
+            }
+
+            // Simple approximation of tight-fitting light frustum for the cascade
+            let mut min_p = spark_math::Vec3::new(f32::MAX, f32::MAX, f32::MAX);
+            let mut max_p = spark_math::Vec3::new(f32::MIN, f32::MIN, f32::MIN);
+            for corner in &frustum_corners {
+                let light_space_p = light_view * corner.extend(1.0);
+                min_p = min_p.min(light_space_p.xyz());
+                max_p = max_p.max(light_space_p.xyz());
+            }
+
+            // Ensure stable shadow mapping by snapping min/max to texel size
+            let shadow_res = Self::SHADOW_MAP_CASCADE_SIZE as f32;
+            let world_units_per_texel = (max_p - min_p) / shadow_res;
+            min_p = (min_p / world_units_per_texel).floor() * world_units_per_texel;
+            max_p = (max_p / world_units_per_texel).floor() * world_units_per_texel;
+
+            let light_proj = spark_math::Mat4::orthographic_rh(min_p.x, max_p.x, min_p.y, max_p.y, -max_p.z - 50.0, -min_p.z);
+            light_view_projs[i] = light_proj * light_view;
+        }
+
+        self.frames[self.current_frame].light_view_projs = light_view_projs;
+        self.main_light_view_proj = light_view_projs[0];
 
         let inv_v = packet.view_matrix.inverse();
         let camera_pos = [inv_v.w_axis.x, inv_v.w_axis.y, inv_v.w_axis.z, 1.0];
@@ -1374,11 +1413,11 @@ impl Renderer {
 
         let ubo = GlobalUBO {
             vp: view_proj,
-            lvp: [self.main_light_view_proj; 4],
+            lvp: light_view_projs,
             inv_vp: view_proj.inverse(),
             camera_pos,
             frustum,
-            cascade_splits: [0.1, 0.2, 0.5, 1.0],
+            cascade_splits: spark_math::Vec4::new(cascade_splits[0], cascade_splits[1], cascade_splits[2], cascade_splits[3]),
         };
 
         if self.frames[0].global_buffer.is_none() {

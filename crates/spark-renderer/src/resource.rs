@@ -105,6 +105,7 @@ pub struct RenderFrame {
     pub transparent_indirect_buffer: Option<Buffer>,
     pub transparent_object_buffer: Option<Buffer>,
     pub secondary_command_buffers: Vec<vk::CommandBuffer>,
+    pub light_view_projs: [spark_math::Mat4; 4],
 }
 
 #[repr(C)]
