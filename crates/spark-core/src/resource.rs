@@ -435,6 +435,8 @@ impl GltfLoader {
 
         let spark_node = Node {
             name: node.name().unwrap_or("Unnamed Node").to_string(),
+            visible: true,
+            locked: false,
             local_transform,
             global_transform: Mat4::IDENTITY,
             parent: None,

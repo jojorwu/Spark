@@ -92,6 +92,8 @@ pub enum LightType {
 #[derive(Serialize, Deserialize)]
 pub struct Node {
     pub name: String,
+    pub visible: bool,
+    pub locked: bool,
     pub local_transform: Mat4,
     #[serde(skip)]
     pub global_transform: Mat4,
@@ -104,6 +106,8 @@ impl Clone for Node {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
+            visible: self.visible,
+            locked: self.locked,
             local_transform: self.local_transform,
             global_transform: self.global_transform,
             parent: self.parent,
@@ -158,6 +162,8 @@ impl Scene {
         let mut nodes = SlotMap::with_key();
         let root = nodes.insert(Node {
             name: "Root".to_string(),
+            visible: true,
+            locked: false,
             local_transform: Mat4::IDENTITY,
             global_transform: Mat4::IDENTITY,
             parent: None,
@@ -176,6 +182,34 @@ impl Default for Scene {
 }
 
 impl Scene {
+    pub fn update_components(&mut self, delta: f32, renderer: *mut spark_renderer::Renderer, resource_manager: *mut crate::resource::ResourceManager, project: &crate::Project, task_system: &crate::task::TaskSystem) {
+        let ctx = crate::FrameContext {
+            scene: self as *mut Scene,
+            renderer,
+            resource_manager,
+            project,
+            task_system,
+            delta,
+            event_proxy: crate::systems_events::events::EventProxy {
+                events: &[],
+                outgoing: &std::sync::Mutex::new(Vec::new()),
+            },
+            input: &crate::input::InputManager::new(),
+            command_queue: &crate::command::CommandQueue::new(),
+            event_bus: &crate::event_bus::EventBus::new(),
+        };
+
+        let nodes: Vec<NodeKey> = self.nodes.keys().collect();
+        for key in nodes {
+             // We need to avoid simultaneous borrow and modification if components modify the scene.
+             // For now, components use CommandQueue which is fine.
+             let components_count = self.nodes.get(key).map(|n| n.components.len()).unwrap_or(0);
+             for i in 0..components_count {
+                 let component = &mut self.nodes.get_mut(key).unwrap().components[i];
+                 component.on_update(key, &ctx);
+             }
+        }
+    }
 
     pub fn remove_node(&mut self, key: NodeKey) {
         let (children, parent_key) = if let Some(node) = self.nodes.get(key) {

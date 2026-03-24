@@ -129,6 +129,8 @@ fn main() {
 
     let triangle_node = Node {
         name: "MyTriangle".to_string(),
+        visible: true,
+        locked: false,
         local_transform: Mat4::from_translation(Vec3::new(0.0, 0.0, -5.0)),
         global_transform: Mat4::IDENTITY,
         parent: None,
@@ -148,6 +150,8 @@ fn main() {
 
     let _camera_node = Node {
         name: "MainCamera".to_string(),
+        visible: true,
+        locked: false,
         local_transform: Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0)),
         global_transform: Mat4::IDENTITY,
         parent: None,
@@ -173,7 +177,18 @@ fn main() {
             winit::event::Event::AboutToWait => {
                 ui.begin_frame(window);
                 ui.draw_ui(scene, rm, renderer, project, fps);
-                ui.draw_viewport(scene, fps);
+                ui.draw_viewport(scene, renderer, fps);
+
+                // Update simulation state
+                let delta = 1.0 / fps.max(0.001);
+                if ui.sim_state == crate::ui::SimulationState::Playing {
+                    // Safety: In editor mode, we can access task system via raw pointer or similar if needed,
+                    // but for simplicity we'll create a temporary one or pass it correctly.
+                    // Actually, let's just use a dummy task system for now or move task system to project/context.
+                    let dummy_tasks = spark_core::task::TaskSystem::new();
+                    scene.update_components(delta, renderer, rm, project, &dummy_tasks);
+                }
+
                 let full_output = ui.end_frame(window);
                 (false, Some((full_output, ui.egui_ctx.clone())))
             }
