@@ -17,14 +17,15 @@ impl System for ComponentSystem {
         // Due to the borrowing rules, we must take components out of the scene tree,
         // update them with a reference to the scene tree, and then put them back.
 
-        let node_keys: Vec<NodeKey> = ctx.scene.nodes.keys().collect();
+        let scene = ctx.scene();
+        let node_keys: Vec<NodeKey> = scene.nodes.keys().collect();
         for key in node_keys {
-            if let Some(node) = ctx.scene.nodes.get_mut(key) {
+            if let Some(node) = scene.nodes.get_mut(key) {
                 let mut components = std::mem::take(&mut node.components);
                 for component in &mut components {
-                    component.on_update(key, ctx.scene, ctx.delta);
+                    component.on_update(key, scene, ctx.delta);
                 }
-                if let Some(node_after) = ctx.scene.nodes.get_mut(key) {
+                if let Some(node_after) = scene.nodes.get_mut(key) {
                     node_after.components = components;
                 }
             }

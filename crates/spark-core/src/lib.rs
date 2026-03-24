@@ -53,6 +53,15 @@ use crate::task::TaskSystem;
 use crate::resource::ResourceManager;
 use crate::event::EventQueue;
 use spark_renderer::Renderer;
+use serde::{Serialize, Deserialize};
+use std::path::PathBuf;
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct Project {
+    pub name: String,
+    pub asset_root: PathBuf,
+    pub startup_scene: PathBuf,
+}
 
 /// Context passed to systems during initialization and cleanup.
 pub struct InitContext<'a> {
@@ -64,15 +73,24 @@ pub struct InitContext<'a> {
 
 /// Context passed to systems during the update phase.
 pub struct FrameContext<'a> {
-    pub scene: &'a mut Scene,
-    pub renderer: &'a mut Renderer,
-    pub resource_manager: &'a mut ResourceManager,
+    pub scene: *mut Scene,
+    pub renderer: *mut Renderer,
+    pub resource_manager: *mut ResourceManager,
     pub task_system: &'a TaskSystem,
     pub delta: f32,
     pub event_proxy: crate::systems_events::events::EventProxy<'a>,
     pub input: &'a crate::input::InputManager,
     pub command_queue: &'a crate::command::CommandQueue,
     pub event_bus: &'a crate::event_bus::EventBus,
+}
+
+unsafe impl<'a> Send for FrameContext<'a> {}
+unsafe impl<'a> Sync for FrameContext<'a> {}
+
+impl<'a> FrameContext<'a> {
+    pub fn scene(&self) -> &mut Scene { unsafe { &mut *self.scene } }
+    pub fn renderer(&self) -> &mut Renderer { unsafe { &mut *self.renderer } }
+    pub fn resource_manager(&self) -> &mut ResourceManager { unsafe { &mut *self.resource_manager } }
 }
 
 /// A trait representing a system that processes engine state.
@@ -224,9 +242,9 @@ impl Engine {
 
         {
             let mut ctx = FrameContext {
-                scene: &mut self.scene,
-                renderer: &mut self.renderer,
-                resource_manager: &mut self.resource_manager,
+                scene: &mut self.scene as *mut Scene,
+                renderer: &mut self.renderer as *mut Renderer,
+                resource_manager: &mut self.resource_manager as *mut ResourceManager,
                 task_system: &self.task_system,
                 delta,
                 event_proxy: crate::systems_events::events::EventProxy {

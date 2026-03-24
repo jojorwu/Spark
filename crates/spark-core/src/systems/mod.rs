@@ -134,8 +134,20 @@ impl Scheduler {
     }
 
     pub fn run(registry: &mut SystemRegistry, ctx: &mut FrameContext) {
+        use rayon::prelude::*;
         for stage in &registry.stages {
-            for &idx in stage {
+            if stage.len() > 1 {
+                stage.par_iter().for_each(|&idx| {
+                    // Safety: The scheduler has already grouped systems into stages
+                    // based on their ResourceAccess declarations. Non-conflicting
+                    // systems can safely run in parallel.
+                    unsafe {
+                        let systems_ptr = registry.systems.as_ptr() as *mut Box<dyn crate::System>;
+                        let ctx_ptr = ctx as *const FrameContext as *mut FrameContext;
+                        (*systems_ptr.add(idx)).update(&mut *ctx_ptr);
+                    }
+                });
+            } else if let Some(&idx) = stage.first() {
                 registry.systems[idx].update(ctx);
             }
         }
@@ -161,7 +173,7 @@ impl System for HierarchySystem {
         }
     }
     fn update(&mut self, ctx: &mut FrameContext) {
-        ctx.scene.update_all_transforms();
+        ctx.scene().update_all_transforms();
     }
 }
 
@@ -177,6 +189,7 @@ impl System for ResourceSystem {
         }
     }
     fn update(&mut self, ctx: &mut FrameContext) {
-        ctx.resource_manager.upload_global_buffers(ctx.renderer);
+        let renderer = ctx.renderer();
+        ctx.resource_manager().upload_global_buffers(renderer);
     }
 }
