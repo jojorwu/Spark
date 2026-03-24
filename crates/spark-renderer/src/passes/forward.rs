@@ -33,13 +33,13 @@ impl RenderPass for ForwardPass {
 
         unsafe {
             let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(renderer.gbuffer_hdr[cf].view)
+                .image_view(renderer.get_pass_resource_view("", "GBufferHDR", cf).unwrap_or(renderer.common_shadow_view))
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::LOAD)
                 .store_op(vk::AttachmentStoreOp::STORE);
 
             let depth_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(renderer.gbuffer_depth[cf].view)
+                .image_view(renderer.get_pass_resource_view("", "GBufferDepth", cf).unwrap_or(renderer.common_shadow_view))
                 .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::LOAD)
                 .store_op(vk::AttachmentStoreOp::STORE);

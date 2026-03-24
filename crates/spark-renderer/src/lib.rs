@@ -30,12 +30,6 @@ pub struct Renderer {
     pub device: VulkanDevice,
     pub resource_tracker: crate::resource::ResourceTracker,
     swapchain: VulkanSwapchain,
-    pub gbuffer_hdr: Vec<crate::resource::Attachment>,
-    pub gbuffer_albedo: Vec<crate::resource::Attachment>,
-    pub gbuffer_normal: Vec<crate::resource::Attachment>,
-    pub gbuffer_pbr: Vec<crate::resource::Attachment>,
-    pub gbuffer_velocity: Vec<crate::resource::Attachment>,
-    pub gbuffer_depth: Vec<crate::resource::Attachment>,
     pub global_descriptor_set_layout: vk::DescriptorSetLayout,
     pub light_count: u32,
     pub render_graph: crate::graph::RenderGraph,
@@ -121,8 +115,6 @@ impl Renderer {
             device.msaa_samples,
             device.depth_format,
         )?;
-        let GBuffer { hdr, albedo, normal, pbr, velocity, depth } = gbuffer;
-
         let common_sampler = unsafe {
             device.device.create_sampler(
                 &vk::SamplerCreateInfo::default()
@@ -278,12 +270,6 @@ impl Renderer {
             device,
             resource_tracker: crate::resource::ResourceTracker::new(),
             swapchain,
-            gbuffer_hdr: hdr,
-            gbuffer_albedo: albedo,
-            gbuffer_normal: normal,
-            gbuffer_pbr: pbr,
-            gbuffer_velocity: velocity,
-            gbuffer_depth: depth,
             global_descriptor_set_layout,
             light_count: 0,
             render_graph: crate::graph::RenderGraph::new(),
@@ -329,6 +315,13 @@ impl Renderer {
             pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).collect(),
             dummy_buffer,
         };
+
+        renderer.render_graph.physical_attachments.insert("GBufferHDR".to_string(), gbuffer.hdr);
+        renderer.render_graph.physical_attachments.insert("GBufferAlbedo".to_string(), gbuffer.albedo);
+        renderer.render_graph.physical_attachments.insert("GBufferNormal".to_string(), gbuffer.normal);
+        renderer.render_graph.physical_attachments.insert("GBufferPBR".to_string(), gbuffer.pbr);
+        renderer.render_graph.physical_attachments.insert("GBufferVelocity".to_string(), gbuffer.velocity);
+        renderer.render_graph.physical_attachments.insert("GBufferDepth".to_string(), gbuffer.depth);
 
         renderer.init_default_resources();
         renderer.common_shadow_view = renderer.default_texture.as_ref().unwrap().view;
@@ -905,12 +898,12 @@ impl Renderer {
             )?;
             let extent = self.swapchain.extent;
             // Recreate G-Buffer attachments
-            for attachment in &mut self.gbuffer_hdr { attachment.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16B16A16_SFLOAT)?; }
-            for attachment in &mut self.gbuffer_albedo { attachment.recreate(&self.device, extent.width, extent.height, vk::Format::R8G8B8A8_UNORM)?; }
-            for attachment in &mut self.gbuffer_normal { attachment.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16B16A16_SFLOAT)?; }
-            for attachment in &mut self.gbuffer_pbr { attachment.recreate(&self.device, extent.width, extent.height, vk::Format::R8G8B8A8_UNORM)?; }
-            for attachment in &mut self.gbuffer_velocity { attachment.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16_SFLOAT)?; }
-            for attachment in &mut self.gbuffer_depth { attachment.recreate(&self.device, extent.width, extent.height, self.device.depth_format)?; }
+            if let Some(hdr) = self.render_graph.physical_attachments.get_mut("GBufferHDR") { for a in hdr { a.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16B16A16_SFLOAT)?; } }
+            if let Some(albedo) = self.render_graph.physical_attachments.get_mut("GBufferAlbedo") { for a in albedo { a.recreate(&self.device, extent.width, extent.height, vk::Format::R8G8B8A8_UNORM)?; } }
+            if let Some(normal) = self.render_graph.physical_attachments.get_mut("GBufferNormal") { for a in normal { a.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16B16A16_SFLOAT)?; } }
+            if let Some(pbr) = self.render_graph.physical_attachments.get_mut("GBufferPBR") { for a in pbr { a.recreate(&self.device, extent.width, extent.height, vk::Format::R8G8B8A8_UNORM)?; } }
+            if let Some(velocity) = self.render_graph.physical_attachments.get_mut("GBufferVelocity") { for a in velocity { a.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16_SFLOAT)?; } }
+            if let Some(depth) = self.render_graph.physical_attachments.get_mut("GBufferDepth") { for a in depth { a.recreate(&self.device, extent.width, extent.height, self.device.depth_format)?; } }
 
             if self.viewport_attachment.is_some() {
                 self.create_viewport_attachment(extent.width, extent.height);
@@ -929,12 +922,11 @@ impl Renderer {
 
     fn cleanup_swapchain(&mut self) {
         unsafe {
-            for attachment in std::mem::take(&mut self.gbuffer_hdr) { attachment.destroy(&self.device.device, &self.device.allocator); }
-            for attachment in std::mem::take(&mut self.gbuffer_albedo) { attachment.destroy(&self.device.device, &self.device.allocator); }
-            for attachment in std::mem::take(&mut self.gbuffer_normal) { attachment.destroy(&self.device.device, &self.device.allocator); }
-            for attachment in std::mem::take(&mut self.gbuffer_pbr) { attachment.destroy(&self.device.device, &self.device.allocator); }
-            for attachment in std::mem::take(&mut self.gbuffer_velocity) { attachment.destroy(&self.device.device, &self.device.allocator); }
-            for attachment in std::mem::take(&mut self.gbuffer_depth) { attachment.destroy(&self.device.device, &self.device.allocator); }
+            for (_, attachments) in self.render_graph.physical_attachments.iter_mut() {
+                for a in attachments.drain(..) {
+                    a.destroy(&self.device.device, &self.device.allocator);
+                }
+            }
 
             self.swapchain
                 .loader
@@ -1215,8 +1207,14 @@ impl Renderer {
     pub fn get_pass_resource_view(&self, pass_name: &str, resource_name: &str, frame_index: usize) -> Option<vk::ImageView> {
         for pass_node in &self.render_graph.passes {
             if pass_node.pass.name() == pass_name {
-                return pass_node.pass.get_resource_view(resource_name, frame_index);
+                if let Some(view) = pass_node.pass.get_resource_view(resource_name, frame_index) {
+                    return Some(view);
+                }
             }
+        }
+        // Check graph-managed physical attachments
+        if let Some(attachments) = self.render_graph.physical_attachments.get(resource_name) {
+            return Some(attachments[frame_index].view);
         }
         None
     }

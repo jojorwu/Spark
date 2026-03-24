@@ -43,7 +43,7 @@ impl RenderPass for PostProcessPass {
         let taa_view = renderer.get_pass_resource_view("TAAPass", "history", current_frame);
         let fog_view = renderer.get_pass_resource_view("VolumetricPass", "output", current_frame);
 
-        let input_view = taa_view.unwrap_or(renderer.gbuffer_hdr[current_frame].view);
+        let input_view = taa_view.unwrap_or(renderer.get_pass_resource_view("", "GBufferHDR", current_frame).unwrap_or(renderer.common_shadow_view));
         let final_fog_view = fog_view.unwrap_or(input_view);
 
         let img_info = [vk::DescriptorImageInfo::default()
@@ -90,7 +90,7 @@ impl RenderPass for PostProcessPass {
         let target_view = renderer.viewport_attachment.as_ref().map(|a| a.view);
 
         let taa_view = renderer.get_pass_resource_view("TAAPass", "history", ctx.current_frame);
-        let input_view = taa_view.unwrap_or(renderer.gbuffer_hdr[ctx.current_frame].view);
+        let input_view = taa_view.unwrap_or(renderer.get_pass_resource_view("", "GBufferHDR", ctx.current_frame).unwrap_or(renderer.common_shadow_view));
 
         unsafe {
             // 1. Bloom Downsampling Chain

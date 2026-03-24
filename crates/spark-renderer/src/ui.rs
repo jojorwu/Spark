@@ -122,7 +122,7 @@ impl EguiRenderer {
                         let device = renderer.get_device();
 
                         let color_attachment = vk::RenderingAttachmentInfo::default()
-                            .image_view(renderer.gbuffer_hdr[renderer.current_frame].view)
+                            .image_view(renderer.get_pass_resource_view("", "GBufferHDR", renderer.current_frame).unwrap())
                             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                             .load_op(vk::AttachmentLoadOp::LOAD)
                             .store_op(vk::AttachmentStoreOp::STORE);

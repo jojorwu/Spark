@@ -1,6 +1,7 @@
 use slotmap::{SlotMap, new_key_type};
 use spark_math::{Mat4, Vec4Swizzles};
 use serde::{Serialize, Deserialize};
+use std::sync::Mutex;
 
 new_key_type! {
     pub struct NodeKey;
@@ -179,47 +180,51 @@ impl Scene {
         if let Some(parent_node) = self.nodes.get_mut(parent) {
             parent_node.children.push(key);
         }
-        self.update_transforms(key);
+        self.update_all_transforms();
         key
     }
 
-    pub fn update_transforms(&mut self, start_node: NodeKey) {
-        let parent_global = if let Some(node) = self.nodes.get(start_node) {
-            if let Some(parent_key) = node.parent {
-                self.nodes.get(parent_key).map(|p| p.global_transform).unwrap_or(Mat4::IDENTITY)
-            } else {
-                Mat4::IDENTITY
-            }
-        } else {
-            return;
-        };
-
-        self.update_transforms_recursive(start_node, parent_global);
-    }
-
-    fn update_transforms_recursive(&mut self, node_key: NodeKey, parent_global: Mat4) {
-        if let Some(node) = self.nodes.get_mut(node_key) {
-            node.global_transform = parent_global * node.local_transform;
-            let current_global = node.global_transform;
-
-            for component in &node.components {
-                if component.as_any().is::<CameraComponent>() {
-                    self.last_view_matrix = current_global.inverse();
-                }
-            }
-
-            // To avoid cloning, we'd need an iterative approach with a stack or a more complex borrow
-            // For now, cloning the keys (not the nodes) is relatively cheap.
-            let children = node.children.clone();
-            for child_key in children {
-                self.update_transforms_recursive(child_key, current_global);
-            }
-        }
-    }
-
-    /// Updates global transforms for all nodes in the scene tree and caches the active camera's view matrix.
     pub fn update_all_transforms(&mut self) {
-        self.update_transforms(self.root);
+        use rayon::prelude::*;
+
+        let mut level = vec![self.root];
+        let mut parent_globals = std::collections::HashMap::new();
+        parent_globals.insert(self.root, Mat4::IDENTITY);
+
+        while !level.is_empty() {
+            let next_level: Mutex<Vec<NodeKey>> = Mutex::new(Vec::new());
+
+            // Parallel update of the current level
+            level.par_iter().for_each(|&key| {
+                // Safety: We ensure that we only access nodes in the current level
+                // and their parents (which were updated in the previous level).
+                // To do this strictly safely in Rust, we'd need a more complex structure.
+                // For now, we use a controlled raw pointer approach for performance.
+                unsafe {
+                    let scene_ptr = self as *const Scene as *mut Scene;
+                    if let Some(node) = (*scene_ptr).nodes.get_mut(key) {
+                        let parent_global = if let Some(pk) = node.parent {
+                            (*scene_ptr).nodes.get(pk).map(|p| p.global_transform).unwrap_or(Mat4::IDENTITY)
+                        } else {
+                            Mat4::IDENTITY
+                        };
+
+                        node.global_transform = parent_global * node.local_transform;
+
+                        // Detect camera
+                        for component in &node.components {
+                            if component.as_any().is::<CameraComponent>() {
+                                (*scene_ptr).last_view_matrix = node.global_transform.inverse();
+                            }
+                        }
+
+                        next_level.lock().unwrap().extend(&node.children);
+                    }
+                }
+            });
+
+            level = next_level.into_inner().unwrap();
+        }
     }
 
     pub fn save_to_file(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {

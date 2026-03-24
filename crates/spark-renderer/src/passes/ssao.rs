@@ -68,19 +68,27 @@ impl RenderPass for SSAOPass {
     }
 
     fn update_descriptor_sets(&self, renderer: &Renderer) {
-        self.update_descriptor_sets_impl(
-            &renderer.device.device,
-            &renderer.gbuffer_normal,
-            &renderer.gbuffer_depth,
-            &self.ssao_images,
-            renderer.common_sampler,
-        );
+        let normal_views = (0..crate::MAX_FRAMES_IN_FLIGHT).map(|i| renderer.get_pass_resource_view("", "GBufferNormal", i).unwrap()).collect::<Vec<_>>();
+        let depth_views = (0..crate::MAX_FRAMES_IN_FLIGHT).map(|i| renderer.get_pass_resource_view("", "GBufferDepth", i).unwrap()).collect::<Vec<_>>();
+
+        for i in 0..crate::MAX_FRAMES_IN_FLIGHT {
+            let norm_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(normal_views[i]).sampler(renderer.common_sampler)];
+            let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(depth_views[i]).sampler(renderer.common_sampler)];
+            let noise_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(self.noise_texture.view).sampler(self.noise_texture.sampler)];
+            let out_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::GENERAL).image_view(self.ssao_images[i].view)];
+
+            let writes = [
+                vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[i]).dst_binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&norm_info),
+                vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[i]).dst_binding(1).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&depth_info),
+                vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[i]).dst_binding(2).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&noise_info),
+                vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[i]).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&out_info),
+            ];
+            unsafe { renderer.device.device.update_descriptor_sets(&writes, &[]); }
+        }
     }
 
     fn needs_descriptor_update(&self, _renderer: &Renderer, _frame_index: usize) -> bool {
         // Example: logic to check if versions changed
-        // In a full implementation, we'd compare renderer.gbuffer.normal[frame_index].version
-        // against a version stored in the pass.
         true
     }
 

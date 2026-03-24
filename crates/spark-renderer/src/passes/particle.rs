@@ -53,7 +53,7 @@ impl RenderPass for ParticlePass {
 
             // 2. Rendering
             let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(renderer.gbuffer_hdr[cf].view)
+                .image_view(renderer.get_pass_resource_view("", "GBufferHDR", cf).unwrap_or(renderer.common_shadow_view))
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::LOAD)
                 .store_op(vk::AttachmentStoreOp::STORE);

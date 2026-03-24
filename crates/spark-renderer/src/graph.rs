@@ -25,6 +25,7 @@ pub struct RenderGraph {
     pub passes: Vec<RenderGraphPassNode>,
     pub resources: HashMap<String, RenderGraphResource>,
     pub sorted_passes: Vec<usize>,
+    pub physical_attachments: HashMap<String, Vec<crate::resource::Attachment>>,
 }
 
 impl RenderGraph {
@@ -33,6 +34,7 @@ impl RenderGraph {
             passes: Vec::new(),
             resources: HashMap::new(),
             sorted_passes: Vec::new(),
+            physical_attachments: HashMap::new(),
         }
     }
 
@@ -111,9 +113,39 @@ impl RenderGraph {
         for &idx in &self.sorted_passes {
             let pass_node = &self.passes[idx];
 
-            // Automated Barrier Injection (Placeholder)
-            // Note: Automated synchronization is currently handled within passes or via manual barriers.
-            // Future implementation will use pass_node.pass.gpu_resource_access() to automate this.
+            // Automated Barrier Injection
+            for (res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_access() {
+                if let Some(attachments) = self.physical_attachments.get(&res_name) {
+                    let attachment = &attachments[ctx.current_frame];
+                    let aspect = if res_name.contains("Depth") { vk::ImageAspectFlags::DEPTH } else { vk::ImageAspectFlags::COLOR };
+
+                    let new_layout = if dst_access.contains(vk::AccessFlags::COLOR_ATTACHMENT_WRITE) {
+                        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+                    } else if dst_access.contains(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE) {
+                        vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
+                    } else if dst_access.contains(vk::AccessFlags::SHADER_READ) {
+                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                    } else if dst_access.contains(vk::AccessFlags::TRANSFER_READ) {
+                        vk::ImageLayout::TRANSFER_SRC_OPTIMAL
+                    } else if dst_access.contains(vk::AccessFlags::TRANSFER_WRITE) {
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL
+                    } else {
+                        vk::ImageLayout::GENERAL
+                    };
+
+                    renderer.resource_tracker.transition_image(
+                        ctx.command_buffer,
+                        &renderer.device.device,
+                        attachment.image,
+                        new_layout,
+                        vk::AccessFlags::empty(),
+                        dst_access,
+                        vk::PipelineStageFlags::ALL_COMMANDS,
+                        dst_stage,
+                        aspect,
+                    );
+                }
+            }
 
             if !secondary_commands[idx].is_empty() {
                 unsafe { renderer.device.device.cmd_execute_commands(ctx.command_buffer, &secondary_commands[idx]); }

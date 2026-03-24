@@ -667,7 +667,7 @@ impl EditorUI {
                     if let Some(p) = scene.nodes.get_mut(node_key) {
                         p.children.push(dragged_key);
                     }
-                    scene.update_transforms(dragged_key);
+                    scene.update_all_transforms();
                 }
             }
         }

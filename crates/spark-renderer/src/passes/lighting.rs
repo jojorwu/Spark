@@ -167,16 +167,16 @@ impl LightingPass {
 
         let alb_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(renderer.gbuffer_albedo[i].view)];
+            .image_view(renderer.get_pass_resource_view("", "GBufferAlbedo", i).unwrap_or(renderer.common_shadow_view))];
         let norm_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(renderer.gbuffer_normal[i].view)];
+            .image_view(renderer.get_pass_resource_view("", "GBufferNormal", i).unwrap_or(renderer.common_shadow_view))];
         let pbr_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(renderer.gbuffer_pbr[i].view)];
+            .image_view(renderer.get_pass_resource_view("", "GBufferPBR", i).unwrap_or(renderer.common_shadow_view))];
         let depth_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(renderer.gbuffer_depth[i].view)];
+            .image_view(renderer.get_pass_resource_view("", "GBufferDepth", i).unwrap_or(renderer.common_shadow_view))];
         let shadow_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .image_view(shadow_view)
@@ -364,7 +364,7 @@ impl RenderPass for LightingPass {
         unsafe {
             if let Some(pipeline) = self.pipeline {
                 let color_attachment = vk::RenderingAttachmentInfo::default()
-                    .image_view(renderer.gbuffer_hdr[current_frame].view)
+                    .image_view(renderer.get_pass_resource_view("", "GBufferHDR", current_frame).unwrap_or(renderer.common_shadow_view))
                     .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
                     .store_op(vk::AttachmentStoreOp::STORE)

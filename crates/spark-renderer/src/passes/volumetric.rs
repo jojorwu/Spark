@@ -17,7 +17,7 @@ impl RenderPass for VolumetricPass {
     fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_volumetric }
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let out_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::GENERAL).image_view(self.output_images[current_frame].view)];
-        let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.gbuffer_depth[current_frame].view).sampler(renderer.common_sampler)];
+        let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.get_pass_resource_view("", "GBufferDepth", current_frame).unwrap_or(renderer.common_shadow_view)).sampler(renderer.common_sampler)];
         let shadow_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.common_shadow_view).sampler(renderer.common_sampler)];
 
         let writes = [
@@ -122,7 +122,7 @@ impl VolumetricPass {
     pub fn update_descriptor_sets(&self, renderer: &Renderer) {
         for i in 0..crate::MAX_FRAMES_IN_FLIGHT {
             let out_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::GENERAL).image_view(self.output_images[i].view)];
-            let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.gbuffer_depth[i].view).sampler(renderer.common_sampler)];
+            let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.get_pass_resource_view("", "GBufferDepth", i).unwrap_or(renderer.common_shadow_view)).sampler(renderer.common_sampler)];
             let shadow_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.common_shadow_view).sampler(renderer.common_sampler)];
 
             let writes = [

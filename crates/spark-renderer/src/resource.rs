@@ -153,7 +153,7 @@ pub struct LightGrid {
 }
 
 pub struct ResourceTracker {
-    pub image_layouts: std::collections::HashMap<vk::Image, vk::ImageLayout>,
+    pub image_layouts: Arc<Mutex<std::collections::HashMap<vk::Image, vk::ImageLayout>>>,
 }
 
 impl Default for ResourceTracker {
@@ -164,12 +164,12 @@ impl Default for ResourceTracker {
 
 impl ResourceTracker {
     pub fn new() -> Self {
-        Self { image_layouts: std::collections::HashMap::new() }
+        Self { image_layouts: Arc::new(Mutex::new(std::collections::HashMap::new())) }
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn transition_image(
-        &mut self,
+        &self,
         cb: vk::CommandBuffer,
         device: &ash::Device,
         image: vk::Image,
@@ -180,7 +180,8 @@ impl ResourceTracker {
         dst_stage: vk::PipelineStageFlags,
         aspect_mask: vk::ImageAspectFlags,
     ) {
-        let old_layout = *self.image_layouts.get(&image).unwrap_or(&vk::ImageLayout::UNDEFINED);
+        let mut layouts = self.image_layouts.lock().unwrap();
+        let old_layout = *layouts.get(&image).unwrap_or(&vk::ImageLayout::UNDEFINED);
         if old_layout == new_layout { return; }
 
         let barrier = vk::ImageMemoryBarrier::default()
@@ -200,7 +201,7 @@ impl ResourceTracker {
         unsafe {
             device.cmd_pipeline_barrier(cb, src_stage, dst_stage, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
         }
-        self.image_layouts.insert(image, new_layout);
+        layouts.insert(image, new_layout);
     }
 }
 
