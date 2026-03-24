@@ -105,6 +105,7 @@ pub struct RenderFrame {
     pub transparent_indirect_buffer: Option<Buffer>,
     pub transparent_object_buffer: Option<Buffer>,
     pub secondary_command_buffers: Vec<vk::CommandBuffer>,
+    pub light_view_projs: [spark_math::Mat4; 4],
 }
 
 #[repr(C)]
@@ -152,34 +153,44 @@ pub struct LightGrid {
 }
 
 pub struct ResourceTracker {
-    pub image_layouts: std::collections::HashMap<vk::Image, vk::ImageLayout>,
+    pub image_layouts: Arc<Mutex<std::collections::HashMap<vk::Image, vk::ImageLayout>>>,
+}
+
+impl Default for ResourceTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ResourceTracker {
     pub fn new() -> Self {
-        Self { image_layouts: std::collections::HashMap::new() }
+        Self { image_layouts: Arc::new(Mutex::new(std::collections::HashMap::new())) }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn transition_image(
-        &mut self,
+        &self,
         cb: vk::CommandBuffer,
         device: &ash::Device,
         image: vk::Image,
         new_layout: vk::ImageLayout,
-        src_access: vk::AccessFlags,
+        _src_access: vk::AccessFlags,
         dst_access: vk::AccessFlags,
-        src_stage: vk::PipelineStageFlags,
+        _src_stage: vk::PipelineStageFlags,
         dst_stage: vk::PipelineStageFlags,
         aspect_mask: vk::ImageAspectFlags,
     ) {
-        let old_layout = *self.image_layouts.get(&image).unwrap_or(&vk::ImageLayout::UNDEFINED);
+        let mut layouts = self.image_layouts.lock().unwrap();
+        let old_layout = *layouts.get(&image).unwrap_or(&vk::ImageLayout::UNDEFINED);
         if old_layout == new_layout { return; }
 
-        let barrier = vk::ImageMemoryBarrier::default()
+        let barrier = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
+            .dst_stage_mask(vk::PipelineStageFlags2::from_raw(dst_stage.as_raw() as u64))
+            .dst_access_mask(vk::AccessFlags2::from_raw(dst_access.as_raw() as u64))
             .old_layout(old_layout)
             .new_layout(new_layout)
-            .src_access_mask(src_access)
-            .dst_access_mask(dst_access)
             .image(image)
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask,
@@ -189,10 +200,13 @@ impl ResourceTracker {
                 layer_count: 1,
             });
 
+        let dependency_info = vk::DependencyInfo::default()
+            .image_memory_barriers(std::slice::from_ref(&barrier));
+
         unsafe {
-            device.cmd_pipeline_barrier(cb, src_stage, dst_stage, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+            device.cmd_pipeline_barrier2(cb, &dependency_info);
         }
-        self.image_layouts.insert(image, new_layout);
+        layouts.insert(image, new_layout);
     }
 }
 
@@ -235,6 +249,48 @@ impl Attachment {
             extent: vk::Extent2D { width, height },
             version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
+    }
+
+    pub fn recreate(
+        &mut self,
+        device: &crate::vulkan::device::VulkanDevice,
+        width: u32,
+        height: u32,
+        format: vk::Format,
+    ) -> Result<(), crate::error::RendererError> {
+        unsafe {
+            device.device.destroy_image_view(self.view, None);
+            device.device.destroy_image(self.image, None);
+            if let Some(alloc) = self.allocation.lock().unwrap().take() {
+                device.allocator.lock().unwrap().free(alloc).unwrap();
+            }
+        }
+
+        let is_depth = format == vk::Format::D32_SFLOAT || format == vk::Format::D32_SFLOAT_S8_UINT || format == vk::Format::D24_UNORM_S8_UINT;
+        let usage = if is_depth {
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC
+        } else {
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::INPUT_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::STORAGE
+        };
+
+        let (img, allocation) = device.create_image(&crate::vulkan::device::ImageCreateParams {
+            width,
+            height,
+            mip_levels: 1,
+            format,
+            tiling: vk::ImageTiling::OPTIMAL,
+            usage,
+            properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            samples: vk::SampleCountFlags::TYPE_1,
+        })?;
+
+        self.image = img;
+        *self.allocation.lock().unwrap() = Some(allocation);
+        self.view = device.create_image_view(img, format, 1);
+        self.extent = vk::Extent2D { width, height };
+        self.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        Ok(())
     }
 }
 

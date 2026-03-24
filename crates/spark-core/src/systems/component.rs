@@ -1,5 +1,4 @@
 use crate::System;
-use crate::scene::NodeKey;
 
 pub struct ComponentSystem;
 
@@ -12,22 +11,22 @@ impl System for ComponentSystem {
             resource_manager: crate::Access::None,
         }
     }
-    fn update(&mut self, ctx: &mut crate::FrameContext) {
-        // Component updates:
-        // Due to the borrowing rules, we must take components out of the scene tree,
-        // update them with a reference to the scene tree, and then put them back.
+    fn update(&mut self, ctx: &crate::FrameContext) {
+        use rayon::prelude::*;
+        // Component updates in parallel:
+        // We iterate over nodes and their components, allowing them to run in parallel.
+        // Safety: We use the FrameContext to safely access shared resources or enqueue commands.
+        // Direct mutable access to the scene is unsafe and should be avoided in on_update.
 
-        let node_keys: Vec<NodeKey> = ctx.scene.nodes.keys().collect();
-        for key in node_keys {
-            if let Some(node) = ctx.scene.nodes.get_mut(key) {
-                let mut components = std::mem::take(&mut node.components);
-                for component in &mut components {
-                    component.on_update(key, ctx.scene, ctx.delta);
+        unsafe {
+            let scene = ctx.scene_mut();
+            let nodes: Vec<_> = scene.nodes.iter_mut().collect();
+
+            nodes.into_par_iter().for_each(|(key, node)| {
+                for component in &mut node.components {
+                    component.on_update(key, ctx);
                 }
-                if let Some(node_after) = ctx.scene.nodes.get_mut(key) {
-                    node_after.components = components;
-                }
-            }
+            });
         }
     }
 }

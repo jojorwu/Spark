@@ -4,9 +4,11 @@
 
 struct Vertex {
     float pos[3];
+    float padding; // manual padding to match Rust [f32; 3] vs GLSL std430 alignment
     uint normal;
     uint texCoord;
     uint color;
+    uint tangent;
 };
 
 layout(buffer_reference, std430) readonly buffer VertexBufferRef {
@@ -43,6 +45,7 @@ layout(location = 3) out vec3 outColor;
 layout(location = 4) out flat uint outMaterialIndex;
 layout(location = 5) out vec4 outCurrPos;
 layout(location = 6) out vec4 outPrevPos;
+layout(location = 7) out vec3 outTangent;
 
 layout(push_constant) uniform PushConstants {
     uint lightCount;
@@ -91,6 +94,12 @@ void main() {
     outNormal.y = dot(obj.modelRow1.xyz, localNormal);
     outNormal.z = dot(obj.modelRow2.xyz, localNormal);
     outNormal = normalize(outNormal);
+
+    vec3 localTangent = unpackNormal(v.tangent);
+    outTangent.x = dot(obj.modelRow0.xyz, localTangent);
+    outTangent.y = dot(obj.modelRow1.xyz, localTangent);
+    outTangent.z = dot(obj.modelRow2.xyz, localTangent);
+    outTangent = normalize(outTangent);
 
     outTexCoord = unpackTexCoord(v.texCoord);
     outColor = unpackColor(v.color);

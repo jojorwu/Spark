@@ -30,6 +30,7 @@ pub struct PassShaders {
     pub particle_comp: Vec<u32>,
     pub particle_vert: Vec<u32>,
     pub particle_frag: Vec<u32>,
+    pub ssr_comp: Vec<u32>,
 }
 
 impl Renderer {
@@ -94,6 +95,8 @@ impl Renderer {
 
         let volumetric_pass = crate::passes::volumetric::VolumetricPass::new(self, &shaders.volumetric)?;
 
+        let ssr_pass = crate::passes::ssr::SSRPass::new(self, &shaders.ssr_comp)?;
+
         let mut post_process_pass = crate::passes::post_process::PostProcessPass::new(
             self, self.swapchain.format, extent
         ).map_err(|_| RendererError::NoSuitableDevice)?;
@@ -118,21 +121,22 @@ impl Renderer {
         self.set_hiz_view(hiz_view);
         self.set_common_shadow_view(shadow_view);
 
-        self.add_render_pass(hiz_pass);
-        self.add_render_pass(clustered_pass);
-        self.add_render_pass(culling_pass);
-        self.add_render_pass(shadow_pass);
-        self.add_render_pass(gbuffer_pass);
-        self.add_render_pass(ssao_pass);
-        self.add_render_pass(lighting_pass);
-        self.add_render_pass(grid_pass);
-        self.add_render_pass(volumetric_pass);
-        self.add_render_pass(forward_pass);
-        self.add_render_pass(particle_pass);
-        self.add_render_pass(taa_pass);
-        self.add_render_pass(post_process_pass);
+        self.add_render_pass(hiz_pass, &[], &["HiZ"]);
+        self.add_render_pass(clustered_pass, &[], &["ClusteredData"]);
+        self.add_render_pass(culling_pass, &["HiZ"], &["CullingData"]);
+        self.add_render_pass(shadow_pass, &[], &["ShadowMap"]);
+        self.add_render_pass(gbuffer_pass, &[], &["GBuffer"]);
+        self.add_render_pass(ssao_pass, &["GBuffer"], &["SSAO"]);
+        self.add_render_pass(lighting_pass, &["GBuffer", "ShadowMap", "ClusteredData", "SSAO"], &["HDRColor"]);
+        self.add_render_pass(grid_pass, &["GBuffer"], &["GridColor"]);
+        self.add_render_pass(volumetric_pass, &["ShadowMap", "ClusteredData"], &["VolumetricColor"]);
+        self.add_render_pass(forward_pass, &["GBuffer"], &["ForwardColor"]);
+        self.add_render_pass(particle_pass, &["GBuffer"], &["ParticleColor"]);
+        self.add_render_pass(ssr_pass, &["GBuffer", "HDRColor", "HiZ"], &["SSR"]);
+        self.add_render_pass(taa_pass, &["HDRColor", "GBuffer"], &["TAAColor"]);
+        self.add_render_pass(post_process_pass, &["TAAColor"], &["FinalColor"]);
 
-        self.sort_render_passes();
+        self.compile_render_graph();
         self.update_all_descriptor_sets();
 
         let gbuffer_vert = shaders.gbuffer_vert;

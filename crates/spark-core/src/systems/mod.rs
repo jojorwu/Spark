@@ -78,11 +78,29 @@ impl SystemRegistry {
 
         for (i, system) in self.systems.iter().enumerate() {
             let mut stage = 0;
+
+            // 1. Dependency constraints
             for dep in system.dependencies() {
                 if let Some(&dep_idx) = name_to_idx.get(dep) {
                     stage = stage.max(system_stages[dep_idx] + 1);
                 }
             }
+
+            // 2. Resource conflict constraints
+            // A system cannot be in the same stage as another system it conflicts with.
+            let mut conflict = true;
+            while conflict {
+                conflict = false;
+                for (j, &stage_j) in system_stages.iter().enumerate().take(i) {
+                    if stage_j == stage
+                        && system.resource_access().conflicts_with(&self.systems[j].resource_access()) {
+                        stage += 1;
+                        conflict = true;
+                        break;
+                    }
+                }
+            }
+
             system_stages[i] = stage;
             max_stage = max_stage.max(stage);
         }
@@ -101,6 +119,10 @@ impl Default for SystemRegistry {
     }
 }
 
+/// The core scheduler responsible for orchestrating system initialization, execution, and shutdown.
+///
+/// The scheduler ensures systems are executed in an order that respects their dependencies
+/// and minimizes resource access conflicts through stage-based dispatch.
 pub struct Scheduler;
 
 impl Scheduler {
@@ -112,23 +134,20 @@ impl Scheduler {
     }
 
     pub fn run(registry: &mut SystemRegistry, ctx: &mut FrameContext) {
-        // The FrameContext contains &mut references, which normally prevents parallel execution.
-        // To safely parallelize systems within a stage, we'd need to ensure they don't access
-        // the same resources mutably at the same time.
-
+        use rayon::prelude::*;
         for stage in &registry.stages {
-            // Within a stage, check for resource conflicts.
-            // If all systems in the stage only require Read access to specific resources,
-            // we could theoretically parallelize them if we had thread-safe wrappers (like Arc<RwLock>).
-
-            // For now, even with declarative access, the current FrameContext design
-            // (holding exclusive &mut references) prevents safe parallel dispatch of the `update` method.
-
-            // To properly improve this, we would need to pass only the allowed resources to each system.
-            // However, the architecture is now "Conflict-Aware", and we can already detect
-            // which systems are safe to run together.
-
-            for &idx in stage {
+            if stage.len() > 1 {
+                stage.par_iter().for_each(|&idx| {
+                    // Safety: The scheduler has already grouped systems into stages
+                    // based on their ResourceAccess declarations. Non-conflicting
+                    // systems can safely run in parallel.
+                    unsafe {
+                        let systems_ptr = registry.systems.as_ptr() as *mut Box<dyn crate::System>;
+                        let ctx_ptr = ctx as *const FrameContext as *mut FrameContext;
+                        (*systems_ptr.add(idx)).update(&*ctx_ptr);
+                    }
+                });
+            } else if let Some(&idx) = stage.first() {
                 registry.systems[idx].update(ctx);
             }
         }
@@ -153,8 +172,8 @@ impl System for HierarchySystem {
             resource_manager: crate::Access::None,
         }
     }
-    fn update(&mut self, ctx: &mut FrameContext) {
-        ctx.scene.update_all_transforms();
+    fn update(&mut self, ctx: &FrameContext) {
+        unsafe { ctx.scene_mut().update_all_transforms(); }
     }
 }
 
@@ -169,7 +188,10 @@ impl System for ResourceSystem {
             resource_manager: crate::Access::Write,
         }
     }
-    fn update(&mut self, ctx: &mut FrameContext) {
-        ctx.resource_manager.upload_global_buffers(ctx.renderer);
+    fn update(&mut self, ctx: &FrameContext) {
+        unsafe {
+            let renderer = ctx.renderer_mut();
+            ctx.resource_manager_mut().upload_global_buffers(renderer);
+        }
     }
 }

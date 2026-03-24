@@ -17,9 +17,14 @@ impl RenderPass for CullingPass {
             renderer.frames[current_frame].indirect_commands_buffer.as_ref(),
             renderer.frames[current_frame].draw_count_buffer.as_ref()
         ) {
+            let compute_cb = renderer.device.create_command_buffer(renderer.device.compute_command_pool, vk::CommandBufferLevel::PRIMARY);
+            unsafe {
+                renderer.device.device.begin_command_buffer(compute_cb, &vk::CommandBufferBeginInfo::default()).unwrap();
+            }
+
             let params = CullingRecordParams {
                 device: &renderer.device.device,
-                command_buffer: ctx.command_buffer,
+                command_buffer: compute_cb,
                 object_count: renderer.last_object_count,
                 global_ds,
                 indirect_buffer: ind_buf,
@@ -27,6 +32,18 @@ impl RenderPass for CullingPass {
                 renderer_ref_for_pc_extract: renderer,
             };
             self.record_commands_impl(&params);
+
+            unsafe {
+                renderer.device.device.end_command_buffer(compute_cb).unwrap();
+            }
+
+            renderer.device.submit_commands(
+                renderer.device.compute_queue,
+                compute_cb,
+                &[],
+                &[renderer.culling_finished_semaphores[current_frame]],
+                vk::Fence::null(),
+            );
         }
     }
 

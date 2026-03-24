@@ -40,19 +40,10 @@ impl RenderPass for PostProcessPass {
         let device = &renderer.device.device;
         let sampler = renderer.common_sampler;
 
-        let mut taa_view = None;
-        let mut fog_view = None;
+        let taa_view = renderer.get_pass_resource_view("TAAPass", "history", current_frame);
+        let fog_view = renderer.get_pass_resource_view("VolumetricPass", "output", current_frame);
 
-        for pass in &renderer.render_passes {
-            if pass.name() == "TAAPass" {
-                taa_view = pass.get_resource_view("history", current_frame);
-            }
-            if pass.name() == "VolumetricPass" {
-                fog_view = pass.get_resource_view("output", current_frame);
-            }
-        }
-
-        let input_view = taa_view.unwrap_or(renderer.gbuffer.hdr[current_frame].view);
+        let input_view = taa_view.unwrap_or(renderer.get_pass_resource_view("", "GBufferHDR", current_frame).unwrap_or(renderer.common_shadow_view));
         let final_fog_view = fog_view.unwrap_or(input_view);
 
         let img_info = [vk::DescriptorImageInfo::default()
@@ -98,13 +89,8 @@ impl RenderPass for PostProcessPass {
         let renderer = ctx.renderer;
         let target_view = renderer.viewport_attachment.as_ref().map(|a| a.view);
 
-        let mut taa_view = None;
-        for pass in &renderer.render_passes {
-            if pass.name() == "TAAPass" {
-                taa_view = pass.get_resource_view("history", ctx.current_frame);
-            }
-        }
-        let input_view = taa_view.unwrap_or(renderer.gbuffer.hdr[ctx.current_frame].view);
+        let taa_view = renderer.get_pass_resource_view("TAAPass", "history", ctx.current_frame);
+        let input_view = taa_view.unwrap_or(renderer.get_pass_resource_view("", "GBufferHDR", ctx.current_frame).unwrap_or(renderer.common_shadow_view));
 
         unsafe {
             // 1. Bloom Downsampling Chain

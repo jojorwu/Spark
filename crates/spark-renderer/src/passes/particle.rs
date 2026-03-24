@@ -38,8 +38,7 @@ impl RenderPass for ParticlePass {
             device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::COMPUTE, self.compute_layout, 0, &[self.descriptor_sets[cf]], &[]);
 
             let pc = [ctx.delta, self.particle_count as f32];
-            let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 8);
-            device.cmd_push_constants(ctx.command_buffer, self.compute_layout, vk::ShaderStageFlags::COMPUTE, 0, pc_bytes);
+            device.cmd_push_constants(ctx.command_buffer, self.compute_layout, vk::ShaderStageFlags::COMPUTE, 0, bytemuck::cast_slice(&pc));
 
             device.cmd_dispatch(ctx.command_buffer, self.particle_count.div_ceil(256), 1, 1);
 
@@ -54,7 +53,7 @@ impl RenderPass for ParticlePass {
 
             // 2. Rendering
             let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(renderer.gbuffer.hdr[cf].view)
+                .image_view(renderer.get_pass_resource_view("", "GBufferHDR", cf).unwrap_or(renderer.common_shadow_view))
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::LOAD)
                 .store_op(vk::AttachmentStoreOp::STORE);
@@ -111,9 +110,9 @@ impl ParticlePass {
             )?
         };
 
-        for i in 0..crate::MAX_FRAMES_IN_FLIGHT {
+        for descriptor_set in ds.iter().take(crate::MAX_FRAMES_IN_FLIGHT) {
             let info = [vk::DescriptorBufferInfo::default().buffer(particle_buffer.handle).range(particle_buffer.size)];
-            let write = [vk::WriteDescriptorSet::default().dst_set(ds[i]).dst_binding(0).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&info)];
+            let write = [vk::WriteDescriptorSet::default().dst_set(*descriptor_set).dst_binding(0).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&info)];
             unsafe { device.update_descriptor_sets(&write, &[]); }
         }
 

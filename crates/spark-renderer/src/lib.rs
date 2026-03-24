@@ -1,6 +1,7 @@
 pub mod error;
 pub mod pipeline;
 pub mod passes;
+pub mod graph;
 pub mod resource;
 pub mod factory;
 pub mod ui;
@@ -16,6 +17,7 @@ use crate::vulkan::device::VulkanDevice;
 use crate::vulkan::gbuffer::GBuffer;
 use crate::vulkan::swapchain::VulkanSwapchain;
 use crate::vulkan::texture::Texture;
+use rayon::prelude::*;
 use spark_math::Vec4Swizzles;
 pub use ash;
 use ash::vk;
@@ -28,11 +30,9 @@ pub struct Renderer {
     pub device: VulkanDevice,
     pub resource_tracker: crate::resource::ResourceTracker,
     swapchain: VulkanSwapchain,
-    pub gbuffer: GBuffer,
     pub global_descriptor_set_layout: vk::DescriptorSetLayout,
     pub light_count: u32,
-    pub render_passes: Vec<Box<dyn crate::passes::RenderPass>>,
-    pub render_stages: Vec<Vec<usize>>,
+    pub render_graph: crate::graph::RenderGraph,
     pub frames: [RenderFrame; MAX_FRAMES_IN_FLIGHT],
     pub pipeline_cache: vk::PipelineCache,
     current_frame: usize,
@@ -74,6 +74,7 @@ pub struct Renderer {
     pub current_image_index: u32,
     pub pass_descriptor_versions: Vec<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
     pub dummy_buffer: Buffer,
+    pub culling_finished_semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
 }
 
 #[repr(C)]
@@ -84,7 +85,7 @@ pub struct GlobalUBO {
     pub inv_vp: spark_math::Mat4,
     pub camera_pos: [f32; 4],
     pub frustum: [spark_math::Vec4; 6],
-    pub cascade_splits: [f32; 4],
+    pub cascade_splits: spark_math::Vec4,
 }
 
 impl Renderer {
@@ -115,7 +116,6 @@ impl Renderer {
             device.msaa_samples,
             device.depth_format,
         )?;
-
         let common_sampler = unsafe {
             device.device.create_sampler(
                 &vk::SamplerCreateInfo::default()
@@ -249,6 +249,7 @@ impl Renderer {
                     transparent_indirect_buffer: None,
                     transparent_object_buffer: None,
                 secondary_command_buffers: Vec::new(),
+                light_view_projs: [spark_math::Mat4::IDENTITY; 4],
                 }
             })
             .collect::<Vec<_>>()
@@ -270,11 +271,9 @@ impl Renderer {
             device,
             resource_tracker: crate::resource::ResourceTracker::new(),
             swapchain,
-            gbuffer,
             global_descriptor_set_layout,
             light_count: 0,
-            render_passes: Vec::new(),
-            render_stages: Vec::new(),
+            render_graph: crate::graph::RenderGraph::new(),
             frames,
             pipeline_cache,
             current_frame: 0,
@@ -316,7 +315,21 @@ impl Renderer {
             current_image_index: 0,
             pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).collect(),
             dummy_buffer,
+            culling_finished_semaphores: [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT],
         };
+
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            renderer.culling_finished_semaphores[i] = unsafe {
+                renderer.device.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?
+            };
+        }
+
+        renderer.render_graph.physical_attachments.insert("GBufferHDR".to_string(), gbuffer.hdr);
+        renderer.render_graph.physical_attachments.insert("GBufferAlbedo".to_string(), gbuffer.albedo);
+        renderer.render_graph.physical_attachments.insert("GBufferNormal".to_string(), gbuffer.normal);
+        renderer.render_graph.physical_attachments.insert("GBufferPBR".to_string(), gbuffer.pbr);
+        renderer.render_graph.physical_attachments.insert("GBufferVelocity".to_string(), gbuffer.velocity);
+        renderer.render_graph.physical_attachments.insert("GBufferDepth".to_string(), gbuffer.depth);
 
         renderer.init_default_resources();
         renderer.common_shadow_view = renderer.default_texture.as_ref().unwrap().view;
@@ -396,23 +409,23 @@ impl Renderer {
 
 
     pub fn update_all_descriptor_sets(&mut self) {
-        for pass in &self.render_passes {
-            pass.update_descriptor_sets(self);
+        for pass_node in &self.render_graph.passes {
+            pass_node.pass.update_descriptor_sets(self);
         }
         self.ensure_global_descriptor_set();
     }
 
     pub fn update_pass_descriptors_if_needed(&mut self, current_frame: usize) {
         let mut passes_to_update = Vec::new();
-        for (i, pass) in self.render_passes.iter().enumerate() {
-            if pass.needs_descriptor_update(self, current_frame) {
+        for (i, pass_node) in self.render_graph.passes.iter().enumerate() {
+            if pass_node.pass.needs_descriptor_update(self, current_frame) {
                 passes_to_update.push(i);
             }
         }
 
         for idx in passes_to_update {
-            let pass_name = self.render_passes[idx].name().to_string();
-            self.render_passes[idx].update_descriptor_sets(self);
+            let pass_name = self.render_graph.passes[idx].pass.name().to_string();
+            self.render_graph.passes[idx].pass.update_descriptor_sets(self);
 
             // Note: This logic assumes that if update_descriptor_sets is called,
             // the pass is now up-to-date with whatever resource it tracked in needs_descriptor_update.
@@ -430,11 +443,11 @@ impl Renderer {
         let (grid_buf, index_buf) = {
             let mut g = None;
             let mut idx = None;
-            for pass in &self.render_passes {
-                if let Some(b) = pass.get_resource_buffer("light_grid") {
+            for pass_node in &self.render_graph.passes {
+                if let Some(b) = pass_node.pass.get_resource_buffer("light_grid") {
                     g = Some(b);
                 }
-                if let Some(b) = pass.get_resource_buffer("index_list") {
+                if let Some(b) = pass_node.pass.get_resource_buffer("index_list") {
                     idx = Some(b);
                 }
             }
@@ -766,12 +779,13 @@ impl Renderer {
                 egui_output,
                 delta,
             );
-            let s_available = [image_available];
             let s_finished = [render_finished];
-            let w_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
             let c_buffers = [command_buffer];
+            let s_wait = [image_available, self.culling_finished_semaphores[self.current_frame]];
+            let w_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::DRAW_INDIRECT];
+
             let submit_info = vk::SubmitInfo::default()
-                .wait_semaphores(&s_available)
+                .wait_semaphores(&s_wait)
                 .wait_dst_stage_mask(&w_stages)
                 .command_buffers(&c_buffers)
                 .signal_semaphores(&s_finished);
@@ -841,29 +855,12 @@ impl Renderer {
             };
 
             // 1. Record secondary command buffers in parallel
-            let pass_secondary_commands: Vec<Vec<vk::CommandBuffer>> = self.render_passes.par_iter().map(|pass| {
-                pass.record_secondary_commands(&ctx)
+            let pass_secondary_commands: Vec<Vec<vk::CommandBuffer>> = self.render_graph.passes.par_iter().map(|pass_node| {
+                pass_node.pass.record_secondary_commands(&ctx)
             }).collect();
 
-            // 2. Execute commands sequentially within stages to preserve pass dependencies
-            for stage in &self.render_stages {
-                for &idx in stage {
-                    let pass = &self.render_passes[idx];
-
-                    // Automated Barrier Injection
-                    for (res_name, _access, _stage_flags) in pass.gpu_resource_access() {
-                        if let Some(_view) = pass.get_resource_view(&res_name, cf) {
-                            // Find corresponding image for the view (requires tracking in ResourceTracker)
-                            // For now, this logic is a placeholder for a more complete Resource Graph.
-                        }
-                    }
-
-                    if !pass_secondary_commands[idx].is_empty() {
-                        self.device.device.cmd_execute_commands(command_buffer, &pass_secondary_commands[idx]);
-                    }
-                    pass.record_commands(&ctx);
-                }
-            }
+            // 2. Execute RenderGraph
+            self.render_graph.execute(&ctx, &pass_secondary_commands);
 
             if let Some((output, egui_ctx)) = egui_output {
                 let ext = self.swapchain.extent;
@@ -909,22 +906,23 @@ impl Renderer {
                 window.inner_size().height,
             )?;
             let extent = self.swapchain.extent;
-            self.gbuffer.recreate(
-                &self.device,
-                extent,
-                self.device.msaa_samples,
-                self.device.depth_format,
-            )?;
+            // Recreate G-Buffer attachments
+            if let Some(hdr) = self.render_graph.physical_attachments.get_mut("GBufferHDR") { for a in hdr { a.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16B16A16_SFLOAT)?; } }
+            if let Some(albedo) = self.render_graph.physical_attachments.get_mut("GBufferAlbedo") { for a in albedo { a.recreate(&self.device, extent.width, extent.height, vk::Format::R8G8B8A8_UNORM)?; } }
+            if let Some(normal) = self.render_graph.physical_attachments.get_mut("GBufferNormal") { for a in normal { a.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16B16A16_SFLOAT)?; } }
+            if let Some(pbr) = self.render_graph.physical_attachments.get_mut("GBufferPBR") { for a in pbr { a.recreate(&self.device, extent.width, extent.height, vk::Format::R8G8B8A8_UNORM)?; } }
+            if let Some(velocity) = self.render_graph.physical_attachments.get_mut("GBufferVelocity") { for a in velocity { a.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16_SFLOAT)?; } }
+            if let Some(depth) = self.render_graph.physical_attachments.get_mut("GBufferDepth") { for a in depth { a.recreate(&self.device, extent.width, extent.height, self.device.depth_format)?; } }
 
             if self.viewport_attachment.is_some() {
                 self.create_viewport_attachment(extent.width, extent.height);
             }
 
-            let mut render_passes = std::mem::take(&mut self.render_passes);
-            for pass in &mut render_passes {
-                pass.on_resize(self, extent);
+            let mut passes = std::mem::take(&mut self.render_graph.passes);
+            for node in &mut passes {
+                node.pass.on_resize(self, extent);
             }
-            self.render_passes = render_passes;
+            self.render_graph.passes = passes;
 
             self.update_all_descriptor_sets();
         }
@@ -933,7 +931,12 @@ impl Renderer {
 
     fn cleanup_swapchain(&mut self) {
         unsafe {
-            self.gbuffer.destroy(&self.device.device, &self.device.allocator);
+            for (_, attachments) in self.render_graph.physical_attachments.iter_mut() {
+                for a in attachments.drain(..) {
+                    a.destroy(&self.device.device, &self.device.allocator);
+                }
+            }
+
             self.swapchain
                 .loader
                 .destroy_swapchain(self.swapchain.handle, None);
@@ -1209,6 +1212,21 @@ impl Renderer {
     pub fn get_msaa_samples(&self) -> vk::SampleCountFlags {
         self.device.msaa_samples
     }
+
+    pub fn get_pass_resource_view(&self, pass_name: &str, resource_name: &str, frame_index: usize) -> Option<vk::ImageView> {
+        for pass_node in &self.render_graph.passes {
+            if pass_node.pass.name() == pass_name {
+                if let Some(view) = pass_node.pass.get_resource_view(resource_name, frame_index) {
+                    return Some(view);
+                }
+            }
+        }
+        // Check graph-managed physical attachments
+        if let Some(attachments) = self.render_graph.physical_attachments.get(resource_name) {
+            return Some(attachments[frame_index].view);
+        }
+        None
+    }
     /// Returns the current swapchain extent.
     pub fn get_extent(&self) -> vk::Extent2D {
         self.swapchain.extent
@@ -1228,78 +1246,12 @@ impl Renderer {
         [x / self.swapchain.extent.width as f32, y / self.swapchain.extent.height as f32]
     }
 
-    pub fn add_render_pass<P: crate::passes::RenderPass + 'static>(&mut self, pass: P) {
-        self.render_passes.push(Box::new(pass));
+    pub fn add_render_pass<P: crate::passes::RenderPass + 'static>(&mut self, pass: P, inputs: &[&str], outputs: &[&str]) {
+        self.render_graph.add_pass(pass, inputs, outputs);
     }
 
-    pub fn sort_render_passes(&mut self) {
-        let mut visited = std::collections::HashSet::new();
-        let mut temp_visited = std::collections::HashSet::new();
-
-        let name_to_idx: std::collections::HashMap<String, usize> = self.render_passes.iter().enumerate()
-            .map(|(i, p)| (p.name().to_string(), i))
-            .collect();
-
-        fn visit(
-            idx: usize,
-            passes: &Vec<Box<dyn crate::passes::RenderPass>>,
-            name_to_idx: &std::collections::HashMap<String, usize>,
-            ordered: &mut Vec<usize>,
-            visited: &mut std::collections::HashSet<usize>,
-            temp_visited: &mut std::collections::HashSet<usize>,
-        ) {
-            if temp_visited.contains(&idx) {
-                panic!("Circular dependency detected in render passes!");
-            }
-            if !visited.contains(&idx) {
-                temp_visited.insert(idx);
-                for dep in passes[idx].dependencies() {
-                    if let Some(&dep_idx) = name_to_idx.get(dep) {
-                        visit(dep_idx, passes, name_to_idx, ordered, visited, temp_visited);
-                    }
-                }
-                temp_visited.remove(&idx);
-                visited.insert(idx);
-                ordered.push(idx);
-            }
-        }
-
-        let mut indices = Vec::new();
-        for i in 0..self.render_passes.len() {
-            visit(i, &self.render_passes, &name_to_idx, &mut indices, &mut visited, &mut temp_visited);
-        }
-
-        let mut old_passes: Vec<Option<Box<dyn crate::passes::RenderPass>>> = self.render_passes.drain(..).map(Some).collect();
-        for idx in indices {
-            self.render_passes.push(old_passes[idx].take().unwrap());
-        }
-
-        self.build_render_stages();
-    }
-
-    fn build_render_stages(&mut self) {
-        let name_to_idx: std::collections::HashMap<String, usize> = self.render_passes.iter().enumerate()
-            .map(|(i, p)| (p.name().to_string(), i))
-            .collect();
-
-        let mut pass_stages = vec![0; self.render_passes.len()];
-        let mut max_stage = 0;
-
-        for (i, pass) in self.render_passes.iter().enumerate() {
-            let mut stage = 0;
-            for dep in pass.dependencies() {
-                if let Some(&dep_idx) = name_to_idx.get(dep) {
-                    stage = stage.max(pass_stages[dep_idx] + 1);
-                }
-            }
-            pass_stages[i] = stage;
-            max_stage = max_stage.max(stage);
-        }
-
-        self.render_stages = vec![Vec::new(); max_stage + 1];
-        for (i, &stage) in pass_stages.iter().enumerate() {
-            self.render_stages[stage].push(i);
-        }
+    pub fn compile_render_graph(&mut self) {
+        self.render_graph.compile();
     }
 
     /// Calculates the six frustum planes from a view-projection matrix.
@@ -1320,11 +1272,17 @@ impl Renderer {
         frustum
     }
 
+    /// Prepares the GPU for a new frame by updating buffers and sorting meshes.
+    ///
+    /// # Arguments
+    /// * `packet` - The frame data collected from the scene.
+    ///
+    /// # Returns
+    /// * The total number of opaque objects to be rendered.
     pub fn prepare_frame(
         &mut self,
         packet: crate::resource::FramePacket,
     ) -> u32 {
-        use rayon::prelude::*;
         self.scene_view_matrix_for_pos = packet.view_matrix;
 
         // 1. Prepare GPU Indirect and Object buffers in parallel
@@ -1356,7 +1314,7 @@ impl Renderer {
         // 1.1 Prepare Transparent buffers (with simple back-to-front sorting)
         let mut transparent_meshes = packet.transparent_meshes;
         let view_pos = packet.view_matrix.inverse().w_axis.xyz();
-        transparent_meshes.sort_by(|a, b| {
+        transparent_meshes.par_sort_by(|a, b| {
             let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
             let dist_b = (b.model.w_axis.xyz() - view_pos).length_squared();
             dist_b.partial_cmp(&dist_a).unwrap_or(std::cmp::Ordering::Equal)
@@ -1409,14 +1367,52 @@ impl Renderer {
         let view_proj = projection * packet.view_matrix;
         self.current_view_proj = view_proj;
 
-        let light_pos = spark_math::Vec3::new(10.0, 10.0, 10.0);
+        let cascade_splits = [10.0, 25.0, 50.0, 100.0];
+        let mut light_view_projs = [spark_math::Mat4::IDENTITY; 4];
+
+        let light_dir = spark_math::Vec3::new(0.5, -1.0, 0.5).normalize();
         let light_view = spark_math::Mat4::look_at_rh(
-            light_pos,
+            -light_dir * 50.0,
             spark_math::Vec3::ZERO,
             spark_math::Vec3::Y,
         );
-        let light_proj = spark_math::Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 0.1, 100.0);
-        self.main_light_view_proj = light_proj * light_view;
+
+        let inv_vp = view_proj.inverse();
+        for i in 0..4 {
+            let _split = cascade_splits[i];
+            let mut frustum_corners = [spark_math::Vec3::ZERO; 8];
+            let mut idx = 0;
+            for x in &[-1.0, 1.0] {
+                for y in &[-1.0, 1.0] {
+                    for z in &[0.0, 1.0] {
+                        let pt = inv_vp * spark_math::Vec4::new(*x, *y, *z, 1.0);
+                        frustum_corners[idx] = pt.xyz() / pt.w;
+                        idx += 1;
+                    }
+                }
+            }
+
+            // Simple approximation of tight-fitting light frustum for the cascade
+            let mut min_p = spark_math::Vec3::new(f32::MAX, f32::MAX, f32::MAX);
+            let mut max_p = spark_math::Vec3::new(f32::MIN, f32::MIN, f32::MIN);
+            for corner in &frustum_corners {
+                let light_space_p = light_view * corner.extend(1.0);
+                min_p = min_p.min(light_space_p.xyz());
+                max_p = max_p.max(light_space_p.xyz());
+            }
+
+            // Ensure stable shadow mapping by snapping min/max to texel size
+            let shadow_res = Self::SHADOW_MAP_CASCADE_SIZE as f32;
+            let world_units_per_texel = (max_p - min_p) / shadow_res;
+            min_p = (min_p / world_units_per_texel).floor() * world_units_per_texel;
+            max_p = (max_p / world_units_per_texel).floor() * world_units_per_texel;
+
+            let light_proj = spark_math::Mat4::orthographic_rh(min_p.x, max_p.x, min_p.y, max_p.y, -max_p.z - 50.0, -min_p.z);
+            light_view_projs[i] = light_proj * light_view;
+        }
+
+        self.frames[self.current_frame].light_view_projs = light_view_projs;
+        self.main_light_view_proj = light_view_projs[0];
 
         let inv_v = packet.view_matrix.inverse();
         let camera_pos = [inv_v.w_axis.x, inv_v.w_axis.y, inv_v.w_axis.z, 1.0];
@@ -1424,11 +1420,11 @@ impl Renderer {
 
         let ubo = GlobalUBO {
             vp: view_proj,
-            lvp: [self.main_light_view_proj; 4],
+            lvp: light_view_projs,
             inv_vp: view_proj.inverse(),
             camera_pos,
             frustum,
-            cascade_splits: [0.1, 0.2, 0.5, 1.0],
+            cascade_splits: spark_math::Vec4::new(cascade_splits[0], cascade_splits[1], cascade_splits[2], cascade_splits[3]),
         };
 
         if self.frames[0].global_buffer.is_none() {
@@ -1448,8 +1444,8 @@ impl Renderer {
         // 4. Prepare Passes
         let cf = self.current_frame;
 
-        for pass in &self.render_passes {
-            pass.prepare(self, cf);
+        for pass_node in &self.render_graph.passes {
+            pass_node.pass.prepare(self, cf);
         }
 
         self.last_object_count = total_objects;
@@ -1624,8 +1620,8 @@ impl Drop for Renderer {
         unsafe {
             self.device.device.device_wait_idle().ok();
 
-            for mut pass in std::mem::take(&mut self.render_passes) {
-                pass.destroy(self);
+            for mut pass_node in std::mem::take(&mut self.render_graph.passes) {
+                pass_node.pass.destroy(self);
             }
 
             self.cleanup_swapchain();
@@ -1683,6 +1679,31 @@ impl Drop for Renderer {
             if let Some(ib) = self.index_buffer.take() {
                 self.device.destroy_buffer(ib);
             }
+
+            if let Some(vb) = self.global_vertex_buffer.take() {
+                self.device.destroy_buffer(vb);
+            }
+            if let Some(ib) = self.global_index_buffer.take() {
+                self.device.destroy_buffer(ib);
+            }
+            if let Some(mb) = self.global_material_buffer.take() {
+                self.device.destroy_buffer(mb);
+            }
+
+            for sem in self.culling_finished_semaphores {
+                self.device.device.destroy_semaphore(sem, None);
+            }
+
+            self.device.device.destroy_sampler(self.common_sampler, None);
+            self.device.device.destroy_descriptor_set_layout(self.bindless_descriptor_set_layout, None);
+            self.device.destroy_buffer(std::mem::replace(&mut self.dummy_buffer, Buffer {
+                handle: vk::Buffer::null(),
+                allocation: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                size: 0,
+                ptr: std::ptr::null_mut(),
+                address: 0,
+                version: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            }));
         }
     }
 }

@@ -53,6 +53,15 @@ use crate::task::TaskSystem;
 use crate::resource::ResourceManager;
 use crate::event::EventQueue;
 use spark_renderer::Renderer;
+use serde::{Serialize, Deserialize};
+use std::path::PathBuf;
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct Project {
+    pub name: String,
+    pub asset_root: PathBuf,
+    pub startup_scene: PathBuf,
+}
 
 /// Context passed to systems during initialization and cleanup.
 pub struct InitContext<'a> {
@@ -64,15 +73,34 @@ pub struct InitContext<'a> {
 
 /// Context passed to systems during the update phase.
 pub struct FrameContext<'a> {
-    pub scene: &'a mut Scene,
-    pub renderer: &'a mut Renderer,
-    pub resource_manager: &'a mut ResourceManager,
+    pub scene: *mut Scene,
+    pub renderer: *mut Renderer,
+    pub resource_manager: *mut ResourceManager,
     pub task_system: &'a TaskSystem,
     pub delta: f32,
     pub event_proxy: crate::systems_events::events::EventProxy<'a>,
     pub input: &'a crate::input::InputManager,
-    pub command_queue: &'a mut crate::command::CommandQueue,
+    pub command_queue: &'a crate::command::CommandQueue,
     pub event_bus: &'a crate::event_bus::EventBus,
+}
+
+unsafe impl<'a> Send for FrameContext<'a> {}
+unsafe impl<'a> Sync for FrameContext<'a> {}
+
+impl<'a> FrameContext<'a> {
+    pub fn scene(&self) -> &Scene { unsafe { &*self.scene } }
+    pub fn renderer(&self) -> &Renderer { unsafe { &*self.renderer } }
+    pub fn resource_manager(&self) -> &ResourceManager { unsafe { &*self.resource_manager } }
+
+    /// Returns a mutable reference to the scene.
+    /// Safety: Caller must ensure no other threads are accessing the scene concurrently.
+    pub unsafe fn scene_mut(&self) -> &mut Scene { &mut *self.scene }
+    /// Returns a mutable reference to the renderer.
+    /// Safety: Caller must ensure no other threads are accessing the renderer concurrently.
+    pub unsafe fn renderer_mut(&self) -> &mut Renderer { &mut *self.renderer }
+    /// Returns a mutable reference to the resource manager.
+    /// Safety: Caller must ensure no other threads are accessing the resource manager concurrently.
+    pub unsafe fn resource_manager_mut(&self) -> &mut ResourceManager { &mut *self.resource_manager }
 }
 
 /// A trait representing a system that processes engine state.
@@ -80,7 +108,7 @@ pub trait System: Send + Sync {
     fn name(&self) -> &str;
     fn version(&self) -> &str { "0.1.0" }
     fn on_init(&mut self, _ctx: &mut InitContext) {}
-    fn update(&mut self, ctx: &mut FrameContext);
+    fn update(&mut self, ctx: &FrameContext);
     fn on_stop(&mut self, _ctx: &mut InitContext) {}
     fn dependencies(&self) -> Vec<&'static str> { Vec::new() }
     fn resource_access(&self) -> ResourceAccess {
@@ -106,7 +134,7 @@ pub struct Engine {
     pub system_registry: crate::systems::SystemRegistry,
     pub last_frame_time: instant::Instant,
     pub current_fps: f32,
-    pub system_events: Vec<crate::systems_events::events::SystemEvent>,
+    pub system_events: std::sync::Mutex<Vec<crate::systems_events::events::SystemEvent>>,
 }
 
 impl Engine {
@@ -144,7 +172,7 @@ impl Engine {
             system_registry,
             last_frame_time: instant::Instant::now(),
             current_fps: 0.0,
-            system_events: Vec::new(),
+            system_events: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -220,29 +248,26 @@ impl Engine {
     fn update_phase(&mut self, delta: f32) {
         self.input_manager.update(&self.event_queue.events);
 
-        let mut system_events = std::mem::take(&mut self.system_events);
-        system_events.clear(); // Reset for this frame
+        self.system_events.lock().unwrap().clear(); // Reset for this frame
 
         {
             let mut ctx = FrameContext {
-                scene: &mut self.scene,
-                renderer: &mut self.renderer,
-                resource_manager: &mut self.resource_manager,
+                scene: &mut self.scene as *mut Scene,
+                renderer: &mut self.renderer as *mut Renderer,
+                resource_manager: &mut self.resource_manager as *mut ResourceManager,
                 task_system: &self.task_system,
                 delta,
                 event_proxy: crate::systems_events::events::EventProxy {
                     events: &self.event_queue.events,
-                    outgoing: &mut system_events,
+                    outgoing: &self.system_events,
                 },
                 input: &self.input_manager,
-                command_queue: &mut self.command_queue,
+                command_queue: &self.command_queue,
                 event_bus: &self.event_bus,
             };
 
             crate::systems::Scheduler::run(&mut self.system_registry, &mut ctx);
         }
-
-        self.system_events = system_events;
 
         // Execute all deferred commands after system updates
         self.command_queue.execute_all(&mut self.scene, &mut self.resource_manager);

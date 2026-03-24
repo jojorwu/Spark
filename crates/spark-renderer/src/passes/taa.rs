@@ -20,10 +20,14 @@ impl RenderPass for TAAPass {
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let sampler = renderer.common_sampler;
         let prev_idx = (current_frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
-        let current_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.gbuffer.hdr[current_frame].view).sampler(sampler)];
+        let hdr_view = renderer.get_pass_resource_view("", "GBufferHDR", current_frame).unwrap_or(renderer.common_shadow_view);
+        let vel_view = renderer.get_pass_resource_view("", "GBufferVelocity", current_frame).unwrap_or(renderer.common_shadow_view);
+        let dep_view = renderer.get_pass_resource_view("", "GBufferDepth", current_frame).unwrap_or(renderer.common_shadow_view);
+
+        let current_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(hdr_view).sampler(sampler)];
         let history_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(self.history_images[prev_idx].view).sampler(sampler)];
-        let velocity_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.gbuffer.velocity[current_frame].view).sampler(sampler)];
-        let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.gbuffer.depth[current_frame].view).sampler(sampler)];
+        let velocity_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(vel_view).sampler(sampler)];
+        let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(dep_view).sampler(sampler)];
 
         let writes = [
             vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[current_frame]).dst_binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&current_info),

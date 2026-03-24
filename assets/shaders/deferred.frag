@@ -96,10 +96,25 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+const vec2 poissonDisk[16] = vec2[](
+   vec2( -0.94201624, -0.39906216 ), vec2( 0.94558609, -0.76890725 ),
+   vec2( -0.09418410, -0.92938870 ), vec2( 0.34495938, 0.29387760 ),
+   vec2( -0.91588581, 0.45771432 ), vec2( -0.81544232, -0.87912464 ),
+   vec2( -0.38204462, 0.62251975 ), vec2( 0.12984571, -0.44454745 ),
+   vec2( 0.24271246, -0.99031590 ), vec2( 0.76482570, -0.54023540 ),
+   vec2( 0.58900311, 0.88790979 ), vec2( 0.16543990, 0.12354469 ),
+   vec2( -0.18837480, -0.06806012 ), vec2( -0.31343943, -0.45406813 ),
+   vec2( 0.53742981, -0.47373420 ), vec2( -0.03576915, 0.74851071 )
+);
+
+float interleavedGradientNoise(vec2 n) {
+    return fract(sin(dot(n, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
 /**
- * Percentage-Closer Filtering (PCF) for soft shadows with Cascaded Shadow Maps.
+ * PCSS (Percentage-Closer Soft Shadows) with Poisson Disk sampling.
  */
-float calculateShadow(vec3 worldPos, float linearDepth) {
+float calculateShadow(vec3 worldPos, float linearDepth, vec3 N) {
     uint cascadeIdx = 0;
     for (uint i = 0; i < 3; ++i) {
         if (linearDepth > global.cascadeSplits[i]) {
@@ -109,20 +124,49 @@ float calculateShadow(vec3 worldPos, float linearDepth) {
 
     vec4 shadowCoord = global.lightViewProj[cascadeIdx] * vec4(worldPos, 1.0);
     shadowCoord.xyz /= shadowCoord.w;
-
     shadowCoord.xy = shadowCoord.xy * 0.5 + 0.5;
 
-    float shadow = 0.0;
-    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
-    float bias = 0.005;
+    if (shadowCoord.z > 1.0) return 1.0;
 
-    for(int x = -1; x <= 1; ++x) {
-        for(int y = -1; y <= 1; ++y) {
-            float pcfDepth = texture(shadowMap, vec3(shadowCoord.xy + vec2(x, y) * texelSize, cascadeIdx)).r;
-            shadow += shadowCoord.z - bias > pcfDepth ? 0.5 : 1.0;
+    vec3 L = normalize(vec3(global.lightViewProj[0][0][2], global.lightViewProj[0][1][2], global.lightViewProj[0][2][2]));
+    float bias = max(0.002 * (1.0 - dot(N, L)), 0.0005);
+    if (cascadeIdx == 3) bias *= 2.0;
+
+    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
+    float noise = interleavedGradientNoise(gl_FragCoord.xy);
+    float cosT = cos(noise * 2.0 * 3.14159);
+    float sinT = sin(noise * 2.0 * 3.14159);
+    mat2 rot = mat2(cosT, sinT, -sinT, cosT);
+
+    // Blocker Search
+    float avgBlockerDepth = 0.0;
+    float blockers = 0.0;
+    float searchRadius = 5.0 * texelSize.x;
+    for (int i = 0; i < 8; i++) {
+        vec2 offset = (rot * poissonDisk[i]) * searchRadius;
+        float depth = texture(shadowMap, vec3(shadowCoord.xy + offset, cascadeIdx)).r;
+        if (depth < shadowCoord.z - bias) {
+            avgBlockerDepth += depth;
+            blockers += 1.0;
         }
     }
-    return shadow / 9.0;
+
+    if (blockers < 1.0) return 1.0;
+    avgBlockerDepth /= blockers;
+
+    // Penumbra Size Estimation
+    float penumbraSize = (shadowCoord.z - avgBlockerDepth) * 10.0 / avgBlockerDepth;
+    float filterRadius = clamp(penumbraSize * texelSize.x * 20.0, texelSize.x, 10.0 * texelSize.x);
+
+    // PCF with Poisson Disk
+    float shadow = 0.0;
+    for (int i = 0; i < 16; i++) {
+        vec2 offset = (rot * poissonDisk[i]) * filterRadius;
+        float pcfDepth = texture(shadowMap, vec3(shadowCoord.xy + offset, cascadeIdx)).r;
+        shadow += (shadowCoord.z - bias > pcfDepth) ? 0.0 : 1.0;
+    }
+
+    return shadow / 16.0;
 }
 
 /**
@@ -135,7 +179,7 @@ vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metalli
     F0 = mix(F0, albedo, metallic);
 
     vec3 Lo = vec3(0.0);
-    float shadow = calculateShadow(worldPos, depth);
+    float shadow = calculateShadow(worldPos, depth, N);
 
     // Clustered Light Lookup
     // 16x9x24 grid
