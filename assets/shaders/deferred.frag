@@ -63,6 +63,7 @@ layout(push_constant) uniform PushConstants {
     float width;
     float height;
     float ssgiIntensity;
+    uint shadowPCF;
 } push;
 
 layout (location = 0) out vec4 outColor;
@@ -114,9 +115,16 @@ float calculateShadow(vec3 worldPos, float linearDepth, vec3 N) {
 
     if (shadowCoord.z > 1.0) return 1.0;
 
-    // Simple PCF
     float shadow = 0.0;
     vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
+
+    if (push.shadowPCF == 0) {
+        float pcfDepth = texture(shadowMap, vec3(shadowCoord.xy, cascadeIdx)).r;
+        shadow = shadowCoord.z - 0.001 > pcfDepth ? 0.0 : 1.0;
+        return shadow;
+    }
+
+    // 3x3 PCF
     for(int x = -1; x <= 1; ++x) {
         for(int y = -1; y <= 1; ++y) {
             float pcfDepth = texture(shadowMap, vec3(shadowCoord.xy + vec2(x, y) * texelSize, cascadeIdx)).r;

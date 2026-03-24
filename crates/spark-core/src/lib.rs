@@ -58,12 +58,28 @@ use spark_renderer::resource::RenderSettings;
 use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PhysicsSettings {
+    pub gravity: spark_math::Vec3,
+    pub simulation_frequency: f32,
+}
+
+impl Default for PhysicsSettings {
+    fn default() -> Self {
+        Self {
+            gravity: spark_math::Vec3::new(0.0, -9.81, 0.0),
+            simulation_frequency: 60.0,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Project {
     pub name: String,
     pub asset_root: PathBuf,
     pub startup_scene: PathBuf,
     pub render_settings: RenderSettings,
+    pub physics_settings: PhysicsSettings,
 }
 
 /// Context passed to systems during initialization and cleanup.
@@ -79,6 +95,7 @@ pub struct FrameContext<'a> {
     pub scene: *mut Scene,
     pub renderer: *mut Renderer,
     pub resource_manager: *mut ResourceManager,
+    pub project: &'a Project,
     pub task_system: &'a TaskSystem,
     pub delta: f32,
     pub event_proxy: crate::systems_events::events::EventProxy<'a>,
@@ -167,12 +184,12 @@ impl App {
 
     pub fn run(mut self) {
         self.run_startup();
-        self.engine.run(|_, _, _, _, _, _| (false, None));
+        self.engine.run(|_, _, _, _, _, _, _| (false, None));
     }
 
     pub fn run_with_ui<F>(mut self, ui_callback: F)
     where
-        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
+        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, &mut Project, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
     {
         self.run_startup();
         self.engine.run(ui_callback);
@@ -206,6 +223,7 @@ pub struct Engine {
     pub last_frame_time: instant::Instant,
     pub current_fps: f32,
     pub system_events: std::sync::Mutex<Vec<crate::systems_events::events::SystemEvent>>,
+    pub project: Project,
 }
 
 impl Engine {
@@ -244,6 +262,7 @@ impl Engine {
             last_frame_time: instant::Instant::now(),
             current_fps: 0.0,
             system_events: std::sync::Mutex::new(Vec::new()),
+            project: Project::default(),
         })
     }
 
@@ -266,7 +285,7 @@ impl Engine {
 
     pub fn run<F>(mut self, mut ui_callback: F)
     where
-        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
+        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, &mut Project, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
     {
         let event_loop = self.event_loop.take().unwrap();
 
@@ -281,7 +300,7 @@ impl Engine {
         }
 
         event_loop.run(move |event, elwt| {
-            let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene, &mut self.resource_manager, &mut self.renderer, self.current_fps);
+            let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene, &mut self.resource_manager, &mut self.renderer, &mut self.project, self.current_fps);
             if ui_consumed {
                 // UI consumed the event
             }
@@ -326,6 +345,7 @@ impl Engine {
                 scene: &mut self.scene as *mut Scene,
                 renderer: &mut self.renderer as *mut Renderer,
                 resource_manager: &mut self.resource_manager as *mut ResourceManager,
+                project: &self.project,
                 task_system: &self.task_system,
                 delta,
                 event_proxy: crate::systems_events::events::EventProxy {

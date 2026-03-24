@@ -12,6 +12,7 @@ layout(binding = 5) buffer LuminanceBuffer {
     float targetExposure;
 } lum;
 layout(binding = 6) uniform sampler2D dofSampler;
+layout(set = 0, binding = 0) uniform sampler3D luts[16];
 
 layout(push_constant) uniform PostProcessParams {
     float exposure;
@@ -24,6 +25,7 @@ layout(push_constant) uniform PostProcessParams {
     float motion_blur_strength;
     float auto_exposure_enabled;
     float dof_enabled;
+    float lut_index;
     float time;
 } params;
 
@@ -112,6 +114,12 @@ void main() {
     float d = length(inUV - 0.5);
     float vignette = smoothstep(params.vignette_intensity, params.vignette_intensity - params.vignette_smoothness, d);
     mapped *= vignette;
+
+    // Color Grading (LUT)
+    if (params.lut_index >= 0.0) {
+        int idx = int(params.lut_index);
+        mapped = texture(luts[idx], mapped).rgb;
+    }
 
     // Film Grain
     float grain = noise(inUV + params.time) * params.film_grain;

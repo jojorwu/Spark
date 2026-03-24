@@ -165,14 +165,14 @@ fn main() {
     let viewport_sampler = app.engine.renderer.common_sampler;
     ui.viewport_texture_id = Some(app.engine.renderer.register_egui_texture(viewport_view, viewport_sampler));
 
-    app.run_with_ui(move |window, event, scene, rm, renderer, fps| {
+    app.run_with_ui(move |window, event, scene, rm, renderer, project, fps| {
         match event {
             winit::event::Event::WindowEvent { event, .. } => {
                 (ui.handle_event(window, event), None)
             }
             winit::event::Event::AboutToWait => {
                 ui.begin_frame(window);
-                ui.draw_ui(scene, rm, renderer, fps);
+                ui.draw_ui(scene, rm, renderer, project, fps);
                 ui.draw_viewport(scene, fps);
                 let full_output = ui.end_frame(window);
                 (false, Some((full_output, ui.egui_ctx.clone())))

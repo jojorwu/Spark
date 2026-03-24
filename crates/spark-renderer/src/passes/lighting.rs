@@ -362,6 +362,7 @@ impl RenderPass for LightingPass {
             width: f32,
             height: f32,
             ssgi_intensity: f32,
+            shadow_pcf: u32,
             object_buffer_address: u64,
             prev_view_proj: spark_math::Mat4,
         }
@@ -372,6 +373,7 @@ impl RenderPass for LightingPass {
             width: extent.width as f32,
             height: extent.height as f32,
             ssgi_intensity: if renderer.settings.enable_ssgi { renderer.settings.ssgi_intensity } else { 0.0 },
+            shadow_pcf: renderer.settings.shadow_pcf_samples,
             object_buffer_address: renderer.frames[current_frame].object_data_buffer.as_ref().map_or(0, |b| b.address),
             prev_view_proj: renderer.prev_view_proj,
         };

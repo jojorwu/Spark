@@ -42,6 +42,10 @@ pub struct RenderSettings {
     pub auto_exposure_min: f32,
     pub auto_exposure_max: f32,
     pub auto_exposure_speed: f32,
+    pub shadow_resolution: u32,
+    pub shadow_pcf_samples: u32,
+    pub enable_color_grading: bool,
+    pub lut_index: i32,
 }
 
 impl Default for RenderSettings {
@@ -83,6 +87,10 @@ impl Default for RenderSettings {
             auto_exposure_min: 0.1,
             auto_exposure_max: 2.0,
             auto_exposure_speed: 1.0,
+            shadow_resolution: 2048,
+            shadow_pcf_samples: 1, // 0: Simple, 1: 3x3 PCF, 2: PCSS placeholder
+            enable_color_grading: false,
+            lut_index: -1,
         }
     }
 }

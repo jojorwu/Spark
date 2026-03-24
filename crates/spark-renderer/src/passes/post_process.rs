@@ -288,7 +288,7 @@ impl RenderPass for PostProcessPass {
 
             renderer.device.device.cmd_begin_rendering(ctx.command_buffer, &rendering_info);
             renderer.device.device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.unwrap());
-            renderer.device.device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.descriptor_sets[ctx.current_frame]], &[]);
+            renderer.device.device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[renderer.bindless_descriptor_set, self.descriptor_sets[ctx.current_frame]], &[]);
 
             #[repr(C)]
             struct PostProcessPC {
@@ -302,8 +302,9 @@ impl RenderPass for PostProcessPass {
                 motion_blur_strength: f32,
                 auto_exposure_enabled: f32,
                 dof_enabled: f32,
+                lut_index: f32,
                 time: f32,
-                padding: [f32; 1],
+                padding: [f32; 0],
             }
             let pc = PostProcessPC {
                 exposure: renderer.settings.exposure,
@@ -316,8 +317,9 @@ impl RenderPass for PostProcessPass {
                 motion_blur_strength: if renderer.settings.enable_motion_blur { renderer.settings.motion_blur_strength } else { 0.0 },
                 auto_exposure_enabled: if renderer.settings.enable_auto_exposure { 1.0 } else { 0.0 },
                 dof_enabled: if renderer.settings.enable_dof { 1.0 } else { 0.0 },
+                lut_index: if renderer.settings.enable_color_grading { renderer.settings.lut_index as f32 } else { -1.0 },
                 time: (renderer.frame_index as f32) * 0.016,
-                padding: [0.0; 1],
+                padding: [0.0; 0],
             };
             let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PostProcessPC>());
             renderer.device.device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
@@ -422,7 +424,7 @@ impl PostProcessPass {
         let layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(std::slice::from_ref(&ds_layout))
+                    .set_layouts(&[renderer.bindless_descriptor_set_layout, ds_layout])
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,

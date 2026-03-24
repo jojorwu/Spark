@@ -133,9 +133,9 @@ impl EditorUI {
         }
     }
 
-    pub fn draw_ui(&mut self, scene: &mut Scene, resource_manager: &mut spark_core::resource::ResourceManager, renderer: &mut spark_renderer::Renderer, fps: f32) {
+    pub fn draw_ui(&mut self, scene: &mut Scene, resource_manager: &mut spark_core::resource::ResourceManager, renderer: &mut spark_renderer::Renderer, project: &mut spark_core::Project, fps: f32) {
         self.draw_menu_bar(scene, resource_manager, renderer);
-        self.draw_bottom_panel(scene, resource_manager, renderer, fps);
+        self.draw_bottom_panel(scene, resource_manager, renderer, project, fps);
         self.draw_hierarchy_panel(scene);
         self.draw_inspector_panel(scene, renderer);
 
@@ -280,7 +280,7 @@ impl EditorUI {
         });
     }
 
-    fn draw_bottom_panel(&mut self, scene: &mut Scene, resource_manager: &mut spark_core::resource::ResourceManager, renderer: &mut spark_renderer::Renderer, fps: f32) {
+    fn draw_bottom_panel(&mut self, scene: &mut Scene, resource_manager: &mut spark_core::resource::ResourceManager, renderer: &mut spark_renderer::Renderer, project: &mut spark_core::Project, fps: f32) {
         let ctx = self.egui_ctx.clone();
         egui::TopBottomPanel::bottom("bottom_panel").show(&ctx, |ui| {
             ui.horizontal(|ui| {
@@ -365,6 +365,14 @@ impl EditorUI {
                         });
 
                         ui.horizontal(|ui| {
+                            ui.checkbox(&mut renderer.settings.enable_color_grading, "Color Grading");
+                            if renderer.settings.enable_color_grading {
+                                ui.label("LUT Index:");
+                                ui.add(egui::DragValue::new(&mut renderer.settings.lut_index).clamp_range(-1..=15));
+                            }
+                        });
+
+                        ui.horizontal(|ui| {
                             ui.label("Vignette Intensity:");
                             ui.add(egui::Slider::new(&mut renderer.settings.vignette_intensity, 0.0..=1.0));
                             ui.label("Smoothness:");
@@ -411,7 +419,18 @@ impl EditorUI {
 
                         ui.separator();
                         ui.heading("General Features");
-                        ui.checkbox(&mut renderer.settings.enable_shadows, "Shadows");
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut renderer.settings.enable_shadows, "Shadows");
+                            if renderer.settings.enable_shadows {
+                                ui.label("PCF:");
+                                egui::ComboBox::from_id_source("shadow_pcf")
+                                    .selected_text(if renderer.settings.shadow_pcf_samples == 0 { "Hard" } else { "Soft (3x3)" })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut renderer.settings.shadow_pcf_samples, 0, "Hard");
+                                        ui.selectable_value(&mut renderer.settings.shadow_pcf_samples, 1, "Soft (3x3)");
+                                    });
+                            }
+                        });
                         ui.horizontal(|ui| {
                             ui.checkbox(&mut renderer.settings.enable_ssao, "SSAO");
                             if renderer.settings.enable_ssao {
@@ -424,6 +443,19 @@ impl EditorUI {
                         ui.checkbox(&mut renderer.settings.enable_taa, "TAA");
                         ui.checkbox(&mut renderer.settings.enable_grid, "Ground Grid");
                         ui.checkbox(&mut renderer.settings.enable_ibl, "IBL");
+
+                        ui.separator();
+                        ui.heading("Physics");
+                        ui.horizontal(|ui| {
+                            ui.label("Gravity:");
+                            ui.add(egui::DragValue::new(&mut project.physics_settings.gravity.x).speed(0.1).prefix("X:"));
+                            ui.add(egui::DragValue::new(&mut project.physics_settings.gravity.y).speed(0.1).prefix("Y:"));
+                            ui.add(egui::DragValue::new(&mut project.physics_settings.gravity.z).speed(0.1).prefix("Z:"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Sim Freq (Hz):");
+                            ui.add(egui::Slider::new(&mut project.physics_settings.simulation_frequency, 10.0..=240.0));
+                        });
 
                         ui.separator();
                         ui.heading("Advanced Features");

@@ -16,7 +16,8 @@ impl Component for RigidBody {
     fn clone_box(&self) -> Box<dyn Component> { Box::new(self.clone()) }
     fn on_update(&mut self, node_key: NodeKey, ctx: &crate::FrameContext) {
         if self.use_gravity {
-            self.velocity.y -= 9.81 * ctx.delta;
+            let gravity = ctx.project.physics_settings.gravity;
+            self.velocity += gravity * ctx.delta;
         }
 
         unsafe {
