@@ -48,6 +48,7 @@ pub struct EditorUI {
     pub node_to_add_child: Option<(NodeKey, NodeType)>,
     pub initial_gizmo_transform: Option<spark_math::Mat4>,
     pub component_to_remove: Option<(NodeKey, usize)>,
+    pub project: spark_core::Project,
 }
 
 pub enum NodeType {
@@ -95,6 +96,7 @@ impl EditorUI {
             node_to_add_child: None,
             initial_gizmo_transform: None,
             component_to_remove: None,
+            project: spark_core::Project::default(),
         }
     }
 
@@ -326,8 +328,24 @@ impl EditorUI {
                 }
                 BottomTab::Project => {
                     ui.heading("Project Settings");
-                    ui.label("Manage project paths and metadata.");
-                    // Project settings UI
+                    ui.horizontal(|ui| {
+                        ui.label("Project Name:");
+                        ui.text_edit_singleline(&mut self.project.name);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Asset Root:");
+                        let mut path_str = self.project.asset_root.to_string_lossy().to_string();
+                        if ui.text_edit_singleline(&mut path_str).changed() {
+                            self.project.asset_root = std::path::PathBuf::from(path_str);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Startup Scene:");
+                        let mut path_str = self.project.startup_scene.to_string_lossy().to_string();
+                        if ui.text_edit_singleline(&mut path_str).changed() {
+                            self.project.startup_scene = std::path::PathBuf::from(path_str);
+                        }
+                    });
                 }
                 BottomTab::Settings => {
                     ui.heading("Renderer Settings");

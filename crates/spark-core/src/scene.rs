@@ -179,7 +179,8 @@ impl Scene {
         if let Some(parent_node) = self.nodes.get_mut(parent) {
             parent_node.children.push(key);
         }
-        self.update_all_transforms();
+        let parent_global = self.nodes.get(parent).map(|p| p.global_transform).unwrap_or(Mat4::IDENTITY);
+        self.update_transforms_recursive(key, parent_global);
         key
     }
 

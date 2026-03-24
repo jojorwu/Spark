@@ -173,7 +173,7 @@ impl System for HierarchySystem {
         }
     }
     fn update(&mut self, ctx: &mut FrameContext) {
-        ctx.scene().update_all_transforms();
+        unsafe { ctx.scene_mut().update_all_transforms(); }
     }
 }
 
@@ -189,7 +189,9 @@ impl System for ResourceSystem {
         }
     }
     fn update(&mut self, ctx: &mut FrameContext) {
-        let renderer = ctx.renderer();
-        ctx.resource_manager().upload_global_buffers(renderer);
+        unsafe {
+            let renderer = ctx.renderer_mut();
+            ctx.resource_manager_mut().upload_global_buffers(renderer);
+        }
     }
 }

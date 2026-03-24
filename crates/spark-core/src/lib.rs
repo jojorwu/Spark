@@ -88,9 +88,19 @@ unsafe impl<'a> Send for FrameContext<'a> {}
 unsafe impl<'a> Sync for FrameContext<'a> {}
 
 impl<'a> FrameContext<'a> {
-    pub fn scene(&self) -> &mut Scene { unsafe { &mut *self.scene } }
-    pub fn renderer(&self) -> &mut Renderer { unsafe { &mut *self.renderer } }
-    pub fn resource_manager(&self) -> &mut ResourceManager { unsafe { &mut *self.resource_manager } }
+    pub fn scene(&self) -> &Scene { unsafe { &*self.scene } }
+    pub fn renderer(&self) -> &Renderer { unsafe { &*self.renderer } }
+    pub fn resource_manager(&self) -> &ResourceManager { unsafe { &*self.resource_manager } }
+
+    /// Returns a mutable reference to the scene.
+    /// Safety: Caller must ensure no other threads are accessing the scene concurrently.
+    pub unsafe fn scene_mut(&self) -> &mut Scene { &mut *self.scene }
+    /// Returns a mutable reference to the renderer.
+    /// Safety: Caller must ensure no other threads are accessing the renderer concurrently.
+    pub unsafe fn renderer_mut(&self) -> &mut Renderer { &mut *self.renderer }
+    /// Returns a mutable reference to the resource manager.
+    /// Safety: Caller must ensure no other threads are accessing the resource manager concurrently.
+    pub unsafe fn resource_manager_mut(&self) -> &mut ResourceManager { &mut *self.resource_manager }
 }
 
 /// A trait representing a system that processes engine state.

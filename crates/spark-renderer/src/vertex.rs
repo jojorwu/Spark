@@ -2,10 +2,11 @@ use ash::vk;
 use spark_math::Vec3;
 use std::mem;
 
-#[repr(C, align(4))]
+#[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Vertex {
     pub pos: [f32; 3],
+    pub padding: f32,
     pub normal: u32,    // Packed 10_10_10_2
     pub tex_coord: u32, // Packed 16_16
     pub color: u32,     // Packed 8_8_8_8
@@ -37,6 +38,7 @@ impl Vertex {
 
         Self {
             pos: pos.to_array(),
+            padding: 0.0,
             normal: pack_10_10_10_2(normal),
             tex_coord: pack_tc(tex_coord),
             color: pack_color(color),
@@ -62,22 +64,22 @@ impl Vertex {
                 .binding(0)
                 .location(1)
                 .format(vk::Format::A2B10G10R10_UNORM_PACK32)
-                .offset(12),
+                .offset(16),
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(2)
                 .format(vk::Format::R16G16_UNORM)
-                .offset(16),
+                .offset(20),
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(3)
                 .format(vk::Format::R8G8B8A8_UNORM)
-                .offset(20),
+                .offset(24),
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(4)
                 .format(vk::Format::A2B10G10R10_UNORM_PACK32)
-                .offset(24),
+                .offset(28),
         ]
     }
 }

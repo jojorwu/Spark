@@ -4,6 +4,7 @@
 
 struct Vertex {
     float pos[3];
+    float padding; // manual padding to match Rust [f32; 3] vs GLSL std430 alignment
     uint normal;
     uint texCoord;
     uint color;
