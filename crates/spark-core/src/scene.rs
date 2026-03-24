@@ -310,7 +310,7 @@ impl Scene {
             || {
                 data.renderables.par_iter().filter_map(|r| {
                     let mat_idx = r.6.unwrap_or(0);
-                    let is_transparent = resource_manager.all_materials.get(mat_idx as usize).is_some_and(|m| (m.flags & 1) != 0);
+                    let is_transparent = resource_manager.materials.get(crate::resource::Handle::new(mat_idx)).is_some_and(|m| m.is_transparent);
                     if !is_transparent {
                         Some(spark_renderer::resource::MeshDraw {
                             model: r.0,
@@ -329,7 +329,7 @@ impl Scene {
             || {
                 data.renderables.par_iter().filter_map(|r| {
                     let mat_idx = r.6.unwrap_or(0);
-                    let is_transparent = resource_manager.all_materials.get(mat_idx as usize).is_some_and(|m| (m.flags & 1) != 0);
+                    let is_transparent = resource_manager.materials.get(crate::resource::Handle::new(mat_idx)).is_some_and(|m| m.is_transparent);
                     if is_transparent {
                         Some(spark_renderer::resource::MeshDraw {
                             model: r.0,
@@ -351,7 +351,7 @@ impl Scene {
         let instanced_results: Vec<Vec<(spark_renderer::resource::MeshDraw, bool)>> = data.instanced.par_iter().map(|((ic, fi, vo, _tex, mat_idx, br_bits), transforms)| {
             let br = f32::from_bits(*br_bits);
             let midx = mat_idx.unwrap_or(0);
-            let is_transparent = resource_manager.all_materials.get(midx as usize).is_some_and(|m| (m.flags & 1) != 0);
+            let is_transparent = resource_manager.materials.get(crate::resource::Handle::new(midx)).is_some_and(|m| m.is_transparent);
 
             transforms.iter().map(move |&t| {
                 let draw = spark_renderer::resource::MeshDraw {

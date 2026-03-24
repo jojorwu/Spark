@@ -141,8 +141,8 @@ impl Renderer {
         self.add_render_pass(particle_pass, &["GBuffer"], &["ParticleColor"]);
         self.add_render_pass(ssr_pass, &["GBuffer", "HDRColor", "HiZ"], &["SSR"]);
         self.add_render_pass(taa_pass, &["HDRColor", "GBuffer"], &["TAAColor"]);
-        self.add_render_pass(post_process_pass, &["TAAColor"], &["FinalColor"]);
         self.add_render_pass(sprite_pass, &["GBuffer"], &["SpriteColor"]);
+        self.add_render_pass(post_process_pass, &["TAAColor", "SpriteColor"], &["FinalColor"]);
 
         self.compile_render_graph();
         self.update_all_descriptor_sets();

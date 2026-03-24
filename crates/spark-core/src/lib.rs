@@ -9,6 +9,7 @@ pub mod event_mapper;
 pub mod input;
 pub mod command;
 pub mod event_bus;
+pub mod prefab;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Access {
@@ -186,9 +187,6 @@ impl App {
         };
         for system in &mut self.startup_systems {
             system.on_init(&mut init_ctx);
-            // Startup systems don't have an 'update' in the main loop,
-            // but we could call it once if needed.
-            // system.update(&FrameContext { ... });
         }
     }
 }

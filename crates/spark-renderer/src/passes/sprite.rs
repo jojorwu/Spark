@@ -39,24 +39,28 @@ impl RenderPass for SpritePass {
         unsafe { renderer.device.device.update_descriptor_sets(&writes, &[]); }
     }
 
+    fn outputs(&self) -> Vec<&'static str> { vec!["SpriteColor"] }
+
+    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![
+            ("SpriteColor".to_string(), vk::AccessFlags::COLOR_ATTACHMENT_WRITE, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT),
+        ]
+    }
+
     fn record_commands(&self, ctx: &RenderContext) {
-        if self.sprite_data.is_empty() { return; }
         let renderer = ctx.renderer;
         let cf = ctx.current_frame;
-
-        let pipeline = match self.pipeline {
-            Some(p) => p,
-            None => return,
-        };
-
         let extent = renderer.get_extent();
+
+        let sprite_view = renderer.get_pass_resource_view("SpritePass", "SpriteColor", cf).unwrap();
 
         unsafe {
             let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(renderer.get_pass_resource_view("", "GBufferHDR", cf).unwrap_or(renderer.common_shadow_view))
+                .image_view(sprite_view)
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::LOAD)
-                .store_op(vk::AttachmentStoreOp::STORE);
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 0.0] } });
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
@@ -64,6 +68,20 @@ impl RenderPass for SpritePass {
                 .color_attachments(std::slice::from_ref(&color_attachment));
 
             renderer.device.device.cmd_begin_rendering(ctx.command_buffer, &rendering_info);
+
+            if self.sprite_data.is_empty() {
+                renderer.device.device.cmd_end_rendering(ctx.command_buffer);
+                return;
+            }
+
+            let pipeline = match self.pipeline {
+                Some(p) => p,
+                None => {
+                    renderer.device.device.cmd_end_rendering(ctx.command_buffer);
+                    return;
+                }
+            };
+
             renderer.device.device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
             let viewport = vk::Viewport::default().width(extent.width as f32).height(extent.height as f32).max_depth(1.0);
@@ -105,6 +123,14 @@ impl RenderPass for SpritePass {
 }
 
 impl SpritePass {
+    pub fn clear_sprites(&mut self) {
+        self.sprite_data.clear();
+    }
+
+    pub fn add_sprite(&mut self, data: SpriteData) {
+        self.sprite_data.push(data);
+    }
+
     pub fn new(renderer: &Renderer, vert_spirv: &[u32], frag_spirv: &[u32]) -> Result<Self, crate::error::RendererError> {
         let device = &renderer.device.device;
 
@@ -163,7 +189,7 @@ impl SpritePass {
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
         let rasterizer = vk::PipelineRasterizationStateCreateInfo::default().cull_mode(vk::CullModeFlags::NONE).front_face(vk::FrontFace::CLOCKWISE).line_width(1.0);
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(renderer.get_msaa_samples());
 
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)

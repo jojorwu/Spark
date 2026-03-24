@@ -1,5 +1,6 @@
 pub mod component;
 pub mod camera;
+pub mod physics;
 
 use crate::{System, FrameContext, InitContext};
 use std::collections::{HashSet, HashMap};

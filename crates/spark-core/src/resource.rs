@@ -58,15 +58,40 @@ impl<T> AssetStorage<T> {
     pub fn get(&self, handle: Handle<T>) -> Option<&T> {
         self.assets.get(handle.id as usize)
     }
+    pub fn get_mut(&mut self, handle: Handle<T>) -> Option<&mut T> {
+        self.assets.get_mut(handle.id as usize)
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Material {
+    pub name: String,
+    pub albedo_factor: [f32; 4],
+    pub emissive_factor: [f32; 4],
+    pub metallic_factor: f32,
+    pub roughness_factor: f32,
+    pub albedo_texture: Option<Handle<spark_renderer::vulkan::texture::Texture>>,
+    pub normal_texture: Option<Handle<spark_renderer::vulkan::texture::Texture>>,
+    pub metallic_roughness_texture: Option<Handle<spark_renderer::vulkan::texture::Texture>>,
+    pub is_transparent: bool,
+}
+
+impl std::fmt::Debug for Material {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Material")
+            .field("name", &self.name)
+            .finish()
+    }
 }
 
 pub struct ResourceManager {
     pub textures: AssetStorage<DynamicImage>,
     pub gpu_textures: AssetStorage<spark_renderer::vulkan::texture::Texture>,
     pub texture_path_map: HashMap<PathBuf, Handle<spark_renderer::vulkan::texture::Texture>>,
+    pub materials: AssetStorage<Material>,
     pub all_vertices: Vec<spark_renderer::vertex::Vertex>,
     pub all_indices: Vec<u32>,
-    pub all_materials: Vec<spark_renderer::MaterialDataSSBO>,
+    pub all_materials_ssbo: Vec<spark_renderer::MaterialDataSSBO>,
     pub needs_upload: bool,
     pub registry: ResourceRegistry,
 }
@@ -82,9 +107,10 @@ impl ResourceManager {
             textures: AssetStorage::new(),
             gpu_textures: AssetStorage::new(),
             texture_path_map: HashMap::new(),
+            materials: AssetStorage::new(),
             all_vertices: Vec::new(),
             all_indices: Vec::new(),
-            all_materials: Vec::new(),
+            all_materials_ssbo: Vec::new(),
             needs_upload: false,
             registry: ResourceRegistry::default(),
         }
@@ -140,7 +166,7 @@ impl ResourceManager {
         );
         renderer.upload_to_buffer(&staging_i, &self.all_indices);
 
-        let m_sz = (self.all_materials.len() * std::mem::size_of::<spark_renderer::MaterialDataSSBO>()) as u64;
+        let m_sz = (self.all_materials_ssbo.len() * std::mem::size_of::<spark_renderer::MaterialDataSSBO>()) as u64;
         let mb = renderer.create_buffer(
             m_sz,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
@@ -151,7 +177,7 @@ impl ResourceManager {
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
-        renderer.upload_to_buffer(&staging_m, &self.all_materials);
+        renderer.upload_to_buffer(&staging_m, &self.all_materials_ssbo);
 
         // Batched copy
         let cb = renderer.begin_single_time_commands();
@@ -179,7 +205,7 @@ impl ResourceManager {
     ) {
         self.all_vertices.clear();
         self.all_indices.clear();
-        self.all_materials.clear();
+        self.all_materials_ssbo.clear();
         GltfLoader::load_scene(self, path, scene_tree, renderer);
     }
 
@@ -378,8 +404,20 @@ impl GltfLoader {
                     }
                 }
 
-                rm.all_materials.push(mat_ssbo);
-                let mat_idx = (rm.all_materials.len() - 1) as u32;
+                rm.all_materials_ssbo.push(mat_ssbo);
+                let mat_idx = (rm.all_materials_ssbo.len() - 1) as u32;
+
+                rm.materials.add(Material {
+                    name: gltf_mat.name().unwrap_or("Unnamed Material").to_string(),
+                    albedo_factor: pbr.base_color_factor(),
+                    emissive_factor: [gltf_mat.emissive_factor()[0], gltf_mat.emissive_factor()[1], gltf_mat.emissive_factor()[2], 1.0],
+                    metallic_factor: pbr.metallic_factor(),
+                    roughness_factor: pbr.roughness_factor(),
+                    albedo_texture: None, // Simplified
+                    normal_texture: None,
+                    metallic_roughness_texture: None,
+                    is_transparent: gltf_mat.alpha_mode() == gltf::material::AlphaMode::Blend,
+                });
 
                 let mesh_comp = MeshComponent {
                     vertex_count: positions.len() as u32,

@@ -1,6 +1,6 @@
 use ash::vk;
 use crate::resource::Attachment;
-use crate::{Renderer, MAX_FRAMES_IN_FLIGHT};
+use crate::Renderer;
 use super::{RenderPass, RenderContext};
 
 pub struct PointShadowPass {
@@ -12,7 +12,7 @@ pub struct PointShadowPass {
 impl RenderPass for PointShadowPass {
     fn name(&self) -> &str { "PointShadowPass" }
 
-    fn record_commands(&self, ctx: &RenderContext) {
+    fn record_commands(&self, _ctx: &RenderContext) {
         // Implementation for recording 6 faces of a cube map for a point light
         // For now, this is a placeholder.
     }
@@ -27,7 +27,7 @@ impl RenderPass for PointShadowPass {
 }
 
 impl PointShadowPass {
-    pub fn new(renderer: &Renderer, vert_spirv: &[u32], frag_spirv: &[u32]) -> Result<Self, crate::error::RendererError> {
+    pub fn new(renderer: &Renderer, _vert_spirv: &[u32], _frag_spirv: &[u32]) -> Result<Self, crate::error::RendererError> {
         let device = &renderer.device.device;
 
         let shadow_cube = Attachment::create_image_resource(

@@ -16,7 +16,7 @@ impl RenderPass for SSGIPass {
     fn inputs(&self) -> Vec<&'static str> { vec!["HDRColor", "GBuffer"] }
     fn outputs(&self) -> Vec<&'static str> { vec!["SSGI"] }
 
-    fn record_commands(&self, ctx: &RenderContext) {
+    fn record_commands(&self, _ctx: &RenderContext) {
         // Implementation for drawing a fullscreen quad with SSGI shader
     }
 
@@ -31,8 +31,7 @@ impl RenderPass for SSGIPass {
 }
 
 impl SSGIPass {
-    pub fn new(renderer: &Renderer, shader_spirv: &[u32]) -> Result<Self, crate::error::RendererError> {
-        let device = &renderer.device.device;
+    pub fn new(renderer: &Renderer, _shader_spirv: &[u32]) -> Result<Self, crate::error::RendererError> {
         let extent = renderer.get_extent();
 
         let output_images = (0..MAX_FRAMES_IN_FLIGHT).map(|_| {
