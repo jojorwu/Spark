@@ -1,4 +1,4 @@
-use spark_core::Engine;
+use spark_core::{App, Plugin};
 use std::fs;
 
 mod ui;
@@ -31,6 +31,18 @@ impl ShaderCompiler {
 use spark_script::ScriptHost;
 use crate::ui::EditorUI;
 
+struct EditorPlugin {
+    _logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Plugin for EditorPlugin {
+    fn build(&self, app: &mut App) {
+        app.engine.add_system(spark_core::systems::component::ComponentSystem);
+        app.engine.add_system(spark_core::systems::HierarchySystem);
+        app.engine.add_system(spark_core::systems::ResourceSystem);
+    }
+}
+
 fn main() {
     let (logger, logs) = spark_core::logger::EditorLogger::new();
     logger.init();
@@ -41,17 +53,12 @@ fn main() {
     let ui_vert_spirv = compiler.compile("assets/shaders/ui.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile UI vertex shader");
     let ui_frag_spirv = compiler.compile("assets/shaders/ui.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile UI fragment shader");
 
-    let mut engine = Engine::new(
-        "Spark Engine Editor",
-        Some((&ui_vert_spirv, &ui_frag_spirv))
-    ).expect("Failed to initialize engine");
+    let mut app = App::with_ui_shaders("Spark Engine Editor", &ui_vert_spirv, &ui_frag_spirv);
 
-    engine.add_system(spark_core::systems::component::ComponentSystem);
-    engine.add_system(spark_core::systems::HierarchySystem);
-    engine.add_system(spark_core::systems::ResourceSystem);
+    app = app.add_plugin(EditorPlugin { _logs: logs.clone() });
 
     let mut def_options = shaderc::CompileOptions::new().unwrap();
-    let msaa_count = match engine.renderer.get_msaa_samples() {
+    let msaa_count = match app.engine.renderer.get_msaa_samples() {
         ash::vk::SampleCountFlags::TYPE_1 => 1,
         ash::vk::SampleCountFlags::TYPE_2 => 2,
         ash::vk::SampleCountFlags::TYPE_4 => 4,
@@ -94,7 +101,7 @@ fn main() {
         ssr_comp: compiler.compile("assets/shaders/ssr.comp", shaderc::ShaderKind::Compute).expect("Failed to compile ssr.comp"),
     };
 
-    engine.renderer.setup_default_passes(shaders).expect("Failed to setup render passes");
+    app.engine.renderer.setup_default_passes(shaders).expect("Failed to setup render passes");
 
 
     use spark_renderer::vertex::Vertex;
@@ -106,13 +113,13 @@ fn main() {
         Vertex::pack(Vec3::new(-0.5, 0.5, 0.0), Vec3::Z, Vec2::ZERO, Vec3::new(0.0, 0.0, 1.0), Vec3::X),
     ];
 
-    let vb = engine.renderer.create_buffer(
+    let vb = app.engine.renderer.create_buffer(
         (std::mem::size_of::<Vertex>() * vertices.len()) as u64,
         ash::vk::BufferUsageFlags::VERTEX_BUFFER,
         ash::vk::MemoryPropertyFlags::HOST_VISIBLE | ash::vk::MemoryPropertyFlags::HOST_COHERENT,
     );
-    engine.renderer.upload_to_buffer(&vb, &vertices);
-    engine.renderer.add_vertex_buffer(vb);
+    app.engine.renderer.upload_to_buffer(&vb, &vertices);
+    app.engine.renderer.add_vertex_buffer(vb);
 
     use spark_core::scene::{Node, MeshComponent, CameraComponent};
 
@@ -133,7 +140,7 @@ fn main() {
         })],
     };
 
-    engine.scene.add_node(engine.scene.root, triangle_node);
+    app.engine.scene.add_node(app.engine.scene.root, triangle_node);
 
     let _camera_node = Node {
         name: "MainCamera".to_string(),
@@ -141,20 +148,20 @@ fn main() {
         global_transform: Mat4::IDENTITY,
         parent: None,
         children: Vec::new(),
-        components: vec![Box::new(CameraComponent { fov: 45.0, near: 0.1, far: 100.0 })],
+        components: vec![Box::new(CameraComponent { fov: 45.0, near: 0.1, far: 100.0, orthographic: false, ortho_size: 5.0 })],
     };
 
-    engine.scene.add_node(engine.scene.root, _camera_node);
+    app.engine.scene.add_node(app.engine.scene.root, _camera_node);
 
     let _script_host = ScriptHost::new();
 
-    let mut ui = EditorUI::new(&engine.window, logs);
-    engine.renderer.create_viewport_attachment(1280, 720);
-    let viewport_view = engine.renderer.viewport_attachment.as_ref().unwrap().view;
-    let viewport_sampler = engine.renderer.common_sampler;
-    ui.viewport_texture_id = Some(engine.renderer.register_egui_texture(viewport_view, viewport_sampler));
+    let mut ui = EditorUI::new(&app.engine.window, logs);
+    app.engine.renderer.create_viewport_attachment(1280, 720);
+    let viewport_view = app.engine.renderer.viewport_attachment.as_ref().unwrap().view;
+    let viewport_sampler = app.engine.renderer.common_sampler;
+    ui.viewport_texture_id = Some(app.engine.renderer.register_egui_texture(viewport_view, viewport_sampler));
 
-    engine.run(move |window, event, scene, rm, renderer, fps| {
+    app.run_with_ui(move |window, event, scene, rm, renderer, fps| {
         match event {
             winit::event::Event::WindowEvent { event, .. } => {
                 (ui.handle_event(window, event), None)

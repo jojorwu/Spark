@@ -53,6 +53,7 @@ use crate::task::TaskSystem;
 use crate::resource::ResourceManager;
 use crate::event::EventQueue;
 use spark_renderer::Renderer;
+use spark_renderer::resource::RenderSettings;
 use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 
@@ -61,6 +62,7 @@ pub struct Project {
     pub name: String,
     pub asset_root: PathBuf,
     pub startup_scene: PathBuf,
+    pub render_settings: RenderSettings,
 }
 
 /// Context passed to systems during initialization and cleanup.
@@ -117,6 +119,52 @@ pub trait System: Send + Sync {
             renderer: Access::Write,
             resource_manager: Access::Write,
         }
+    }
+}
+
+/// A trait for engine plugins.
+pub trait Plugin {
+    fn build(&self, app: &mut App);
+}
+
+pub struct App {
+    pub engine: Engine,
+}
+
+impl App {
+    pub fn new(title: &str) -> Self {
+        let engine = Engine::new(title, None).expect("Failed to initialize engine");
+        Self {
+            engine,
+        }
+    }
+
+    pub fn with_ui_shaders(title: &str, vert: &[u32], frag: &[u32]) -> Self {
+        let engine = Engine::new(title, Some((vert, frag))).expect("Failed to initialize engine");
+        Self {
+            engine,
+        }
+    }
+
+    pub fn add_plugin<P: Plugin + 'static>(mut self, plugin: P) -> Self {
+        plugin.build(&mut self);
+        self
+    }
+
+    pub fn add_system<S: System + 'static>(mut self, system: S) -> Self {
+        self.engine.add_system(system);
+        self
+    }
+
+    pub fn run(self) {
+        self.engine.run(|_, _, _, _, _, _| (false, None));
+    }
+
+    pub fn run_with_ui<F>(self, ui_callback: F)
+    where
+        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
+    {
+        self.engine.run(ui_callback);
     }
 }
 
@@ -282,12 +330,20 @@ impl Engine {
             for component in &node.components {
                 if let Some(camera) = component.as_any().downcast_ref::<crate::scene::CameraComponent>() {
                     let view = node.global_transform.inverse();
-                    projection_matrix = spark_math::Mat4::perspective_rh(
-                        camera.fov.to_radians(),
-                        self.renderer.get_extent().width as f32 / self.renderer.get_extent().height as f32,
-                        camera.near,
-                        camera.far,
-                    );
+                    if camera.orthographic {
+                        let aspect = self.renderer.get_extent().width as f32 / self.renderer.get_extent().height as f32;
+                        let size = camera.ortho_size;
+                        projection_matrix = spark_math::Mat4::orthographic_rh(
+                            -size * aspect, size * aspect, -size, size, camera.near, camera.far
+                        );
+                    } else {
+                        projection_matrix = spark_math::Mat4::perspective_rh(
+                            camera.fov.to_radians(),
+                            self.renderer.get_extent().width as f32 / self.renderer.get_extent().height as f32,
+                            camera.near,
+                            camera.far,
+                        );
+                    }
                     camera_matrix = projection_matrix * view;
                     break;
                 }

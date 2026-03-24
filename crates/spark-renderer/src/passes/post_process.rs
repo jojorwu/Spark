@@ -255,7 +255,7 @@ impl RenderPass for PostProcessPass {
             renderer.device.device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.unwrap());
             renderer.device.device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.descriptor_sets[ctx.current_frame]], &[]);
 
-            let pc = [renderer.exposure, renderer.gamma, if renderer.enable_bloom { 1.0 } else { 0.0 }, 0.0];
+            let pc = [renderer.settings.exposure, renderer.settings.gamma, if renderer.settings.enable_bloom { 1.0 } else { 0.0 }, 0.0];
             let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 16);
             renderer.device.device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
 
@@ -503,7 +503,7 @@ impl PostProcessPass {
             .color_blend_state(&us_blend)
             .layout(self.layout)
             .push_next(&mut bloom_rendering);
-        self.upsample_pipeline = Some(unsafe { device.create_graphics_pipelines(pipeline_cache, &[us_info], None).unwrap()[0] });
+        self.downsample_pipeline = Some(unsafe { device.create_graphics_pipelines(pipeline_cache, &[us_info], None).unwrap()[0] });
 
         unsafe {
             device.destroy_shader_module(vert_module, None);

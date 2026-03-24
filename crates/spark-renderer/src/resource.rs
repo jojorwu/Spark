@@ -1,7 +1,45 @@
 use ash::vk;
 use std::sync::{Arc, Mutex};
+use serde::{Serialize, Deserialize};
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RenderSettings {
+    pub exposure: f32,
+    pub gamma: f32,
+    pub enable_ssao: bool,
+    pub enable_taa: bool,
+    pub enable_shadows: bool,
+    pub enable_volumetric: bool,
+    pub enable_grid: bool,
+    pub enable_ibl: bool,
+    pub enable_bloom: bool,
+    pub ssao_radius: f32,
+    pub ssao_strength: f32,
+    pub bloom_threshold: f32,
+    pub bloom_intensity: f32,
+}
+
+impl Default for RenderSettings {
+    fn default() -> Self {
+        Self {
+            exposure: 1.0,
+            gamma: 2.2,
+            enable_ssao: true,
+            enable_taa: true,
+            enable_shadows: true,
+            enable_volumetric: true,
+            enable_grid: true,
+            enable_ibl: true,
+            enable_bloom: true,
+            ssao_radius: 0.5,
+            ssao_strength: 1.0,
+            bloom_threshold: 1.0,
+            bloom_intensity: 0.5,
+        }
+    }
+}
 
 /// Represents a Vulkan buffer with its associated memory, size, and versioning for cache optimization.
 pub struct Buffer {

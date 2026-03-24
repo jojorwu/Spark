@@ -12,6 +12,7 @@ pub mod volumetric;
 pub mod forward;
 pub mod particle;
 pub mod ssr;
+pub mod sprite;
 
 use ash::vk;
 use crate::Renderer;

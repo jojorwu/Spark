@@ -53,6 +53,7 @@ pub struct EditorUI {
 pub enum NodeType {
     Mesh,
     Light,
+    Sprite,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -169,6 +170,24 @@ impl EditorUI {
                         color: spark_math::Vec3::ONE,
                         intensity: 1.0,
                         range: 10.0,
+                    }));
+                    scene.add_node(parent, node);
+                }
+                NodeType::Sprite => {
+                    let mut node = Node {
+                        name: "New Sprite".to_string(),
+                        local_transform: spark_math::Mat4::IDENTITY,
+                        global_transform: spark_math::Mat4::IDENTITY,
+                        parent: None,
+                        children: Vec::new(),
+                        components: Vec::new(),
+                    };
+                    node.components.push(Box::new(spark_core::scene::SpriteComponent {
+                         texture_handle: None,
+                         color: [1.0, 1.0, 1.0, 1.0],
+                         flip_x: false,
+                         flip_y: false,
+                         size: spark_math::Vec2::new(1.0, 1.0),
                     }));
                     scene.add_node(parent, node);
                 }
@@ -313,21 +332,21 @@ impl EditorUI {
                     ui.heading("Renderer Settings");
                     ui.horizontal(|ui| {
                         ui.label("Exposure:");
-                        ui.add(egui::Slider::new(&mut renderer.exposure, 0.1..=10.0));
+                        ui.add(egui::Slider::new(&mut renderer.settings.exposure, 0.1..=10.0));
                     });
                     ui.horizontal(|ui| {
                         ui.label("Gamma:");
-                        ui.add(egui::Slider::new(&mut renderer.gamma, 1.0..=3.0));
+                        ui.add(egui::Slider::new(&mut renderer.settings.gamma, 1.0..=3.0));
                     });
                     ui.separator();
                     ui.heading("Visual Features");
-                    ui.checkbox(&mut renderer.enable_shadows, "Shadows");
-                    ui.checkbox(&mut renderer.enable_ssao, "SSAO");
-                    ui.checkbox(&mut renderer.enable_taa, "TAA");
-                    ui.checkbox(&mut renderer.enable_volumetric, "Volumetric Fog");
-                    ui.checkbox(&mut renderer.enable_grid, "Ground Grid");
-                    ui.checkbox(&mut renderer.enable_ibl, "IBL");
-                    ui.checkbox(&mut renderer.enable_bloom, "Bloom");
+                    ui.checkbox(&mut renderer.settings.enable_shadows, "Shadows");
+                    ui.checkbox(&mut renderer.settings.enable_ssao, "SSAO");
+                    ui.checkbox(&mut renderer.settings.enable_taa, "TAA");
+                    ui.checkbox(&mut renderer.settings.enable_volumetric, "Volumetric Fog");
+                    ui.checkbox(&mut renderer.settings.enable_grid, "Ground Grid");
+                    ui.checkbox(&mut renderer.settings.enable_ibl, "IBL");
+                    ui.checkbox(&mut renderer.settings.enable_bloom, "Bloom");
                 }
                 BottomTab::Statistics => {
                     ui.horizontal(|ui| {
@@ -355,6 +374,9 @@ impl EditorUI {
                 }
                 if ui.button("Add Light").clicked() {
                     self.add_default_light(scene);
+                }
+                if ui.button("Add Sprite").clicked() {
+                    self.add_default_sprite(scene);
                 }
             });
 
@@ -410,6 +432,25 @@ impl EditorUI {
         scene.add_node(scene.root, new_node);
     }
 
+    fn add_default_sprite(&mut self, scene: &mut Scene) {
+        let mut new_node = Node {
+            name: "New Sprite".to_string(),
+            local_transform: spark_math::Mat4::IDENTITY,
+            global_transform: spark_math::Mat4::IDENTITY,
+            parent: None,
+            children: Vec::new(),
+            components: Vec::new(),
+        };
+        new_node.components.push(Box::new(spark_core::scene::SpriteComponent {
+            texture_handle: None,
+            color: [1.0, 1.0, 1.0, 1.0],
+            flip_x: false,
+            flip_y: false,
+            size: spark_math::Vec2::new(1.0, 1.0),
+        }));
+        scene.add_node(scene.root, new_node);
+    }
+
     fn delete_node(&mut self, scene: &mut Scene, key: NodeKey) {
         if let Some(node) = scene.nodes.get(key) {
             if let Some(parent_key) = node.parent {
@@ -459,7 +500,17 @@ impl EditorUI {
                                 }
                                 if ui.button("Camera").clicked() {
                                     node.components.push(Box::new(spark_core::scene::CameraComponent {
-                                        fov: 45.0, near: 0.1, far: 100.0,
+                                        fov: 45.0, near: 0.1, far: 100.0, orthographic: false, ortho_size: 5.0,
+                                    }));
+                                    ui.close_menu();
+                                }
+                                if ui.button("Sprite").clicked() {
+                                    node.components.push(Box::new(spark_core::scene::SpriteComponent {
+                                         texture_handle: None,
+                                         color: [1.0, 1.0, 1.0, 1.0],
+                                         flip_x: false,
+                                         flip_y: false,
+                                         size: spark_math::Vec2::new(1.0, 1.0),
                                     }));
                                     ui.close_menu();
                                 }
@@ -473,6 +524,7 @@ impl EditorUI {
                             t if t == std::any::TypeId::of::<spark_core::scene::MeshComponent>() => "Mesh",
                             t if t == std::any::TypeId::of::<spark_core::scene::LightComponent>() => "Light",
                             t if t == std::any::TypeId::of::<spark_core::scene::CameraComponent>() => "Camera",
+                            t if t == std::any::TypeId::of::<spark_core::scene::SpriteComponent>() => "Sprite",
                             _ => "Unknown",
                         };
 
@@ -593,10 +645,18 @@ impl EditorUI {
             });
         } else if let Some(camera) = any.downcast_mut::<spark_core::scene::CameraComponent>() {
             ui.collapsing("Camera Component", |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("FOV:");
-                    ui.add(egui::DragValue::new(&mut camera.fov).speed(1.0).clamp_range(1.0..=179.0));
-                });
+                ui.checkbox(&mut camera.orthographic, "Orthographic");
+                if camera.orthographic {
+                    ui.horizontal(|ui| {
+                        ui.label("Ortho Size:");
+                        ui.add(egui::DragValue::new(&mut camera.ortho_size).speed(0.1));
+                    });
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label("FOV:");
+                        ui.add(egui::DragValue::new(&mut camera.fov).speed(1.0).clamp_range(1.0..=179.0));
+                    });
+                }
                 ui.horizontal(|ui| {
                     ui.label("Near:");
                     ui.add(egui::DragValue::new(&mut camera.near).speed(0.01));
@@ -605,6 +665,20 @@ impl EditorUI {
                     ui.label("Far:");
                     ui.add(egui::DragValue::new(&mut camera.far).speed(1.0));
                 });
+            });
+        } else if let Some(sprite) = any.downcast_mut::<spark_core::scene::SpriteComponent>() {
+            ui.collapsing("Sprite Component", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Color:");
+                    ui.color_edit_button_rgb(&mut sprite.color[0..3].try_into().unwrap());
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Size:");
+                    ui.add(egui::DragValue::new(&mut sprite.size.x).speed(0.1));
+                    ui.add(egui::DragValue::new(&mut sprite.size.y).speed(0.1));
+                });
+                ui.checkbox(&mut sprite.flip_x, "Flip X");
+                ui.checkbox(&mut sprite.flip_y, "Flip Y");
             });
         }
     }
@@ -633,6 +707,10 @@ impl EditorUI {
                 }
                 if ui.button("Add Child Light").clicked() {
                     *node_to_add_child = Some((node_key, NodeType::Light));
+                    ui.close_menu();
+                }
+                if ui.button("Add Child Sprite").clicked() {
+                    *node_to_add_child = Some((node_key, NodeType::Sprite));
                     ui.close_menu();
                 }
             });

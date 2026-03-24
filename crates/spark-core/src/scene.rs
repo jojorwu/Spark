@@ -1,5 +1,5 @@
 use slotmap::{SlotMap, new_key_type};
-use spark_math::{Mat4, Vec4Swizzles};
+use spark_math::{Mat4, Vec4Swizzles, Vec2};
 use serde::{Serialize, Deserialize};
 
 new_key_type! {
@@ -34,10 +34,28 @@ impl Component for MeshComponent {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+pub struct SpriteComponent {
+    pub texture_handle: Option<crate::resource::Handle<spark_renderer::vulkan::texture::Texture>>,
+    pub color: [f32; 4],
+    pub flip_x: bool,
+    pub flip_y: bool,
+    pub size: Vec2,
+}
+
+#[typetag::serde]
+impl Component for SpriteComponent {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn clone_box(&self) -> Box<dyn Component> { Box::new(self.clone()) }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct CameraComponent {
     pub fov: f32,
     pub near: f32,
     pub far: f32,
+    pub orthographic: bool,
+    pub ortho_size: f32,
 }
 
 #[typetag::serde]
@@ -109,6 +127,7 @@ struct SceneDataCollector {
     renderables: Vec<RenderableData>,
     instanced: std::collections::HashMap<InstancedKey, Vec<Mat4>>,
     lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>,
+    sprites: Vec<(Mat4, Option<TextureHandle>, [f32; 4], Vec2)>,
 }
 
 impl SceneDataCollector {
@@ -117,12 +136,14 @@ impl SceneDataCollector {
             renderables: Vec::new(),
             instanced: std::collections::HashMap::new(),
             lights: Vec::new(),
+            sprites: Vec::new(),
         }
     }
 
     fn merge(&mut self, other: SceneDataCollector) {
         self.renderables.extend(other.renderables);
         self.lights.extend(other.lights);
+        self.sprites.extend(other.sprites);
         for (key, transforms) in other.instanced {
             self.instanced.entry(key).or_default().extend(transforms);
         }
@@ -255,6 +276,9 @@ impl Scene {
                     radius = mesh.bounding_radius;
                     has_bounds = true;
                 } else if component.as_any().is::<LightComponent>() || component.as_any().is::<CameraComponent>() {
+                    has_bounds = true;
+                } else if component.as_any().is::<SpriteComponent>() {
+                    radius = 0.5; // Default for sprites
                     has_bounds = true;
                 }
             }
@@ -410,6 +434,8 @@ impl Scene {
                     }
                 } else if let Some(light) = any.downcast_ref::<LightComponent>() {
                     data.lights.push((node.global_transform, light.light_type, light.color, light.intensity, light.range));
+                } else if let Some(sprite) = any.downcast_ref::<SpriteComponent>() {
+                     data.sprites.push((node.global_transform, sprite.texture_handle, sprite.color, sprite.size));
                 }
             }
 
@@ -461,6 +487,9 @@ impl Scene {
                         radius = mesh.bounding_radius;
                         has_bounds = true;
                     } else if component.as_any().is::<LightComponent>() || component.as_any().is::<CameraComponent>() {
+                        has_bounds = true;
+                    } else if component.as_any().is::<SpriteComponent>() {
+                        radius = 0.5;
                         has_bounds = true;
                     }
                 }

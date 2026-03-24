@@ -14,7 +14,7 @@ use super::{RenderPass, RenderContext};
 
 impl RenderPass for VolumetricPass {
     fn name(&self) -> &str { "VolumetricPass" }
-    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_volumetric }
+    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.settings.enable_volumetric }
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let out_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::GENERAL).image_view(self.output_images[current_frame].view)];
         let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.get_pass_resource_view("", "GBufferDepth", current_frame).unwrap_or(renderer.common_shadow_view)).sampler(renderer.common_sampler)];

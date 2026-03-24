@@ -16,7 +16,7 @@ use super::RenderPass;
 
 impl RenderPass for TAAPass {
     fn name(&self) -> &str { "TAAPass" }
-    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_taa }
+    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.settings.enable_taa }
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let sampler = renderer.common_sampler;
         let prev_idx = (current_frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
