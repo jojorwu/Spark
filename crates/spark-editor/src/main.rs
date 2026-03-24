@@ -120,6 +120,8 @@ fn main() {
         name: "MyTriangle".to_string(),
         local_transform: Mat4::from_translation(Vec3::new(0.0, 0.0, -5.0)),
         global_transform: Mat4::IDENTITY,
+        local_aabb: spark_math::AABB::default(),
+        global_aabb: spark_math::AABB::default(),
         parent: None,
         children: Vec::new(),
         components: vec![Box::new(MeshComponent {
@@ -139,6 +141,8 @@ fn main() {
         name: "MainCamera".to_string(),
         local_transform: Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0)),
         global_transform: Mat4::IDENTITY,
+        local_aabb: spark_math::AABB::default(),
+        global_aabb: spark_math::AABB::default(),
         parent: None,
         children: Vec::new(),
         components: vec![Box::new(CameraComponent { fov: 45.0, near: 0.1, far: 100.0 })],

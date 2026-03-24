@@ -145,6 +145,8 @@ impl EditorUI {
                         name: "New Mesh".to_string(),
                         local_transform: spark_math::Mat4::IDENTITY,
                         global_transform: spark_math::Mat4::IDENTITY,
+                        local_aabb: spark_math::AABB::default(),
+                        global_aabb: spark_math::AABB::default(),
                         parent: None,
                         children: Vec::new(),
                         components: Vec::new(),
@@ -160,6 +162,8 @@ impl EditorUI {
                         name: "New Light".to_string(),
                         local_transform: spark_math::Mat4::IDENTITY,
                         global_transform: spark_math::Mat4::IDENTITY,
+                        local_aabb: spark_math::AABB::default(),
+                        global_aabb: spark_math::AABB::default(),
                         parent: None,
                         children: Vec::new(),
                         components: Vec::new(),
@@ -337,8 +341,24 @@ impl EditorUI {
                     ui.separator();
                     ui.label(format!("FPS: {:.1}", fps));
                     ui.label(format!("Active Objects: {}", renderer.last_object_count));
-                    ui.label("Draw Calls: TODO");
-                    ui.label("GPU Memory: TODO");
+                    ui.label(format!("Transparent Objects: {}", renderer.last_transparent_count));
+
+                    ui.separator();
+                    ui.label("Pass Resource Usage:");
+                    for pass in &renderer.render_graph.passes {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}:", pass.pass.name()));
+                            let access = pass.pass.gpu_resource_access();
+                            if !access.is_empty() {
+                                ui.label(format!("{} resources", access.len()));
+                            } else {
+                                ui.label("None");
+                            }
+                        });
+                    }
+
+                    ui.separator();
+                    ui.label("GPU Memory: Implementation Pending");
                 }
             }
         });
@@ -376,6 +396,8 @@ impl EditorUI {
             name: "New Mesh".to_string(),
             local_transform: spark_math::Mat4::IDENTITY,
             global_transform: spark_math::Mat4::IDENTITY,
+            local_aabb: spark_math::AABB::default(),
+            global_aabb: spark_math::AABB::default(),
             parent: None,
             children: Vec::new(),
             components: Vec::new(),
@@ -397,6 +419,8 @@ impl EditorUI {
             name: "New Light".to_string(),
             local_transform: spark_math::Mat4::IDENTITY,
             global_transform: spark_math::Mat4::IDENTITY,
+            local_aabb: spark_math::AABB::default(),
+            global_aabb: spark_math::AABB::default(),
             parent: None,
             children: Vec::new(),
             components: Vec::new(),

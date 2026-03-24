@@ -22,6 +22,10 @@ impl RenderPass for ShadowPass {
     fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_shadows }
     fn outputs(&self) -> Vec<&'static str> { vec!["ShadowMap"] }
 
+    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![("ShadowMap".to_string(), vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE, vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS)]
+    }
+
     fn record_secondary_commands(&self, ctx: &RenderContext) -> Vec<vk::CommandBuffer> {
         let renderer = ctx.renderer;
         let device = &renderer.device.device;
@@ -233,7 +237,7 @@ impl ShadowPass {
             .scissors(std::slice::from_ref(&scissor));
 
         let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
-            .cull_mode(vk::CullModeFlags::BACK)
+            .cull_mode(vk::CullModeFlags::FRONT) // Optimized for shadows to avoid self-shadowing artifacts
             .front_face(vk::FrontFace::CLOCKWISE)
             .line_width(1.0)
             .depth_bias_enable(true)

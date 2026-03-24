@@ -98,8 +98,8 @@ impl Pipeline {
 
         let mut color_blend_attachments = Vec::new();
         if !is_deferred_lighting {
-            for _ in 0..3 {
-                // Albedo, Normal, PBR
+            for _ in 0..5 {
+                // Albedo, Normal, PBR, Velocity, HDR
                 color_blend_attachments.push(
                     vk::PipelineColorBlendAttachmentState::default()
                         .color_write_mask(vk::ColorComponentFlags::RGBA)
@@ -185,7 +185,7 @@ impl Pipeline {
 
         let mut rendering_info = vk::PipelineRenderingCreateInfo::default();
         let color_formats = if !is_deferred_lighting {
-            vec![vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::R8G8B8A8_UNORM, vk::Format::R16G16_SFLOAT]
+            vec![vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::R8G8B8A8_UNORM, vk::Format::R16G16_SFLOAT, vk::Format::R16G16B16A16_SFLOAT]
         } else {
             vec![vk::Format::R16G16B16A16_SFLOAT]
         };

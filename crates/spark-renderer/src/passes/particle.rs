@@ -26,6 +26,7 @@ pub struct ParticlePass {
 
 impl RenderPass for ParticlePass {
     fn name(&self) -> &str { "ParticlePass" }
+    fn outputs(&self) -> Vec<&'static str> { vec!["ParticleColor"] }
 
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
@@ -42,14 +43,15 @@ impl RenderPass for ParticlePass {
 
             device.cmd_dispatch(ctx.command_buffer, self.particle_count.div_ceil(256), 1, 1);
 
-            let barrier = vk::BufferMemoryBarrier::default()
+            let barrier = vk::BufferMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::VERTEX_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ)
                 .buffer(self.particle_buffer.handle)
-                .size(self.particle_buffer.size)
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED);
-            device.cmd_pipeline_barrier(ctx.command_buffer, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::VERTEX_SHADER, vk::DependencyFlags::empty(), &[], &[barrier], &[]);
+                .size(self.particle_buffer.size);
+            let dep_info = vk::DependencyInfo::default().buffer_memory_barriers(std::slice::from_ref(&barrier));
+            device.cmd_pipeline_barrier2(ctx.command_buffer, &dep_info);
 
             // 2. Rendering
             let color_attachment = vk::RenderingAttachmentInfo::default()

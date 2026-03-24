@@ -35,6 +35,13 @@ pub struct PostProcessPass {
 impl RenderPass for PostProcessPass {
     fn name(&self) -> &str { "PostProcessPass" }
     fn dependencies(&self) -> Vec<&'static str> { vec!["LightingPass", "TAAPass", "VolumetricPass"] }
+    fn outputs(&self) -> Vec<&'static str> { vec!["FinalColor"] }
+
+    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![
+            ("TAAColor".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::FRAGMENT_SHADER),
+        ]
+    }
 
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let device = &renderer.device.device;
@@ -145,7 +152,11 @@ impl RenderPass for PostProcessPass {
                 renderer.device.device.cmd_end_rendering(ctx.command_buffer);
 
                 // Barrier to read from this mip in next stage
-                let barrier = vk::ImageMemoryBarrier::default()
+                let barrier = vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                    .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_READ)
                     .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                     .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .image(mip.image)
@@ -154,10 +165,9 @@ impl RenderPass for PostProcessPass {
                         level_count: 1,
                         layer_count: 1,
                         ..Default::default()
-                    })
-                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ);
-                renderer.device.device.cmd_pipeline_barrier(ctx.command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+                    });
+                let dep_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier));
+                renderer.device.device.cmd_pipeline_barrier2(ctx.command_buffer, &dep_info);
 
                 current_src_view = mip.view;
                 current_src_res = mip.extent;
@@ -207,7 +217,11 @@ impl RenderPass for PostProcessPass {
                 renderer.device.device.cmd_draw(ctx.command_buffer, 3, 1, 0, 0);
                 renderer.device.device.cmd_end_rendering(ctx.command_buffer);
 
-                let barrier = vk::ImageMemoryBarrier::default()
+                let barrier = vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                    .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_READ)
                     .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                     .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .image(dst_mip.image)
@@ -216,17 +230,20 @@ impl RenderPass for PostProcessPass {
                         level_count: 1,
                         layer_count: 1,
                         ..Default::default()
-                    })
-                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ);
-                renderer.device.device.cmd_pipeline_barrier(ctx.command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+                    });
+                let dep_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier));
+                renderer.device.device.cmd_pipeline_barrier2(ctx.command_buffer, &dep_info);
             }
 
             // 3. Final Tonemapping and UI Swapchain Write
             let swapchain_image = renderer.swapchain.images[ctx.image_index as usize];
             let extent = renderer.swapchain.extent;
 
-            let barrier = vk::ImageMemoryBarrier::default()
+            let barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .src_access_mask(vk::AccessFlags2::empty())
+                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
                 .old_layout(vk::ImageLayout::UNDEFINED)
                 .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .image(swapchain_image)
@@ -236,7 +253,8 @@ impl RenderPass for PostProcessPass {
                     layer_count: 1,
                     ..Default::default()
                 });
-            renderer.device.device.cmd_pipeline_barrier(ctx.command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+            let dep_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier));
+            renderer.device.device.cmd_pipeline_barrier2(ctx.command_buffer, &dep_info);
 
             let view = target_view.unwrap_or(renderer.swapchain.views[ctx.image_index as usize]);
             let color_attachment = vk::RenderingAttachmentInfo::default()

@@ -7,6 +7,12 @@ use crate::Renderer;
 impl RenderPass for CullingPass {
     fn name(&self) -> &str { "CullingPass" }
     fn dependencies(&self) -> Vec<&'static str> { vec!["HiZPass"] }
+    fn outputs(&self) -> Vec<&'static str> { vec!["CullingData"] }
+
+    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![("HiZ".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::COMPUTE_SHADER)]
+    }
+
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
         let current_frame = ctx.current_frame;
@@ -40,7 +46,8 @@ impl RenderPass for CullingPass {
             renderer.device.submit_commands(
                 renderer.device.compute_queue,
                 compute_cb,
-                &[],
+                &[renderer.hiz_finished_semaphores[current_frame]],
+                &[vk::PipelineStageFlags::COMPUTE_SHADER],
                 &[renderer.culling_finished_semaphores[current_frame]],
                 vk::Fence::null(),
             );
@@ -143,20 +150,15 @@ impl CullingPass {
             // Reset count buffer
             device.cmd_fill_buffer(command_buffer, count_buffer.handle, 0, 4, 0);
 
-            let barrier = vk::BufferMemoryBarrier::default()
+            let barrier = vk::BufferMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::SHADER_WRITE)
                 .buffer(count_buffer.handle)
-                .size(4)
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE);
-            device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[barrier],
-                &[],
-            );
+                .size(4);
+            let dep_info = vk::DependencyInfo::default().buffer_memory_barriers(std::slice::from_ref(&barrier));
+            device.cmd_pipeline_barrier2(command_buffer, &dep_info);
 
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, self.pipeline);
 
@@ -205,21 +207,16 @@ impl CullingPass {
 
             device.cmd_dispatch(command_buffer, object_count.div_ceil(256), 1, 1);
 
-            // Barrier to ensure compute finish before indirect draw
-            let indirect_barrier = vk::BufferMemoryBarrier::default()
+            // Barrier to ensure compute finish before indirect draw (Synchronization2)
+            let indirect_barrier = vk::BufferMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::DRAW_INDIRECT)
+                .dst_access_mask(vk::AccessFlags2::INDIRECT_COMMAND_READ)
                 .buffer(indirect_buffer.handle)
-                .size(indirect_buffer.size)
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::INDIRECT_COMMAND_READ);
-            device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::DRAW_INDIRECT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[indirect_barrier],
-                &[],
-            );
+                .size(indirect_buffer.size);
+            let dep_info = vk::DependencyInfo::default().buffer_memory_barriers(std::slice::from_ref(&indirect_barrier));
+            device.cmd_pipeline_barrier2(command_buffer, &dep_info);
         }
     }
 

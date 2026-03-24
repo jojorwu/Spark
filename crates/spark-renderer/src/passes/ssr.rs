@@ -17,6 +17,18 @@ impl RenderPass for SSRPass {
     fn inputs(&self) -> Vec<&'static str> { vec!["GBuffer", "HDRColor", "HiZ"] }
     fn outputs(&self) -> Vec<&'static str> { vec!["SSR"] }
 
+    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![
+            ("GBufferAlbedo".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::COMPUTE_SHADER),
+            ("GBufferNormal".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::COMPUTE_SHADER),
+            ("GBufferPBR".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::COMPUTE_SHADER),
+            ("GBufferDepth".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::COMPUTE_SHADER),
+            ("HDRColor".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::COMPUTE_SHADER),
+            ("SSR".to_string(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::COMPUTE_SHADER),
+            ("HiZ".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::COMPUTE_SHADER),
+        ]
+    }
+
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let device = &renderer.device.device;
         let sampler = renderer.common_sampler;
@@ -49,23 +61,39 @@ impl RenderPass for SSRPass {
     }
 
     fn record_commands(&self, ctx: &RenderContext) {
-        let device = &ctx.renderer.device.device;
-        let extent = ctx.renderer.get_extent();
+        let renderer = ctx.renderer;
+        let cf = ctx.current_frame;
+        let extent = renderer.get_extent();
 
+        // Use Async Compute for SSR
+        let compute_cb = renderer.device.create_command_buffer(renderer.device.compute_command_pool, vk::CommandBufferLevel::PRIMARY);
         unsafe {
-            device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-            device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[ctx.renderer.frames[ctx.current_frame].global_descriptor_set, self.descriptor_sets[ctx.current_frame]], &[]);
+            renderer.device.device.begin_command_buffer(compute_cb, &vk::CommandBufferBeginInfo::default()).unwrap();
+
+            renderer.device.device.cmd_bind_pipeline(compute_cb, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            renderer.device.device.cmd_bind_descriptor_sets(compute_cb, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[renderer.frames[cf].global_descriptor_set, self.descriptor_sets[cf]], &[]);
 
             let pc = [extent.width, extent.height, 20.0f32.to_bits(), 0.5f32.to_bits(), 0.1f32.to_bits(), 64u32];
             let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 24);
-            device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::COMPUTE, 0, pc_bytes);
+            renderer.device.device.cmd_push_constants(compute_cb, self.layout, vk::ShaderStageFlags::COMPUTE, 0, pc_bytes);
 
-            device.cmd_dispatch(ctx.command_buffer, (extent.width + 15) / 16, (extent.height + 15) / 16, 1);
+            renderer.device.device.cmd_dispatch(compute_cb, (extent.width + 15) / 16, (extent.height + 15) / 16, 1);
+
+            renderer.device.device.end_command_buffer(compute_cb).unwrap();
         }
+
+        renderer.device.submit_commands(
+            renderer.device.compute_queue,
+            compute_cb,
+            &[],
+            &[],
+            &[renderer.ssr_finished_semaphores[cf]],
+            vk::Fence::null(),
+        );
     }
 
     fn get_resource_view(&self, name: &str, frame_index: usize) -> Option<vk::ImageView> {
-        if name == "output" { Some(self.output_images[frame_index].view) } else { None }
+        if name == "output" || name == "SSR" { Some(self.output_images[frame_index].view) } else { None }
     }
 
     fn on_resize(&mut self, renderer: &mut Renderer, new_extent: vk::Extent2D) {

@@ -48,6 +48,16 @@ use super::{RenderPass, RenderContext};
 impl RenderPass for SSAOPass {
     fn name(&self) -> &str { "SSAOPass" }
     fn dependencies(&self) -> Vec<&'static str> { vec!["GBufferPass"] }
+    fn outputs(&self) -> Vec<&'static str> { vec!["ssao"] }
+
+    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![
+            ("GBufferNormal".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::FRAGMENT_SHADER),
+            ("GBufferDepth".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::FRAGMENT_SHADER),
+            ("ssao".to_string(), vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::FRAGMENT_SHADER),
+        ]
+    }
+
     fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_ssao }
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let extent = renderer.get_extent();
@@ -379,12 +389,17 @@ impl SSAOPass {
         let device = &renderer.device.device;
         unsafe {
             // 1. SSAO Pass
-            let ssao_barrier = vk::ImageMemoryBarrier::default()
+            let ssao_barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                .src_access_mask(vk::AccessFlags2::empty())
+                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
                 .old_layout(vk::ImageLayout::UNDEFINED)
                 .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .image(ssao_target_image)
                 .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::DependencyFlags::empty(), &[], &[], &[ssao_barrier]);
+            let dep_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&ssao_barrier));
+            device.cmd_pipeline_barrier2(command_buffer, &dep_info);
 
             let color_attachment = vk::RenderingAttachmentInfo::default()
                 .image_view(ssao_target_view)
@@ -405,17 +420,27 @@ impl SSAOPass {
             device.cmd_end_rendering(command_buffer);
 
             // 2. Blur Pass
-            let ssao_to_shader_barrier = vk::ImageMemoryBarrier::default()
+            let ssao_to_shader_barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ)
                 .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image(ssao_target_image)
                 .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-            let blur_init_barrier = vk::ImageMemoryBarrier::default()
+            let blur_init_barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                .src_access_mask(vk::AccessFlags2::empty())
+                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
                 .old_layout(vk::ImageLayout::UNDEFINED)
                 .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .image(blur_target_image)
                 .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::DependencyFlags::empty(), &[], &[], &[ssao_to_shader_barrier, blur_init_barrier]);
+            let barriers = [ssao_to_shader_barrier, blur_init_barrier];
+            let blur_dep_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+            device.cmd_pipeline_barrier2(command_buffer, &blur_dep_info);
 
             let blur_attachment = vk::RenderingAttachmentInfo::default()
                 .image_view(blur_target_view)
@@ -435,12 +460,17 @@ impl SSAOPass {
             device.cmd_draw(command_buffer, 3, 1, 0, 0);
             device.cmd_end_rendering(command_buffer);
 
-            let blur_to_shader_barrier = vk::ImageMemoryBarrier::default()
+            let blur_to_shader_barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ)
                 .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image(blur_target_image)
                 .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &[blur_to_shader_barrier]);
+            let final_dep_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&blur_to_shader_barrier));
+            device.cmd_pipeline_barrier2(command_buffer, &final_dep_info);
         }
     }
 

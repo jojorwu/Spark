@@ -293,11 +293,40 @@ impl VulkanDevice {
     ) {
         let cb = self.begin_single_time_commands();
 
-        let mut barrier = vk::ImageMemoryBarrier::default()
+        let (src_stage, dst_stage) = match (old_layout, new_layout) {
+            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::PipelineStageFlags2::TRANSFER,
+            ),
+            (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            ),
+            _ => (
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+            ),
+        };
+
+        let src_access = match old_layout {
+            vk::ImageLayout::UNDEFINED => vk::AccessFlags2::empty(),
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags2::TRANSFER_WRITE,
+            _ => vk::AccessFlags2::empty(),
+        };
+
+        let dst_access = match new_layout {
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags2::TRANSFER_WRITE,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::AccessFlags2::SHADER_READ,
+            _ => vk::AccessFlags2::empty(),
+        };
+
+        let barrier = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(src_stage)
+            .src_access_mask(src_access)
+            .dst_stage_mask(dst_stage)
+            .dst_access_mask(dst_access)
             .old_layout(old_layout)
             .new_layout(new_layout)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .image(image)
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -307,43 +336,10 @@ impl VulkanDevice {
                 layer_count: 1,
             });
 
-        let (src_stage, dst_stage) = match (old_layout, new_layout) {
-            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::TRANSFER,
-            ),
-            (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-            ),
-            _ => (
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-            ),
-        };
-
-        barrier.src_access_mask = match old_layout {
-            vk::ImageLayout::UNDEFINED => vk::AccessFlags::empty(),
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
-            _ => vk::AccessFlags::empty(),
-        };
-
-        barrier.dst_access_mask = match new_layout {
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::AccessFlags::SHADER_READ,
-            _ => vk::AccessFlags::empty(),
-        };
+        let dependency_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier));
 
         unsafe {
-            self.device.cmd_pipeline_barrier(
-                cb,
-                src_stage,
-                dst_stage,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier],
-            );
+            self.device.cmd_pipeline_barrier2(cb, &dependency_info);
         }
 
         self.end_single_time_commands(cb);
@@ -372,11 +368,20 @@ impl VulkanDevice {
         unsafe { self.device.allocate_command_buffers(&alloc_info).unwrap()[0] }
     }
 
-    pub fn submit_commands(&self, queue: vk::Queue, cb: vk::CommandBuffer, wait_semaphores: &[vk::Semaphore], signal_semaphores: &[vk::Semaphore], fence: vk::Fence) {
+    pub fn submit_commands(
+        &self,
+        queue: vk::Queue,
+        cb: vk::CommandBuffer,
+        wait_semaphores: &[vk::Semaphore],
+        wait_stages: &[vk::PipelineStageFlags],
+        signal_semaphores: &[vk::Semaphore],
+        fence: vk::Fence
+    ) {
         let cbs = [cb];
         let submit_info = vk::SubmitInfo::default()
             .command_buffers(&cbs)
             .wait_semaphores(wait_semaphores)
+            .wait_dst_stage_mask(wait_stages)
             .signal_semaphores(signal_semaphores);
 
         unsafe {

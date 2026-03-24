@@ -21,6 +21,14 @@ use crate::Renderer;
 
 impl RenderPass for HiZPass {
     fn name(&self) -> &str { "HiZPass" }
+    fn outputs(&self) -> Vec<&'static str> { vec!["HiZ"] }
+
+    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![
+            ("GBufferDepth".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::COMPUTE_SHADER),
+            ("HiZ".to_string(), vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::COMPUTE_SHADER),
+        ]
+    }
 
     fn needs_descriptor_update(&self, renderer: &Renderer, frame_index: usize) -> bool {
         let prev_frame = (frame_index + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT;
@@ -44,16 +52,32 @@ impl RenderPass for HiZPass {
     }
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
-        let command_buffer = ctx.command_buffer;
         let current_frame = ctx.current_frame;
 
-        let prev_frame = (current_frame + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT;
-        self.record_commands_impl(
-            renderer,
-            command_buffer,
-            renderer.get_pass_resource_view("", "GBufferDepth", prev_frame).unwrap_or(renderer.common_shadow_view),
-            renderer.common_sampler,
-            current_frame,
+        // Use Async Compute for HiZ
+        let compute_cb = renderer.device.create_command_buffer(renderer.device.compute_command_pool, vk::CommandBufferLevel::PRIMARY);
+        unsafe {
+            renderer.device.device.begin_command_buffer(compute_cb, &vk::CommandBufferBeginInfo::default()).unwrap();
+
+            let prev_frame = (current_frame + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT;
+            self.record_commands_impl(
+                renderer,
+                compute_cb,
+                renderer.get_pass_resource_view("", "GBufferDepth", prev_frame).unwrap_or(renderer.common_shadow_view),
+                renderer.common_sampler,
+                current_frame,
+            );
+
+            renderer.device.device.end_command_buffer(compute_cb).unwrap();
+        }
+
+        renderer.device.submit_commands(
+            renderer.device.compute_queue,
+            compute_cb,
+            &[],
+            &[],
+            &[renderer.hiz_finished_semaphores[current_frame]],
+            vk::Fence::null(),
         );
     }
 
@@ -329,26 +353,23 @@ impl HiZPass {
 
                 device.cmd_dispatch(command_buffer, w.div_ceil(16), h.div_ceil(16), 1);
 
-                let barrier = vk::ImageMemoryBarrier::default()
-                    .image(self.pyramid_image)
+                let barrier = vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_READ)
                     .old_layout(vk::ImageLayout::GENERAL)
                     .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(self.pyramid_image)
                     .subresource_range(vk::ImageSubresourceRange {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
                         base_mip_level: i + 1,
                         level_count: 1,
                         ..Default::default()
-                    })
-                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ);
+                    });
 
-                device.cmd_pipeline_barrier(
-                    command_buffer,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[], &[], &[barrier],
-                );
+                let dep_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier));
+                device.cmd_pipeline_barrier2(command_buffer, &dep_info);
             }
         }
     }

@@ -399,6 +399,8 @@ impl GltfLoader {
             name: node.name().unwrap_or("Unnamed Node").to_string(),
             local_transform,
             global_transform: Mat4::IDENTITY,
+            local_aabb: spark_math::AABB::default(),
+            global_aabb: spark_math::AABB::default(),
             parent: None,
             children: Vec::new(),
             components,

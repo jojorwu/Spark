@@ -16,6 +16,7 @@ use super::RenderPass;
 
 impl RenderPass for TAAPass {
     fn name(&self) -> &str { "TAAPass" }
+    fn outputs(&self) -> Vec<&'static str> { vec!["TAAColor"] }
     fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_taa }
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let sampler = renderer.common_sampler;
@@ -194,12 +195,17 @@ impl TAAPass {
         current_frame: usize,
     ) {
         unsafe {
-            let history_barrier = vk::ImageMemoryBarrier::default()
+            let history_barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                .src_access_mask(vk::AccessFlags2::empty())
+                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
                 .old_layout(vk::ImageLayout::UNDEFINED)
                 .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .image(self.history_images[current_frame].image)
                 .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::DependencyFlags::empty(), &[], &[], &[history_barrier]);
+            let dep_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&history_barrier));
+            device.cmd_pipeline_barrier2(command_buffer, &dep_info);
 
             let color_attachment = vk::RenderingAttachmentInfo::default()
                 .image_view(self.history_images[current_frame].view)
@@ -219,12 +225,17 @@ impl TAAPass {
             device.cmd_draw(command_buffer, 3, 1, 0, 0);
             device.cmd_end_rendering(command_buffer);
 
-            let to_shader_barrier = vk::ImageMemoryBarrier::default()
+            let to_shader_barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ)
                 .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image(self.history_images[current_frame].image)
                 .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &[to_shader_barrier]);
+            let final_dep_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&to_shader_barrier));
+            device.cmd_pipeline_barrier2(command_buffer, &final_dep_info);
         }
     }
 

@@ -7,6 +7,7 @@ use super::{RenderPass, RenderContext};
 
 impl RenderPass for ClusteredPass {
     fn name(&self) -> &str { "ClusteredPass" }
+    fn outputs(&self) -> Vec<&'static str> { vec!["ClusteredData"] }
     fn prepare(&self, renderer: &Renderer, _current_frame: usize) {
         if let Some(ref lb) = renderer.frames[renderer.current_frame].light_buffer {
             self.update_descriptor_sets(&renderer.device.device, lb);
@@ -268,12 +269,15 @@ impl ClusteredPass {
             // Reset counter
             device.cmd_fill_buffer(command_buffer, self.index_counter.handle, 0, 4, 0);
 
-            let barrier = vk::BufferMemoryBarrier::default()
+            let barrier = vk::BufferMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::SHADER_WRITE)
                 .buffer(self.index_counter.handle)
-                .size(4)
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE);
-            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[barrier], &[]);
+                .size(4);
+            let dep_info = vk::DependencyInfo::default().buffer_memory_barriers(std::slice::from_ref(&barrier));
+            device.cmd_pipeline_barrier2(command_buffer, &dep_info);
 
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, self.cull_pipeline);
             device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[self.descriptor_set], &[]);

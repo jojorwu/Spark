@@ -113,7 +113,8 @@ impl RenderGraph {
         for &idx in &self.sorted_passes {
             let pass_node = &self.passes[idx];
 
-            // Automated Barrier Injection
+            // Automated Barrier Injection (Batched Synchronization2)
+            let mut barriers: Vec<vk::ImageMemoryBarrier2<'static>> = Vec::new();
             for (res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_access() {
                 if let Some(attachments) = self.physical_attachments.get(&res_name) {
                     let attachment = &attachments[ctx.current_frame];
@@ -123,7 +124,7 @@ impl RenderGraph {
                         vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
                     } else if dst_access.contains(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE) {
                         vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
-                    } else if dst_access.contains(vk::AccessFlags::SHADER_READ) {
+                    } else if dst_access.contains(vk::AccessFlags::SHADER_READ) || dst_access.contains(vk::AccessFlags::INPUT_ATTACHMENT_READ) {
                         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
                     } else if dst_access.contains(vk::AccessFlags::TRANSFER_READ) {
                         vk::ImageLayout::TRANSFER_SRC_OPTIMAL
@@ -133,18 +134,22 @@ impl RenderGraph {
                         vk::ImageLayout::GENERAL
                     };
 
-                    renderer.resource_tracker.transition_image(
-                        ctx.command_buffer,
-                        &renderer.device.device,
+                    if let Some(barrier) = renderer.resource_tracker.get_image_barrier(
                         attachment.image,
                         new_layout,
-                        vk::AccessFlags::empty(),
                         dst_access,
-                        vk::PipelineStageFlags::ALL_COMMANDS,
                         dst_stage,
                         aspect,
-                    );
+                    ) {
+                        barriers.push(barrier);
+                    }
                 }
+            }
+
+            if !barriers.is_empty() {
+                let dependency_info = vk::DependencyInfo::default()
+                    .image_memory_barriers(&barriers);
+                unsafe { renderer.device.device.cmd_pipeline_barrier2(ctx.command_buffer, &dependency_info); }
             }
 
             if !secondary_commands[idx].is_empty() {

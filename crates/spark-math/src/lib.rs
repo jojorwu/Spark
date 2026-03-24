@@ -40,6 +40,64 @@ impl Frustum {
         }
         true
     }
+
+    pub fn intersects_aabb(&self, aabb: &AABB) -> bool {
+        for plane in &self.planes {
+            let mut p = aabb.min;
+            if plane.x >= 0.0 { p.x = aabb.max.x; }
+            if plane.y >= 0.0 { p.y = aabb.max.y; }
+            if plane.z >= 0.0 { p.z = aabb.max.z; }
+
+            let xyz = Vec3::new(plane.x, plane.y, plane.z);
+            if xyz.dot(p) + plane.w < 0.0 {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AABB {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+impl AABB {
+    pub fn new(min: Vec3, max: Vec3) -> Self {
+        Self { min, max }
+    }
+
+    pub fn from_points(points: &[Vec3]) -> Self {
+        let mut min = Vec3::splat(f32::MAX);
+        let mut max = Vec3::splat(f32::MIN);
+        for &p in points {
+            min = min.min(p);
+            max = max.max(p);
+        }
+        Self { min, max }
+    }
+
+    pub fn transform(&self, m: Mat4) -> Self {
+        let corners = [
+            m.transform_point3(Vec3::new(self.min.x, self.min.y, self.min.z)),
+            m.transform_point3(Vec3::new(self.max.x, self.min.y, self.min.z)),
+            m.transform_point3(Vec3::new(self.min.x, self.max.y, self.min.z)),
+            m.transform_point3(Vec3::new(self.max.x, self.max.y, self.min.z)),
+            m.transform_point3(Vec3::new(self.min.x, self.min.y, self.max.z)),
+            m.transform_point3(Vec3::new(self.max.x, self.min.y, self.max.z)),
+            m.transform_point3(Vec3::new(self.min.x, self.max.y, self.max.z)),
+            m.transform_point3(Vec3::new(self.max.x, self.max.y, self.max.z)),
+        ];
+        Self::from_points(&corners)
+    }
+
+    pub fn merge(&self, other: &AABB) -> Self {
+        Self {
+            min: self.min.min(other.min),
+            max: self.max.max(other.max),
+        }
+    }
 }
 
 pub struct Ray {

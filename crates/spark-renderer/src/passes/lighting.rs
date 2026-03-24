@@ -10,6 +10,7 @@ pub struct LightingDescriptorParams<'a> {
     pub irradiance_view: vk::ImageView,
     pub specular_view: vk::ImageView,
     pub brdf_lut_view: vk::ImageView,
+    pub ssr_view: vk::ImageView,
 }
 
 pub struct LightingPipelineParams<'a> {
@@ -92,6 +93,11 @@ impl LightingPass {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(11)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
 
         let ds_layout = unsafe {
@@ -161,6 +167,7 @@ impl LightingPass {
         let irradiance_view = params.irradiance_view;
         let specular_view = params.specular_view;
         let brdf_lut_view = params.brdf_lut_view;
+        let ssr_view = params.ssr_view;
         let device = &renderer.device.device;
         let shadow_view = renderer.common_shadow_view;
         let shadow_sampler = renderer.common_sampler;
@@ -292,6 +299,18 @@ impl LightingPass {
                 .image_info(&brdf_info),
         );
 
+        let ssr_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(ssr_view)
+            .sampler(shadow_sampler)];
+        writes.push(
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[i])
+                .dst_binding(11)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&ssr_info),
+        );
+
         unsafe {
             device.update_descriptor_sets(&writes, &[]);
         }
@@ -300,7 +319,18 @@ impl LightingPass {
 
 impl RenderPass for LightingPass {
     fn name(&self) -> &str { "LightingPass" }
-    fn dependencies(&self) -> Vec<&'static str> { vec!["GBufferPass", "SSAOPass", "ShadowPass", "ClusteredPass"] }
+    fn dependencies(&self) -> Vec<&'static str> { vec!["GBufferPass", "SSAOPass", "ShadowPass", "ClusteredPass", "SSRPass"] }
+    fn outputs(&self) -> Vec<&'static str> { vec!["HDRColor"] }
+
+    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![
+            ("GBufferAlbedo".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::FRAGMENT_SHADER),
+            ("GBufferNormal".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::FRAGMENT_SHADER),
+            ("GBufferPBR".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::FRAGMENT_SHADER),
+            ("GBufferDepth".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::FRAGMENT_SHADER),
+            ("GBufferHDR".to_string(), vk::AccessFlags::COLOR_ATTACHMENT_WRITE, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT),
+        ]
+    }
 
     fn update_descriptor_sets(&self, renderer: &Renderer) {
         let light_buffers: Vec<Buffer> = renderer.frames.iter().filter_map(|f| f.light_buffer.clone()).collect();
@@ -312,6 +342,7 @@ impl RenderPass for LightingPass {
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let ssao_view = renderer.get_pass_resource_view("SSAOPass", "ssao", i).unwrap_or(renderer.common_shadow_view);
+            let ssr_view = renderer.get_pass_resource_view("SSRPass", "SSR", i).unwrap_or(renderer.common_shadow_view);
 
             let params = LightingDescriptorParams {
                 light_buffers: &light_buffers,
@@ -320,6 +351,7 @@ impl RenderPass for LightingPass {
                 irradiance_view: irr_view,
                 specular_view: spec_view,
                 brdf_lut_view: brdf_view,
+                ssr_view,
             };
             self.update_descriptor_set_for_frame(
                 renderer,
@@ -366,9 +398,8 @@ impl RenderPass for LightingPass {
                 let color_attachment = vk::RenderingAttachmentInfo::default()
                     .image_view(renderer.get_pass_resource_view("", "GBufferHDR", current_frame).unwrap_or(renderer.common_shadow_view))
                     .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::STORE)
-                    .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.1, 0.1, 0.1, 1.0] } });
+                    .load_op(vk::AttachmentLoadOp::LOAD) // Lighting usually clears GBufferHDR if it was UNDEFINED, but here we expect GBufferPass might have touched it
+                    .store_op(vk::AttachmentStoreOp::STORE);
 
                 let rendering_info = vk::RenderingInfo::default()
                     .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })

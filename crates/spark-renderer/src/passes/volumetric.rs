@@ -14,6 +14,7 @@ use super::{RenderPass, RenderContext};
 
 impl RenderPass for VolumetricPass {
     fn name(&self) -> &str { "VolumetricPass" }
+    fn outputs(&self) -> Vec<&'static str> { vec!["VolumetricColor"] }
     fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_volumetric }
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let out_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::GENERAL).image_view(self.output_images[current_frame].view)];
@@ -136,27 +137,33 @@ impl VolumetricPass {
 
     pub fn record_commands_impl(&self, device: &ash::Device, cb: vk::CommandBuffer, current_frame: usize, global_ds: vk::DescriptorSet, extent: vk::Extent2D) {
         unsafe {
-            let barrier = vk::ImageMemoryBarrier::default()
-                .image(self.output_images[current_frame].image)
+            let barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                .src_access_mask(vk::AccessFlags2::empty())
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
                 .old_layout(vk::ImageLayout::UNDEFINED)
                 .new_layout(vk::ImageLayout::GENERAL)
-                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 })
-                .src_access_mask(vk::AccessFlags::empty())
-                .dst_access_mask(vk::AccessFlags::SHADER_WRITE);
-            device.cmd_pipeline_barrier(cb, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+                .image(self.output_images[current_frame].image)
+                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
+            let dep_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier));
+            device.cmd_pipeline_barrier2(cb, &dep_info);
 
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.pipeline);
             device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[global_ds, self.descriptor_sets[current_frame]], &[]);
             device.cmd_dispatch(cb, (extent.width / 2).div_ceil(8), (extent.height / 2).div_ceil(8), 1);
 
-            let barrier_read = vk::ImageMemoryBarrier::default()
-                .image(self.output_images[current_frame].image)
+            let barrier_read = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ)
                 .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 })
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ);
-            device.cmd_pipeline_barrier(cb, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &[barrier_read]);
+                .image(self.output_images[current_frame].image)
+                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
+            let final_dep_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier_read));
+            device.cmd_pipeline_barrier2(cb, &final_dep_info);
         }
     }
 

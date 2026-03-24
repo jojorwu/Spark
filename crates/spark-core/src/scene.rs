@@ -74,6 +74,10 @@ pub struct Node {
     pub local_transform: Mat4,
     #[serde(skip)]
     pub global_transform: Mat4,
+    #[serde(skip)]
+    pub local_aabb: spark_math::AABB,
+    #[serde(skip)]
+    pub global_aabb: spark_math::AABB,
     pub parent: Option<NodeKey>,
     pub children: Vec<NodeKey>,
     pub components: Vec<Box<dyn Component>>,
@@ -85,6 +89,8 @@ impl Clone for Node {
             name: self.name.clone(),
             local_transform: self.local_transform,
             global_transform: self.global_transform,
+            local_aabb: self.local_aabb,
+            global_aabb: self.global_aabb,
             parent: self.parent,
             children: self.children.clone(),
             components: self.components.iter().map(|c| c.clone_box()).collect(),
@@ -136,6 +142,8 @@ impl Scene {
             name: "Root".to_string(),
             local_transform: Mat4::IDENTITY,
             global_transform: Mat4::IDENTITY,
+            local_aabb: spark_math::AABB::default(),
+            global_aabb: spark_math::AABB::default(),
             parent: None,
             children: Vec::new(),
             components: Vec::new(),
@@ -198,12 +206,10 @@ impl Scene {
             current_level = next_level;
         }
 
-        for level in levels {
+        // Top-down: Updates global transforms
+        for level in &levels {
             use rayon::prelude::*;
-            level.into_par_iter().for_each(|key| {
-                // Safety: We process level by level. All parents for the current level
-                // have already been updated in the previous level. Nodes within the same level
-                // do not depend on each other's global_transform.
+            level.par_iter().for_each(|&key| {
                 unsafe {
                     let scene_ptr = self as *const Scene as *mut Scene;
                     let scene = &mut *scene_ptr;
@@ -216,16 +222,71 @@ impl Scene {
 
                     if let Some(node) = scene.nodes.get_mut(key) {
                         node.global_transform = parent_global * node.local_transform;
-                        let current_global = node.global_transform;
+                    }
+                }
+            });
+        }
 
-                        for component in &node.components {
-                            if component.as_any().is::<CameraComponent>() {
-                                scene.last_view_matrix = current_global.inverse();
+        // Bottom-up: Updates bounding volumes
+        for level in levels.iter().rev() {
+            for &key in level {
+                let mut node_aabb = spark_math::AABB::default();
+                let mut first = true;
+
+                // Use a different approach for NodeKey to avoid borrowing the whole self.nodes
+                let (global_transform, children) = if let Some(node) = self.nodes.get(key) {
+                    (node.global_transform, node.children.clone())
+                } else {
+                    continue;
+                };
+
+                // Merge children AABBs
+                for child_key in children {
+                    if let Some(child) = self.nodes.get(child_key) {
+                        if first {
+                            node_aabb = child.global_aabb;
+                            first = false;
+                        } else {
+                            node_aabb = node_aabb.merge(&child.global_aabb);
+                        }
+                    }
+                }
+
+                // Merge components AABBs
+                if let Some(node) = self.nodes.get(key) {
+                    for component in &node.components {
+                        if let Some(mesh) = component.as_any().downcast_ref::<MeshComponent>() {
+                            let radius = mesh.bounding_radius;
+                            let mesh_aabb = spark_math::AABB::new(
+                                spark_math::Vec3::splat(-radius),
+                                spark_math::Vec3::splat(radius)
+                            ).transform(global_transform);
+
+                            if first {
+                                node_aabb = mesh_aabb;
+                                first = false;
+                            } else {
+                                node_aabb = node_aabb.merge(&mesh_aabb);
                             }
                         }
                     }
                 }
-            });
+
+                if let Some(node) = self.nodes.get_mut(key) {
+                    node.global_aabb = node_aabb;
+                }
+            }
+        }
+
+        // Sequential pass to update last_view_matrix safely
+        for &key in levels.iter().flatten() {
+            if let Some(node) = self.nodes.get(key) {
+                for component in &node.components {
+                    if component.as_any().is::<CameraComponent>() {
+                        self.last_view_matrix = node.global_transform.inverse();
+                    }
+                }
+            }
         }
     }
 
@@ -383,6 +444,13 @@ impl Scene {
     ) -> SceneDataCollector {
         let mut data = SceneDataCollector::new();
         if let Some(node) = self.nodes.get(node_key) {
+            // Hierarchical Frustum Culling
+            if let Some(f) = frustum {
+                if !f.intersects_aabb(&node.global_aabb) {
+                    return data;
+                }
+            }
+
             for component in &node.components {
                 let any = component.as_any();
                 if let Some(mesh) = any.downcast_ref::<MeshComponent>() {

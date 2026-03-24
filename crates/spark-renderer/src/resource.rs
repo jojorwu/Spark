@@ -168,21 +168,17 @@ impl ResourceTracker {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn transition_image(
+    pub fn get_image_barrier(
         &self,
-        cb: vk::CommandBuffer,
-        device: &ash::Device,
         image: vk::Image,
         new_layout: vk::ImageLayout,
-        _src_access: vk::AccessFlags,
         dst_access: vk::AccessFlags,
-        _src_stage: vk::PipelineStageFlags,
         dst_stage: vk::PipelineStageFlags,
         aspect_mask: vk::ImageAspectFlags,
-    ) {
+    ) -> Option<vk::ImageMemoryBarrier2<'static>> {
         let mut layouts = self.image_layouts.lock().unwrap();
         let old_layout = *layouts.get(&image).unwrap_or(&vk::ImageLayout::UNDEFINED);
-        if old_layout == new_layout { return; }
+        if old_layout == new_layout { return None; }
 
         let barrier = vk::ImageMemoryBarrier2::default()
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
@@ -200,13 +196,31 @@ impl ResourceTracker {
                 layer_count: 1,
             });
 
-        let dependency_info = vk::DependencyInfo::default()
-            .image_memory_barriers(std::slice::from_ref(&barrier));
-
-        unsafe {
-            device.cmd_pipeline_barrier2(cb, &dependency_info);
-        }
         layouts.insert(image, new_layout);
+        Some(barrier)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn transition_image(
+        &self,
+        cb: vk::CommandBuffer,
+        device: &ash::Device,
+        image: vk::Image,
+        new_layout: vk::ImageLayout,
+        _src_access: vk::AccessFlags,
+        dst_access: vk::AccessFlags,
+        _src_stage: vk::PipelineStageFlags,
+        dst_stage: vk::PipelineStageFlags,
+        aspect_mask: vk::ImageAspectFlags,
+    ) {
+        if let Some(barrier) = self.get_image_barrier(image, new_layout, dst_access, dst_stage, aspect_mask) {
+            let dependency_info = vk::DependencyInfo::default()
+                .image_memory_barriers(std::slice::from_ref(&barrier));
+
+            unsafe {
+                device.cmd_pipeline_barrier2(cb, &dependency_info);
+            }
+        }
     }
 }
 

@@ -75,6 +75,8 @@ pub struct Renderer {
     pub pass_descriptor_versions: Vec<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
     pub dummy_buffer: Buffer,
     pub culling_finished_semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
+    pub hiz_finished_semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
+    pub ssr_finished_semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
 }
 
 #[repr(C)]
@@ -316,10 +318,18 @@ impl Renderer {
             pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).collect(),
             dummy_buffer,
             culling_finished_semaphores: [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT],
+            hiz_finished_semaphores: [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT],
+            ssr_finished_semaphores: [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT],
         };
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             renderer.culling_finished_semaphores[i] = unsafe {
+                renderer.device.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?
+            };
+            renderer.hiz_finished_semaphores[i] = unsafe {
+                renderer.device.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?
+            };
+            renderer.ssr_finished_semaphores[i] = unsafe {
                 renderer.device.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?
             };
         }
@@ -427,8 +437,7 @@ impl Renderer {
             let pass_name = self.render_graph.passes[idx].pass.name().to_string();
             self.render_graph.passes[idx].pass.update_descriptor_sets(self);
 
-            // Note: This logic assumes that if update_descriptor_sets is called,
-            // the pass is now up-to-date with whatever resource it tracked in needs_descriptor_update.
+            // Note: Use a simple version increment to signal completion
             self.pass_descriptor_versions[current_frame].lock().unwrap().insert(pass_name, 1);
         }
     }
@@ -781,8 +790,16 @@ impl Renderer {
             );
             let s_finished = [render_finished];
             let c_buffers = [command_buffer];
-            let s_wait = [image_available, self.culling_finished_semaphores[self.current_frame]];
-            let w_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::DRAW_INDIRECT];
+            let s_wait = [
+                image_available,
+                self.culling_finished_semaphores[self.current_frame],
+                self.ssr_finished_semaphores[self.current_frame],
+            ];
+            let w_stages = [
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::DRAW_INDIRECT,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+            ];
 
             let submit_info = vk::SubmitInfo::default()
                 .wait_semaphores(&s_wait)
@@ -1258,12 +1275,18 @@ impl Renderer {
     fn calculate_frustum_planes(view_proj: spark_math::Mat4) -> [spark_math::Vec4; 6] {
         let mut frustum = [spark_math::Vec4::ZERO; 6];
         let m = view_proj.transpose();
-        frustum[0] = m.w_axis + m.x_axis;
-        frustum[1] = m.w_axis - m.x_axis;
-        frustum[2] = m.w_axis + m.y_axis;
-        frustum[3] = m.w_axis - m.y_axis;
-        frustum[4] = m.w_axis + m.z_axis;
-        frustum[5] = m.w_axis - m.z_axis;
+        // Left
+        frustum[0] = m.row(3) + m.row(0);
+        // Right
+        frustum[1] = m.row(3) - m.row(0);
+        // Bottom
+        frustum[2] = m.row(3) + m.row(1);
+        // Top
+        frustum[3] = m.row(3) - m.row(1);
+        // Near
+        frustum[4] = m.row(3) + m.row(2);
+        // Far
+        frustum[5] = m.row(3) - m.row(2);
 
         for plane in &mut frustum {
             let len = spark_math::Vec3::new(plane.x, plane.y, plane.z).length();
@@ -1367,7 +1390,18 @@ impl Renderer {
         let view_proj = projection * packet.view_matrix;
         self.current_view_proj = view_proj;
 
-        let cascade_splits = [10.0, 25.0, 50.0, 100.0];
+        let near = 0.1f32;
+        let far = 100.0f32;
+        let ratio = far / near;
+        let mut cascade_splits = [0.0f32; 4];
+        let lambda = 0.95f32; // blend between linear and logarithmic
+
+        for i in 0..4 {
+            let p = (i + 1) as f32 / 4.0;
+            let log = near * ratio.powf(p);
+            let uniform = near + (far - near) * p;
+            cascade_splits[i] = lambda * log + (1.0 - lambda) * uniform;
+        }
         let mut light_view_projs = [spark_math::Mat4::IDENTITY; 4];
 
         let light_dir = spark_math::Vec3::new(0.5, -1.0, 0.5).normalize();
@@ -1691,6 +1725,12 @@ impl Drop for Renderer {
             }
 
             for sem in self.culling_finished_semaphores {
+                self.device.device.destroy_semaphore(sem, None);
+            }
+            for sem in self.hiz_finished_semaphores {
+                self.device.device.destroy_semaphore(sem, None);
+            }
+            for sem in self.ssr_finished_semaphores {
                 self.device.device.destroy_semaphore(sem, None);
             }
 

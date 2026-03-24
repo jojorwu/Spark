@@ -30,6 +30,7 @@ layout (set = 1, binding = 7) uniform sampler2D ssaoTex;
 layout (set = 1, binding = 8) uniform samplerCube irradianceMap;
 layout (set = 1, binding = 9) uniform samplerCube specularMap;
 layout (set = 1, binding = 10) uniform sampler2D brdfLUT;
+layout (set = 1, binding = 11) uniform sampler2D ssrTex;
 
 struct Light {
     vec4 pos;
@@ -154,9 +155,11 @@ float calculateShadow(vec3 worldPos, float linearDepth, vec3 N) {
     if (blockers < 1.0) return 1.0;
     avgBlockerDepth /= blockers;
 
-    // Penumbra Size Estimation
-    float penumbraSize = (shadowCoord.z - avgBlockerDepth) * 10.0 / avgBlockerDepth;
-    float filterRadius = clamp(penumbraSize * texelSize.x * 20.0, texelSize.x, 10.0 * texelSize.x);
+    // Penumbra Size Estimation (Contact Hardening)
+    // The penumbra size increases as the distance from the blocker increases.
+    float lightSize = 0.05; // Virtual light source size for PCSS
+    float penumbraSize = (shadowCoord.z - avgBlockerDepth) * lightSize / avgBlockerDepth;
+    float filterRadius = clamp(penumbraSize * 20.0, texelSize.x, 15.0 * texelSize.x);
 
     // PCF with Poisson Disk
     float shadow = 0.0;
@@ -230,6 +233,9 @@ vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metalli
     vec3 prefilteredColor = textureLod(specularMap, R, roughness * MAX_REFLECTION_LOD).rgb;
     vec2 brdf = texture(brdfLUT, vec2(max(dot(N, V), 0.0), roughness)).rg;
     vec3 envSpecular = prefilteredColor * (F * brdf.x + brdf.y);
+
+    vec3 ssr = texture(ssrTex, uv).rgb;
+    envSpecular = mix(envSpecular, ssr, texture(ssrTex, uv).a);
 
     vec3 ambient = (kD * diffuse + envSpecular) * ssao;
     vec3 color = ambient + Lo;
