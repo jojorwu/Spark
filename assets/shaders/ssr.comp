@@ -23,10 +23,10 @@ layout (set = 1, binding = 6, rgba16f) uniform image2D outSSR;
 layout(push_constant) uniform PushConstants {
     uint width;
     uint height;
-    float maxDistance;
-    float resolution;
+    uint maxSteps;
+    float stepSize;
     float thickness;
-    uint steps;
+    float enabled;
 } push;
 
 vec3 worldPosFromDepth(float depth, vec2 uv) {
@@ -38,6 +38,11 @@ vec3 worldPosFromDepth(float depth, vec2 uv) {
 void main() {
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
     if (texel.x >= push.width || texel.y >= push.height) return;
+
+    if (push.enabled < 0.5) {
+        imageStore(outSSR, texel, vec4(0.0));
+        return;
+    }
 
     vec2 uv = (vec2(texel) + 0.5) / vec2(push.width, push.height);
     float depth = texture(gDepth, uv).r;
@@ -59,12 +64,12 @@ void main() {
     vec3 viewDir = normalize(worldPos - global.cameraPos.xyz);
     vec3 reflectDir = reflect(viewDir, normal);
 
-    // Basic Ray Marching (Placeholder for Hi-Z)
-    vec3 rayStep = reflectDir * (push.maxDistance / float(push.steps));
+    // Basic Ray Marching
+    vec3 rayStep = reflectDir * push.stepSize;
     vec3 currentRayPos = worldPos + reflectDir * 0.1;
 
     vec4 ssrColor = vec4(0.0);
-    for (uint i = 0; i < push.steps; i++) {
+    for (uint i = 0; i < push.maxSteps; i++) {
         currentRayPos += rayStep;
         vec4 projectedPos = global.viewProj * vec4(currentRayPos, 1.0);
         projectedPos.xyz /= projectedPos.w;
@@ -76,6 +81,9 @@ void main() {
         if (projectedPos.z > sampledDepth && projectedPos.z < sampledDepth + push.thickness) {
             ssrColor = texture(hdrColor, sampleUV);
             ssrColor.a = 1.0 - roughness; // Fade based on roughness
+            // Edge fading
+            vec2 edge = smoothstep(0.0, 0.1, sampleUV) * smoothstep(1.0, 0.9, sampleUV);
+            ssrColor.a *= edge.x * edge.y;
             break;
         }
     }

@@ -90,7 +90,7 @@ fn main() {
         taa_vert: compiler.compile("assets/shaders/taa.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile taa.vert"),
         taa_frag: compiler.compile("assets/shaders/taa.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile taa.frag"),
         fullscreen_vert: compiler.compile("assets/shaders/fullscreen.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile fullscreen.vert"),
-        tonemap_frag: compiler.compile("assets/shaders/tonemap_bloom.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile tonemap_bloom.frag"),
+        tonemap_frag: compiler.compile("assets/shaders/tonemap.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile tonemap.frag"),
         bloom_downsample: compiler.compile("assets/shaders/bloom_downsample.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile bloom_downsample.frag"),
         bloom_upsample: compiler.compile("assets/shaders/bloom_upsample.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile bloom_upsample.frag"),
         forward_vert: compiler.compile("assets/shaders/forward.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile forward.vert"),
@@ -101,6 +101,8 @@ fn main() {
         ssr_comp: compiler.compile("assets/shaders/ssr.comp", shaderc::ShaderKind::Compute).expect("Failed to compile ssr.comp"),
         sprite_vert: compiler.compile("assets/shaders/sprite.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile sprite.vert"),
         sprite_frag: compiler.compile("assets/shaders/sprite.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile sprite.frag"),
+        luminance: compiler.compile("assets/shaders/luminance.comp", shaderc::ShaderKind::Compute).expect("Failed to compile luminance.comp"),
+        dof: compiler.compile("assets/shaders/dof.comp", shaderc::ShaderKind::Compute).expect("Failed to compile dof.comp"),
     };
 
     app.engine.renderer.setup_default_passes(shaders).expect("Failed to setup render passes");

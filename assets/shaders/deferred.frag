@@ -30,6 +30,7 @@ layout (set = 1, binding = 7) uniform sampler2D ssaoTex;
 layout (set = 1, binding = 8) uniform samplerCube irradianceMap;
 layout (set = 1, binding = 9) uniform samplerCube specularMap;
 layout (set = 1, binding = 10) uniform sampler2D brdfLUT;
+layout (set = 1, binding = 11) uniform sampler2D ssgiTex;
 
 struct Light {
     vec4 pos_range; // pos.xyz, range
@@ -61,6 +62,7 @@ layout(push_constant) uniform PushConstants {
     float roughness;
     float width;
     float height;
+    float ssgiIntensity;
 } push;
 
 layout (location = 0) out vec4 outColor;
@@ -200,7 +202,10 @@ vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metalli
     vec2 brdf = texture(brdfLUT, vec2(max(dot(N, V), 0.0), roughness)).rg;
     vec3 envSpecular = prefilteredColor * (F * brdf.x + brdf.y);
 
-    vec3 ambient = (kD * diffuse + envSpecular) * ssao;
+    // SSGI Integration
+    vec3 ssgi = texture(ssgiTex, uv).rgb * push.ssgiIntensity;
+
+    vec3 ambient = (kD * (diffuse + ssgi) + envSpecular) * ssao;
     vec3 color = ambient + Lo;
     return color;
 }

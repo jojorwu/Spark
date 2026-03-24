@@ -6,6 +6,12 @@ layout(binding = 0) uniform sampler2D hdrSampler;
 layout(binding = 1) uniform sampler2D bloomSampler;
 layout(binding = 2) uniform sampler2D fogSampler;
 layout(binding = 3) uniform sampler2D spriteSampler;
+layout(binding = 4) uniform sampler2D velocitySampler;
+layout(binding = 5) buffer LuminanceBuffer {
+    float avgLuminance;
+    float targetExposure;
+} lum;
+layout(binding = 6) uniform sampler2D dofSampler;
 
 layout(push_constant) uniform PostProcessParams {
     float exposure;
@@ -15,6 +21,9 @@ layout(push_constant) uniform PostProcessParams {
     float vignette_smoothness;
     float chromatic_aberration;
     float film_grain;
+    float motion_blur_strength;
+    float auto_exposure_enabled;
+    float dof_enabled;
     float time;
 } params;
 
@@ -33,14 +42,34 @@ float noise(vec2 co) {
 }
 
 void main() {
-    // Chromatic Aberration
-    vec2 dist = inUV - 0.5;
-    vec2 r_offset = dist * params.chromatic_aberration;
+    vec2 velocity = texture(velocitySampler, inUV).rg;
 
-    vec3 hdrColor;
-    hdrColor.r = texture(hdrSampler, inUV - r_offset).r;
-    hdrColor.g = texture(hdrSampler, inUV).g;
-    hdrColor.b = texture(hdrSampler, inUV + r_offset).b;
+    // Motion Blur (Simple multi-tap)
+    vec3 hdrColor = vec3(0.0);
+    if (params.motion_blur_strength > 0.0) {
+        const int samples = 8;
+        for (int i = 0; i < samples; i++) {
+            vec2 offset = velocity * (float(i) / float(samples - 1) - 0.5) * params.motion_blur_strength;
+
+            // Chromatic Aberration integrated into blur
+            vec2 dist = (inUV + offset) - 0.5;
+            vec2 r_offset = dist * params.chromatic_aberration;
+
+            hdrColor.r += texture(hdrSampler, inUV + offset - r_offset).r;
+            hdrColor.g += texture(hdrSampler, inUV + offset).g;
+            hdrColor.b += texture(hdrSampler, inUV + offset + r_offset).b;
+        }
+        hdrColor /= float(samples);
+    } else {
+    vec2 finalUV = inUV;
+
+        // Just Chromatic Aberration
+        vec2 dist = inUV - 0.5;
+        vec2 r_offset = dist * params.chromatic_aberration;
+        hdrColor.r = texture(hdrSampler, inUV - r_offset).r;
+        hdrColor.g = texture(hdrSampler, inUV).g;
+        hdrColor.b = texture(hdrSampler, inUV + r_offset).b;
+    }
 
     vec3 bloomColor = texture(bloomSampler, inUV).rgb;
     vec3 fogColor = texture(fogSampler, inUV).rgb;
@@ -49,13 +78,26 @@ void main() {
     // Combine with Fog
     vec3 color = hdrColor + fogColor;
 
+    // Apply DoF
+    if (params.dof_enabled > 0.5) {
+        vec3 dofColor = texture(dofSampler, inUV).rgb;
+        color = mix(color, dofColor, 1.0); // Pass-through for now, dof.comp does the heavy lifting
+        // Actually, dof.comp already has the blurred result.
+        // We should just sample from it instead of hdrColor if enabled.
+        color = dofColor + fogColor;
+    }
+
     // Add Bloom
     if (params.bloom_enabled > 0.5) {
         color += bloomColor;
     }
 
     // Exposure
-    color *= params.exposure;
+    float exposure = params.exposure;
+    if (params.auto_exposure_enabled > 0.5) {
+        exposure *= lum.targetExposure;
+    }
+    color *= exposure;
 
     // Blend Sprites
     color = mix(color, spriteColor.rgb, spriteColor.a);

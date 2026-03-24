@@ -334,8 +334,19 @@ impl EditorUI {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.heading("Post-Processing");
                         ui.horizontal(|ui| {
-                            ui.label("Exposure:");
+                            ui.label("Manual Exposure:");
                             ui.add(egui::Slider::new(&mut renderer.settings.exposure, 0.1..=10.0));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut renderer.settings.enable_auto_exposure, "Auto Exposure");
+                            if renderer.settings.enable_auto_exposure {
+                                ui.label("Min:");
+                                ui.add(egui::DragValue::new(&mut renderer.settings.auto_exposure_min).speed(0.1));
+                                ui.label("Max:");
+                                ui.add(egui::DragValue::new(&mut renderer.settings.auto_exposure_max).speed(0.1));
+                                ui.label("Speed:");
+                                ui.add(egui::DragValue::new(&mut renderer.settings.auto_exposure_speed).speed(0.1));
+                            }
                         });
                         ui.horizontal(|ui| {
                             ui.label("Gamma:");
@@ -370,6 +381,18 @@ impl EditorUI {
                             ui.add(egui::Slider::new(&mut renderer.settings.film_grain, 0.0..=0.1));
                         });
 
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut renderer.settings.enable_dof, "Depth of Field");
+                            if renderer.settings.enable_dof {
+                                ui.label("Distance:");
+                                ui.add(egui::Slider::new(&mut renderer.settings.dof_focus_distance, 0.1..=50.0));
+                                ui.label("Range:");
+                                ui.add(egui::Slider::new(&mut renderer.settings.dof_focus_range, 0.1..=20.0));
+                                ui.label("Size:");
+                                ui.add(egui::Slider::new(&mut renderer.settings.dof_bokeh_size, 1.0..=20.0));
+                            }
+                        });
+
                         ui.separator();
                         ui.heading("Environmental Effects");
                         ui.checkbox(&mut renderer.settings.enable_volumetric, "Volumetric Fog");
@@ -401,6 +424,32 @@ impl EditorUI {
                         ui.checkbox(&mut renderer.settings.enable_taa, "TAA");
                         ui.checkbox(&mut renderer.settings.enable_grid, "Ground Grid");
                         ui.checkbox(&mut renderer.settings.enable_ibl, "IBL");
+
+                        ui.separator();
+                        ui.heading("Advanced Features");
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut renderer.settings.enable_ssr, "SSR");
+                            if renderer.settings.enable_ssr {
+                                ui.label("Steps:");
+                                ui.add(egui::DragValue::new(&mut renderer.settings.ssr_max_steps));
+                                ui.label("Step:");
+                                ui.add(egui::DragValue::new(&mut renderer.settings.ssr_step).speed(0.01));
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut renderer.settings.enable_ssgi, "SSGI");
+                            if renderer.settings.enable_ssgi {
+                                ui.label("Intensity:");
+                                ui.add(egui::Slider::new(&mut renderer.settings.ssgi_intensity, 0.0..=2.0));
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut renderer.settings.enable_motion_blur, "Motion Blur");
+                            if renderer.settings.enable_motion_blur {
+                                ui.label("Strength:");
+                                ui.add(egui::Slider::new(&mut renderer.settings.motion_blur_strength, 0.0..=1.0));
+                            }
+                        });
                     });
                 }
                 BottomTab::Statistics => {

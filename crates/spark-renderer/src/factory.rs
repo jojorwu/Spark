@@ -33,6 +33,8 @@ pub struct PassShaders {
     pub ssr_comp: Vec<u32>,
     pub sprite_vert: Vec<u32>,
     pub sprite_frag: Vec<u32>,
+    pub luminance: Vec<u32>,
+    pub dof: Vec<u32>,
 }
 
 impl Renderer {
@@ -99,6 +101,10 @@ impl Renderer {
 
         let ssr_pass = crate::passes::ssr::SSRPass::new(self, &shaders.ssr_comp)?;
 
+        let luminance_pass = crate::passes::luminance::LuminancePass::new(self, &shaders.luminance)?;
+
+        let dof_pass = crate::passes::dof::DoFPass::new(self, &shaders.dof)?;
+
         let mut post_process_pass = crate::passes::post_process::PostProcessPass::new(
             self, self.swapchain.format, extent
         ).map_err(|_| RendererError::NoSuitableDevice)?;
@@ -140,9 +146,11 @@ impl Renderer {
         self.add_render_pass(forward_pass, &["GBuffer"], &["ForwardColor"]);
         self.add_render_pass(particle_pass, &["GBuffer"], &["ParticleColor"]);
         self.add_render_pass(ssr_pass, &["GBuffer", "HDRColor", "HiZ"], &["SSR"]);
+        self.add_render_pass(luminance_pass, &["HDRColor"], &["Luminance"]);
         self.add_render_pass(taa_pass, &["HDRColor", "GBuffer"], &["TAAColor"]);
+        self.add_render_pass(dof_pass, &["HDRColor", "GBuffer"], &["DoF"]);
         self.add_render_pass(sprite_pass, &["GBuffer"], &["SpriteColor"]);
-        self.add_render_pass(post_process_pass, &["TAAColor", "SpriteColor"], &["FinalColor"]);
+        self.add_render_pass(post_process_pass, &["TAAColor", "SpriteColor", "Luminance", "DoF"], &["FinalColor"]);
 
         self.compile_render_graph();
         self.update_all_descriptor_sets();
