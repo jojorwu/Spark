@@ -21,10 +21,13 @@ pub struct VulkanDevice {
     pub device: Device,
     pub graphics_queue: vk::Queue,
     pub graphics_family: u32,
+    pub compute_queue: vk::Queue,
+    pub compute_family: u32,
     pub msaa_samples: vk::SampleCountFlags,
     pub depth_format: vk::Format,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub command_pool: vk::CommandPool,
+    pub compute_command_pool: vk::CommandPool,
     pub thread_command_pools: Vec<[vk::CommandPool; crate::MAX_FRAMES_IN_FLIGHT]>,
     pub allocator: Arc<Mutex<Allocator>>,
 }
@@ -37,26 +40,37 @@ impl VulkanDevice {
     ) -> Result<Self, RendererError> {
         let pdevices = unsafe { instance.enumerate_physical_devices()? };
 
-        let (pdevice, graphics_family) = pdevices
+        let (pdevice, graphics_family, compute_family) = pdevices
             .iter()
             .map(|&p| (p, Self::score_device(instance, p)))
             .filter(|&(_, score)| score > 0)
             .max_by_key(|&(_, score)| score)
             .and_then(|(p, _)| {
                 Self::find_queue_families(instance, surface_loader, surface, p)
-                    .map(|family| (p, family))
+                    .map(|(g, c)| (p, g, c))
             })
             .ok_or(RendererError::NoSuitableDevice)?;
 
         let queue_priorities = [1.0];
-        let queue_info = vk::DeviceQueueCreateInfo::default()
-            .queue_family_index(graphics_family)
-            .queue_priorities(&queue_priorities);
+        let mut queue_infos = vec![
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(graphics_family)
+                .queue_priorities(&queue_priorities)
+        ];
+
+        if graphics_family != compute_family {
+            queue_infos.push(
+                vk::DeviceQueueCreateInfo::default()
+                    .queue_family_index(compute_family)
+                    .queue_priorities(&queue_priorities)
+            );
+        }
 
         let device_extension_names_raw = [ash::khr::swapchain::NAME.as_ptr()];
 
         let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
-            .dynamic_rendering(true);
+            .dynamic_rendering(true)
+            .synchronization2(true);
         let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
             .descriptor_indexing(true)
             .shader_sampled_image_array_non_uniform_indexing(true)
@@ -70,7 +84,7 @@ impl VulkanDevice {
             .shader_draw_parameters(true);
 
         let device_create_info = vk::DeviceCreateInfo::default()
-            .queue_create_infos(std::slice::from_ref(&queue_info))
+            .queue_create_infos(&queue_infos)
             .enabled_extension_names(&device_extension_names_raw)
             .push_next(&mut features11)
             .push_next(&mut features12)
@@ -79,6 +93,7 @@ impl VulkanDevice {
         let device = unsafe { instance.create_device(pdevice, &device_create_info, None)? };
 
         let graphics_queue = unsafe { device.get_device_queue(graphics_family, 0) };
+        let compute_queue = unsafe { device.get_device_queue(compute_family, 0) };
 
         let msaa_samples = Self::get_max_usable_sample_count(instance, pdevice);
         let depth_format = Self::find_depth_format(instance, pdevice);
@@ -88,6 +103,15 @@ impl VulkanDevice {
             device.create_command_pool(
                 &vk::CommandPoolCreateInfo::default()
                     .queue_family_index(graphics_family)
+                    .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                None,
+            )?
+        };
+
+        let compute_command_pool = unsafe {
+            device.create_command_pool(
+                &vk::CommandPoolCreateInfo::default()
+                    .queue_family_index(compute_family)
                     .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
                 None,
             )?
@@ -124,10 +148,13 @@ impl VulkanDevice {
             device,
             graphics_queue,
             graphics_family,
+            compute_queue,
+            compute_family,
             msaa_samples,
             depth_format,
             memory_properties,
             command_pool,
+            compute_command_pool,
             thread_command_pools,
             allocator: Arc::new(Mutex::new(allocator)),
         })
@@ -345,6 +372,18 @@ impl VulkanDevice {
         unsafe { self.device.allocate_command_buffers(&alloc_info).unwrap()[0] }
     }
 
+    pub fn submit_commands(&self, queue: vk::Queue, cb: vk::CommandBuffer, wait_semaphores: &[vk::Semaphore], signal_semaphores: &[vk::Semaphore], fence: vk::Fence) {
+        let cbs = [cb];
+        let submit_info = vk::SubmitInfo::default()
+            .command_buffers(&cbs)
+            .wait_semaphores(wait_semaphores)
+            .signal_semaphores(signal_semaphores);
+
+        unsafe {
+            self.device.queue_submit(queue, &[submit_info], fence).expect("Failed to submit commands");
+        }
+    }
+
     pub fn begin_single_time_commands(&self) -> vk::CommandBuffer {
         let alloc_info = vk::CommandBufferAllocateInfo::default()
             .level(vk::CommandBufferLevel::PRIMARY)
@@ -456,22 +495,41 @@ impl VulkanDevice {
         surface_loader: &Surface,
         surface: vk::SurfaceKHR,
         pdevice: vk::PhysicalDevice,
-    ) -> Option<u32> {
+    ) -> Option<(u32, u32)> {
         let props = unsafe { instance.get_physical_device_queue_family_properties(pdevice) };
+        let mut graphics = None;
+        let mut compute = None;
+
         for (index, prop) in props.iter().enumerate() {
             let index = index as u32;
-            let graphics = prop.queue_flags.contains(vk::QueueFlags::GRAPHICS);
-            let present = unsafe {
+            let has_graphics = prop.queue_flags.contains(vk::QueueFlags::GRAPHICS);
+            let has_compute = prop.queue_flags.contains(vk::QueueFlags::COMPUTE);
+            let has_present = unsafe {
                 surface_loader
                     .get_physical_device_surface_support(pdevice, index, surface)
                     .unwrap_or(false)
             };
 
-            if graphics && present {
-                return Some(index);
+            if has_graphics && has_present && graphics.is_none() {
+                graphics = Some(index);
+            }
+
+            // Prefer a dedicated compute queue if available
+            if has_compute && (!has_graphics) {
+                compute = Some(index);
             }
         }
-        None
+
+        // Fallback to shared graphics/compute queue
+        if compute.is_none() {
+            compute = graphics;
+        }
+
+        if let (Some(g), Some(c)) = (graphics, compute) {
+            Some((g, c))
+        } else {
+            None
+        }
     }
 }
 
@@ -484,6 +542,7 @@ impl Drop for VulkanDevice {
                 }
             }
             self.device.destroy_command_pool(self.command_pool, None);
+            self.device.destroy_command_pool(self.compute_command_pool, None);
             // Allocator must be dropped before Device
             // We use Arc to share it, so we need to ensure it's the last reference
             // or we just let Arc handle it, but wait_idle is important.

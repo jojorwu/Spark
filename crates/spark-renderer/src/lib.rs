@@ -74,6 +74,7 @@ pub struct Renderer {
     pub current_image_index: u32,
     pub pass_descriptor_versions: Vec<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
     pub dummy_buffer: Buffer,
+    pub culling_finished_semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
 }
 
 #[repr(C)]
@@ -314,7 +315,14 @@ impl Renderer {
             current_image_index: 0,
             pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).collect(),
             dummy_buffer,
+            culling_finished_semaphores: [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT],
         };
+
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            renderer.culling_finished_semaphores[i] = unsafe {
+                renderer.device.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?
+            };
+        }
 
         renderer.render_graph.physical_attachments.insert("GBufferHDR".to_string(), gbuffer.hdr);
         renderer.render_graph.physical_attachments.insert("GBufferAlbedo".to_string(), gbuffer.albedo);
@@ -771,12 +779,13 @@ impl Renderer {
                 egui_output,
                 delta,
             );
-            let s_available = [image_available];
             let s_finished = [render_finished];
-            let w_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
             let c_buffers = [command_buffer];
+            let s_wait = [image_available, self.culling_finished_semaphores[self.current_frame]];
+            let w_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::DRAW_INDIRECT];
+
             let submit_info = vk::SubmitInfo::default()
-                .wait_semaphores(&s_available)
+                .wait_semaphores(&s_wait)
                 .wait_dst_stage_mask(&w_stages)
                 .command_buffers(&c_buffers)
                 .signal_semaphores(&s_finished);
@@ -1679,6 +1688,10 @@ impl Drop for Renderer {
             }
             if let Some(mb) = self.global_material_buffer.take() {
                 self.device.destroy_buffer(mb);
+            }
+
+            for sem in self.culling_finished_semaphores {
+                self.device.device.destroy_semaphore(sem, None);
             }
 
             self.device.device.destroy_sampler(self.common_sampler, None);

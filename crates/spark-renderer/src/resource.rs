@@ -174,9 +174,9 @@ impl ResourceTracker {
         device: &ash::Device,
         image: vk::Image,
         new_layout: vk::ImageLayout,
-        src_access: vk::AccessFlags,
+        _src_access: vk::AccessFlags,
         dst_access: vk::AccessFlags,
-        src_stage: vk::PipelineStageFlags,
+        _src_stage: vk::PipelineStageFlags,
         dst_stage: vk::PipelineStageFlags,
         aspect_mask: vk::ImageAspectFlags,
     ) {
@@ -184,11 +184,13 @@ impl ResourceTracker {
         let old_layout = *layouts.get(&image).unwrap_or(&vk::ImageLayout::UNDEFINED);
         if old_layout == new_layout { return; }
 
-        let barrier = vk::ImageMemoryBarrier::default()
+        let barrier = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
+            .dst_stage_mask(vk::PipelineStageFlags2::from_raw(dst_stage.as_raw() as u64))
+            .dst_access_mask(vk::AccessFlags2::from_raw(dst_access.as_raw() as u64))
             .old_layout(old_layout)
             .new_layout(new_layout)
-            .src_access_mask(src_access)
-            .dst_access_mask(dst_access)
             .image(image)
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask,
@@ -198,8 +200,11 @@ impl ResourceTracker {
                 layer_count: 1,
             });
 
+        let dependency_info = vk::DependencyInfo::default()
+            .image_memory_barriers(std::slice::from_ref(&barrier));
+
         unsafe {
-            device.cmd_pipeline_barrier(cb, src_stage, dst_stage, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+            device.cmd_pipeline_barrier2(cb, &dependency_info);
         }
         layouts.insert(image, new_layout);
     }

@@ -80,7 +80,7 @@ pub struct FrameContext<'a> {
     pub delta: f32,
     pub event_proxy: crate::systems_events::events::EventProxy<'a>,
     pub input: &'a crate::input::InputManager,
-    pub command_queue: &'a crate::command::CommandQueue,
+    pub command_queue: &'a mut crate::command::CommandQueue,
     pub event_bus: &'a crate::event_bus::EventBus,
 }
 
@@ -262,7 +262,7 @@ impl Engine {
                     outgoing: &self.system_events,
                 },
                 input: &self.input_manager,
-                command_queue: &self.command_queue,
+                command_queue: &mut self.command_queue,
                 event_bus: &self.event_bus,
             };
 

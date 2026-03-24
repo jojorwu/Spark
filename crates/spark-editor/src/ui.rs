@@ -34,7 +34,7 @@ impl Command for TransformCommand {
 pub struct EditorUI {
     pub egui_ctx: Context,
     pub egui_state: State,
-    pub selected_nodes: std::collections::HashSet<NodeKey>,
+    pub selected_node: Option<NodeKey>,
     pub viewport_texture_id: Option<egui::TextureId>,
     pub undo_stack: Vec<Box<dyn Command>>,
     pub redo_stack: Vec<Box<dyn Command>>,
@@ -48,7 +48,6 @@ pub struct EditorUI {
     pub node_to_add_child: Option<(NodeKey, NodeType)>,
     pub initial_gizmo_transform: Option<spark_math::Mat4>,
     pub component_to_remove: Option<(NodeKey, usize)>,
-    pub project: spark_core::Project,
 }
 
 pub enum NodeType {
@@ -60,8 +59,6 @@ pub enum NodeType {
 pub enum BottomTab {
     Console,
     Assets,
-    Scripts,
-    Project,
     Settings,
     Statistics,
 }
@@ -82,7 +79,7 @@ impl EditorUI {
         Self {
             egui_ctx,
             egui_state,
-            selected_nodes: std::collections::HashSet::new(),
+            selected_node: None,
             viewport_texture_id: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -96,7 +93,6 @@ impl EditorUI {
             node_to_add_child: None,
             initial_gizmo_transform: None,
             component_to_remove: None,
-            project: spark_core::Project::default(),
         }
     }
 
@@ -181,7 +177,9 @@ impl EditorUI {
 
         if let Some(key) = self.node_to_delete.take() {
             self.delete_node(scene, key);
-            self.selected_nodes.remove(&key);
+            if self.selected_node == Some(key) {
+                self.selected_node = None;
+            }
         }
 
         if let Some((node_key, comp_idx)) = self.component_to_remove.take() {
@@ -290,7 +288,7 @@ impl EditorUI {
                             let path = entry.path();
                             if path.is_file() {
                                 let label = path.file_name().unwrap().to_string_lossy();
-                                let is_gltf = path.extension().is_some_and(|ext| ext == "gltf" || ext == "glb");
+                                let is_gltf = path.extension().map_or(false, |ext| ext == "gltf" || ext == "glb");
 
                                 ui.horizontal(|ui| {
                                     let icon = if is_gltf { "📦" } else { "📄" };
@@ -310,42 +308,6 @@ impl EditorUI {
                     if let Some(path) = asset_to_load {
                         resource_manager.load_scene(path, scene, renderer);
                     }
-                }
-                BottomTab::Scripts => {
-                    ui.heading("Plugin Management");
-                    ui.label("Add Rust plugins to enhance engine functionality.");
-                    if ui.button("Load Plugin...").clicked() {
-                         if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Rust Plugin", &["so", "dll", "dylib"])
-                            .pick_file() {
-                                log::info!("Loading plugin: {:?}", path);
-                                // Logic to load and register system via ScriptHost would go here
-                            }
-                    }
-                    ui.separator();
-                    ui.label("Active Systems:");
-                    // List systems from scheduler
-                }
-                BottomTab::Project => {
-                    ui.heading("Project Settings");
-                    ui.horizontal(|ui| {
-                        ui.label("Project Name:");
-                        ui.text_edit_singleline(&mut self.project.name);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Asset Root:");
-                        let mut path_str = self.project.asset_root.to_string_lossy().to_string();
-                        if ui.text_edit_singleline(&mut path_str).changed() {
-                            self.project.asset_root = std::path::PathBuf::from(path_str);
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Startup Scene:");
-                        let mut path_str = self.project.startup_scene.to_string_lossy().to_string();
-                        if ui.text_edit_singleline(&mut path_str).changed() {
-                            self.project.startup_scene = std::path::PathBuf::from(path_str);
-                        }
-                    });
                 }
                 BottomTab::Settings => {
                     ui.heading("Renderer Settings");
@@ -398,14 +360,12 @@ impl EditorUI {
 
             ui.separator();
 
-            Self::draw_node_tree(ui, scene, scene.root, &mut self.selected_nodes, &mut self.node_to_delete, &mut self.node_to_add_child);
+            Self::draw_node_tree(ui, scene, scene.root, &mut self.selected_node, &mut self.node_to_delete, &mut self.node_to_add_child);
 
-            if !self.selected_nodes.is_empty() {
+            if let Some(selected_key) = self.selected_node {
                 if ui.button("Delete Selected").clicked() {
-                    let keys: Vec<_> = self.selected_nodes.drain().collect();
-                    for key in keys {
-                        self.delete_node(scene, key);
-                    }
+                    self.delete_node(scene, selected_key);
+                    self.selected_node = None;
                 }
             }
         });
@@ -451,16 +411,21 @@ impl EditorUI {
     }
 
     fn delete_node(&mut self, scene: &mut Scene, key: NodeKey) {
-        scene.remove_node(key);
+        if let Some(node) = scene.nodes.get(key) {
+            if let Some(parent_key) = node.parent {
+                if let Some(parent) = scene.nodes.get_mut(parent_key) {
+                    parent.children.retain(|&k| k != key);
+                }
+            }
+        }
+        scene.nodes.remove(key);
     }
 
     fn draw_inspector_panel(&mut self, scene: &mut Scene, _renderer: &mut spark_renderer::Renderer) {
         let ctx = self.egui_ctx.clone();
         egui::SidePanel::right("inspector").show(&ctx, |ui| {
             ui.heading("Inspector");
-            if self.selected_nodes.len() > 1 {
-                ui.label(format!("{} nodes selected", self.selected_nodes.len()));
-            } else if let Some(&selected_key) = self.selected_nodes.iter().next() {
+            if let Some(selected_key) = self.selected_node {
                 let mut changed_transform = None;
                 if let Some(node) = scene.nodes.get_mut(selected_key) {
                     ui.horizontal(|ui| {
@@ -644,14 +609,14 @@ impl EditorUI {
         }
     }
 
-    fn draw_node_tree(ui: &mut egui::Ui, scene: &mut Scene, node_key: NodeKey, selected_nodes: &mut std::collections::HashSet<NodeKey>, node_to_delete: &mut Option<NodeKey>, node_to_add_child: &mut Option<(NodeKey, NodeType)>) {
+    fn draw_node_tree(ui: &mut egui::Ui, scene: &mut Scene, node_key: NodeKey, selected_node: &mut Option<NodeKey>, node_to_delete: &mut Option<NodeKey>, node_to_add_child: &mut Option<(NodeKey, NodeType)>) {
         let (label, children) = if let Some(node) = scene.nodes.get(node_key) {
             (node.name.clone(), node.children.clone())
         } else {
             return;
         };
 
-        let is_selected = selected_nodes.contains(&node_key);
+        let is_selected = Some(node_key) == *selected_node;
 
         let response = ui.selectable_label(is_selected, &label);
 
@@ -677,16 +642,7 @@ impl EditorUI {
         }
 
         if response.clicked() {
-            if ui.input(|i| i.modifiers.shift || i.modifiers.command || i.modifiers.ctrl) {
-                if is_selected {
-                    selected_nodes.remove(&node_key);
-                } else {
-                    selected_nodes.insert(node_key);
-                }
-            } else {
-                selected_nodes.clear();
-                selected_nodes.insert(node_key);
-            }
+            *selected_node = Some(node_key);
         }
 
         response.dnd_set_drag_payload(node_key);
@@ -725,7 +681,7 @@ impl EditorUI {
 
         for &child_key in &children {
             ui.indent(&label, |ui| {
-                Self::draw_node_tree(ui, scene, child_key, selected_nodes, node_to_delete, node_to_add_child);
+                Self::draw_node_tree(ui, scene, child_key, selected_node, node_to_delete, node_to_add_child);
             });
         }
     }
@@ -806,37 +762,16 @@ impl EditorUI {
 
                             let ray = spark_math::Ray::new(origin, direction);
                             if let Some((key, _)) = scene.pick_node(&ray) {
-                                if ui.input(|i| i.modifiers.shift || i.modifiers.command || i.modifiers.ctrl) {
-                                    if self.selected_nodes.contains(&key) {
-                                        self.selected_nodes.remove(&key);
-                                    } else {
-                                        self.selected_nodes.insert(key);
-                                    }
-                                } else {
-                                    self.selected_nodes.clear();
-                                    self.selected_nodes.insert(key);
-                                }
-                            } else if !ui.input(|i| i.modifiers.shift || i.modifiers.command || i.modifiers.ctrl) {
-                                self.selected_nodes.clear();
+                                self.selected_node = Some(key);
+                            } else {
+                                self.selected_node = None;
                             }
                         }
                     }
                 }
 
-                if !self.selected_nodes.is_empty() {
-                    // Calculate selection centroid
-                    let mut centroid = spark_math::Vec3::ZERO;
-                    let mut count = 0;
-                    for &key in &self.selected_nodes {
-                        if let Some(node) = scene.nodes.get(key) {
-                            centroid += node.global_transform.w_axis.xyz();
-                            count += 1;
-                        }
-                    }
-                    if count > 0 { centroid /= count as f32; }
-
+                if let Some(selected_key) = self.selected_node {
                     let (view, projection, model, parent_key) = {
-                        let selected_key = *self.selected_nodes.iter().next().unwrap();
                         let node = scene.nodes.get(selected_key).unwrap();
                         let view = scene.last_view_matrix;
                         let projection = spark_math::Mat4::perspective_rh(
@@ -848,40 +783,47 @@ impl EditorUI {
                         (view, projection, node.global_transform, node.parent)
                     };
 
-                    let gizmo_model = spark_math::Mat4::from_translation(centroid);
-
                     let gizmo = Gizmo::new("scene_gizmo")
                         .view_matrix(view.to_cols_array_2d().into())
                         .projection_matrix(projection.to_cols_array_2d().into())
-                        .model_matrix(gizmo_model.to_cols_array_2d().into())
+                        .model_matrix(model.to_cols_array_2d().into())
                         .mode(self.gizmo_mode)
                         .viewport(rect);
 
                     if let Some(response) = gizmo.interact(ui) {
+                        if self.initial_gizmo_transform.is_none() {
+                            self.initial_gizmo_transform = Some(scene.nodes.get(selected_key).unwrap().local_transform);
+                        }
+
                         let m = response.transform();
-                        let new_gizmo_model = spark_math::Mat4::from_cols_array_2d(&[
+                        let new_model = spark_math::Mat4::from_cols_array_2d(&[
                             m.x.into(), m.y.into(), m.z.into(), m.w.into()
                         ]);
 
-                        let delta = new_gizmo_model * gizmo_model.inverse();
+                        let parent_global_inv = if let Some(pk) = parent_key {
+                            scene.nodes.get(pk).map(|p| p.global_transform.inverse()).unwrap_or(spark_math::Mat4::IDENTITY)
+                        } else {
+                            spark_math::Mat4::IDENTITY
+                        };
 
-                        for &key in &self.selected_nodes {
-                            let parent_global_inv = if let Some(node) = scene.nodes.get(key) {
-                                if let Some(pk) = node.parent {
-                                    scene.nodes.get(pk).map(|p| p.global_transform.inverse()).unwrap_or(spark_math::Mat4::IDENTITY)
-                                } else {
-                                    spark_math::Mat4::IDENTITY
-                                }
-                            } else {
-                                spark_math::Mat4::IDENTITY
-                            };
+                        let new_local = parent_global_inv * new_model;
 
-                            if let Some(node) = scene.nodes.get_mut(key) {
-                                let new_global = delta * node.global_transform;
-                                node.local_transform = parent_global_inv * new_global;
-                            }
+                        if let Some(node) = scene.nodes.get_mut(selected_key) {
+                            node.local_transform = new_local;
                         }
-                        scene.update_all_transforms();
+                    } else if ui.input(|i| i.pointer.any_released()) {
+                        if let Some(old_transform) = self.initial_gizmo_transform.take() {
+                             if let Some(node) = scene.nodes.get(selected_key) {
+                                 let new_transform = node.local_transform;
+                                 if old_transform != new_transform {
+                                     self.execute_command(Box::new(TransformCommand {
+                                         node_key: selected_key,
+                                         old_transform,
+                                         new_transform,
+                                     }), scene);
+                                 }
+                             }
+                        }
                     }
                 }
             });
