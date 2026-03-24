@@ -53,7 +53,6 @@ use winit::{
 use crate::scene::Scene;
 use crate::task::TaskSystem;
 use crate::resource::ResourceManager;
-use crate::event::EventQueue;
 use spark_renderer::Renderer;
 use spark_renderer::resource::RenderSettings;
 use serde::{Serialize, Deserialize};
@@ -125,6 +124,25 @@ impl<'a> FrameContext<'a> {
     /// Safety: Caller must ensure no other threads are accessing the resource manager concurrently.
     pub unsafe fn resource_manager_mut(&self) -> &mut ResourceManager { &mut *self.resource_manager }
 
+    pub fn get_component<T: 'static>(&self, node: crate::scene::NodeKey) -> Option<&T> {
+        if let Some(node) = self.scene().nodes.get(node) {
+            for comp in &node.components {
+                if let Some(c) = comp.as_any().downcast_ref::<T>() {
+                    return Some(c);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn query_nodes<T: 'static>(&self) -> Vec<crate::scene::NodeKey> {
+        self.scene().query_components::<T>()
+    }
+
+    pub fn query(&self) -> crate::scene::Query {
+        self.scene().query()
+    }
+
     pub fn get_resource<T: 'static>(&self) -> Option<std::sync::Arc<std::sync::RwLock<Box<dyn std::any::Any + Send + Sync>>>> {
         self.resources.get::<T>()
     }
@@ -137,6 +155,9 @@ pub trait System: Send + Sync {
     fn on_init(&mut self, _ctx: &mut InitContext) {}
     fn update(&mut self, ctx: &FrameContext);
     fn on_stop(&mut self, _ctx: &mut InitContext) {}
+    fn on_enter(&mut self, _ctx: &mut InitContext) {}
+    fn on_exit(&mut self, _ctx: &mut InitContext) {}
+    fn run_in_states(&self) -> Vec<String> { Vec::new() }
     fn dependencies(&self) -> Vec<&'static str> { Vec::new() }
     fn resource_access(&self) -> ResourceAccess {
         ResourceAccess {
@@ -203,14 +224,25 @@ impl App {
         self
     }
 
+    pub fn set_state(&mut self, state: &str) {
+        let mut init_ctx = InitContext {
+            scene: &mut self.engine.scene,
+            renderer: &mut self.engine.renderer,
+            resource_manager: &mut self.engine.resource_manager,
+            resources: &mut self.engine.resources,
+            task_system: &self.engine.task_system,
+        };
+        crate::systems::Scheduler::set_state(&mut self.engine.system_registry, state, &mut init_ctx);
+    }
+
     pub fn run(mut self) {
         self.run_startup();
-        self.engine.run(|_, _, _, _, _, _, _| (false, None));
+        self.engine.run(|_, _, _, _, _, _, _, _| (false, None));
     }
 
     pub fn run_with_ui<F>(mut self, ui_callback: F)
     where
-        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, &mut Project, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
+        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, &mut Project, &mut crate::resource_container::Resources, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
     {
         self.run_startup();
         self.engine.run(ui_callback);
@@ -238,7 +270,6 @@ pub struct Engine {
     pub task_system: TaskSystem,
     pub resource_manager: ResourceManager,
     pub resources: crate::resource_container::Resources,
-    pub event_queue: EventQueue,
     pub input_manager: crate::input::InputManager,
     pub command_queue: crate::command::CommandQueue,
     pub event_bus: crate::event_bus::EventBus,
@@ -265,7 +296,6 @@ impl Engine {
         let task_system = TaskSystem::new();
         let resource_manager = ResourceManager::new();
         let resources = crate::resource_container::Resources::new();
-        let event_queue = EventQueue::new();
         let input_manager = crate::input::InputManager::new();
         let command_queue = crate::command::CommandQueue::new();
         let event_bus = crate::event_bus::EventBus::new();
@@ -279,7 +309,6 @@ impl Engine {
             task_system,
             resource_manager,
             resources,
-            event_queue,
             input_manager,
             command_queue,
             event_bus,
@@ -309,12 +338,14 @@ impl Engine {
             return;
         }
 
-        crate::event_mapper::EventMapper::map_window_event(event, &mut self.event_queue);
+        if let Some(engine_event) = crate::event_mapper::EventMapper::map_window_event(event) {
+            self.event_bus.publish(engine_event);
+        }
     }
 
     pub fn run<F>(mut self, mut ui_callback: F)
     where
-        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, &mut Project, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
+        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, &mut Project, &mut crate::resource_container::Resources, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
     {
         let event_loop = self.event_loop.take().unwrap();
 
@@ -330,7 +361,7 @@ impl Engine {
         }
 
         event_loop.run(move |event, elwt| {
-            let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene, &mut self.resource_manager, &mut self.renderer, &mut self.project, self.current_fps);
+            let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene, &mut self.resource_manager, &mut self.renderer, &mut self.project, &mut self.resources, self.current_fps);
             if ui_consumed {
                 // UI consumed the event
             }
@@ -348,7 +379,7 @@ impl Engine {
                     self.update_phase(delta);
                     self.render_phase(egui_output, delta);
 
-                    self.event_queue.clear();
+                    self.event_bus.clear_events();
                 }
                 _ => (),
             }
@@ -367,7 +398,8 @@ impl Engine {
     }
 
     fn update_phase(&mut self, delta: f32) {
-        self.input_manager.update(&self.event_queue.events);
+        let events = self.event_bus.read_events::<crate::event::EngineEvent>();
+        self.input_manager.update(&events);
 
         self.system_events.lock().unwrap().clear(); // Reset for this frame
 
@@ -381,7 +413,7 @@ impl Engine {
                 task_system: &self.task_system,
                 delta,
                 event_proxy: crate::systems_events::events::EventProxy {
-                    events: &self.event_queue.events,
+                    events: &events,
                     outgoing: &self.system_events,
                 },
                 input: &self.input_manager,

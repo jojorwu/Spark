@@ -18,6 +18,7 @@ pub enum CoreStage {
 pub struct SystemRegistry {
     pub systems: HashMap<CoreStage, Vec<Box<dyn System>>>,
     pub sorted_indices: HashMap<CoreStage, Vec<Vec<usize>>>,
+    pub active_state: Option<String>,
 }
 
 impl SystemRegistry {
@@ -29,7 +30,7 @@ impl SystemRegistry {
         systems.insert(CoreStage::PostUpdate, Vec::new());
         systems.insert(CoreStage::Last, Vec::new());
 
-        Self { systems, sorted_indices: HashMap::new() }
+        Self { systems, sorted_indices: HashMap::new(), active_state: None }
     }
 
     pub fn add_system<S: System + 'static>(&mut self, system: S) {
@@ -164,6 +165,28 @@ impl Scheduler {
         }
     }
 
+    pub fn set_state(registry: &mut SystemRegistry, state: &str, ctx: &mut InitContext) {
+        let old_state = registry.active_state.clone();
+        registry.active_state = Some(state.to_string());
+
+        for systems in registry.systems.values_mut() {
+            for system in systems {
+                let allowed = system.run_in_states();
+                if allowed.is_empty() { continue; }
+
+                if let Some(ref old) = old_state {
+                    if allowed.contains(old) && !allowed.contains(&state.to_string()) {
+                        system.on_exit(ctx);
+                    }
+                }
+
+                if allowed.contains(&state.to_string()) && (old_state.is_none() || !allowed.contains(old_state.as_ref().unwrap())) {
+                    system.on_enter(ctx);
+                }
+            }
+        }
+    }
+
     pub fn run(registry: &mut SystemRegistry, ctx: &mut FrameContext) {
         let stages = [CoreStage::First, CoreStage::PreUpdate, CoreStage::Update, CoreStage::PostUpdate, CoreStage::Last];
         for stage in stages {
@@ -175,12 +198,24 @@ impl Scheduler {
                         batch.par_iter().for_each(|&idx| {
                             unsafe {
                                 let systems_ptr = systems.as_ptr() as *mut Box<dyn crate::System>;
+                                let system = &*systems_ptr.add(idx);
+                                if let Some(active) = &registry.active_state {
+                                    let allowed = system.run_in_states();
+                                    if !allowed.is_empty() && !allowed.contains(active) { return; }
+                                }
+
                                 let ctx_ptr = ctx as *const FrameContext as *mut FrameContext;
                                 (*systems_ptr.add(idx)).update(&*ctx_ptr);
                             }
                         });
                     } else if let Some(&idx) = batch.first() {
-                        systems[idx].update(ctx);
+                        let system = &systems[idx];
+                        let mut should_run = true;
+                        if let Some(active) = &registry.active_state {
+                             let allowed = system.run_in_states();
+                             if !allowed.is_empty() && !allowed.contains(active) { should_run = false; }
+                        }
+                        if should_run { systems[idx].update(ctx); }
                     }
                 }
             }

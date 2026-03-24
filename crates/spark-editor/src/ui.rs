@@ -22,11 +22,13 @@ impl Command for TransformCommand {
     fn execute(&mut self, scene: &mut Scene) {
         if let Some(node) = scene.nodes.get_mut(self.node_key) {
             node.local_transform = self.new_transform;
+            node.is_dirty = true;
         }
     }
     fn undo(&mut self, scene: &mut Scene) {
         if let Some(node) = scene.nodes.get_mut(self.node_key) {
             node.local_transform = self.old_transform;
+            node.is_dirty = true;
         }
     }
 }
@@ -173,6 +175,7 @@ impl EditorUI {
                         name: "New Mesh".to_string(),
                         visible: true,
                         locked: false,
+                        is_dirty: true,
                         local_transform: spark_math::Mat4::IDENTITY,
                         global_transform: spark_math::Mat4::IDENTITY,
                         parent: None,
@@ -190,6 +193,7 @@ impl EditorUI {
                         name: "New Light".to_string(),
                         visible: true,
                         locked: false,
+                        is_dirty: true,
                         local_transform: spark_math::Mat4::IDENTITY,
                         global_transform: spark_math::Mat4::IDENTITY,
                         parent: None,
@@ -211,6 +215,7 @@ impl EditorUI {
                         name: "New Sprite".to_string(),
                         visible: true,
                         locked: false,
+                        is_dirty: true,
                         local_transform: spark_math::Mat4::IDENTITY,
                         global_transform: spark_math::Mat4::IDENTITY,
                         parent: None,
@@ -643,6 +648,7 @@ impl EditorUI {
             name: "New Mesh".to_string(),
             visible: true,
             locked: false,
+            is_dirty: true,
             local_transform: spark_math::Mat4::IDENTITY,
             global_transform: spark_math::Mat4::IDENTITY,
             parent: None,
@@ -666,6 +672,7 @@ impl EditorUI {
             name: "New Light".to_string(),
             visible: true,
             locked: false,
+            is_dirty: true,
             local_transform: spark_math::Mat4::IDENTITY,
             global_transform: spark_math::Mat4::IDENTITY,
             parent: None,
@@ -688,6 +695,7 @@ impl EditorUI {
             name: "New Sprite".to_string(),
             visible: true,
             locked: false,
+            is_dirty: true,
             local_transform: spark_math::Mat4::IDENTITY,
             global_transform: spark_math::Mat4::IDENTITY,
             parent: None,

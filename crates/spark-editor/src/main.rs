@@ -49,6 +49,7 @@ fn main() {
     logger.init();
     log::info!("Spark Editor starting...");
 
+    let task_system = spark_core::task::TaskSystem::new();
     let compiler = ShaderCompiler::new();
 
     let ui_vert_spirv = compiler.compile("assets/shaders/ui.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile UI vertex shader");
@@ -132,6 +133,7 @@ fn main() {
         name: "MyTriangle".to_string(),
         visible: true,
         locked: false,
+        is_dirty: true,
         local_transform: Mat4::from_translation(Vec3::new(0.0, 0.0, -5.0)),
         global_transform: Mat4::IDENTITY,
         parent: None,
@@ -153,6 +155,7 @@ fn main() {
         name: "MainCamera".to_string(),
         visible: true,
         locked: false,
+        is_dirty: true,
         local_transform: Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0)),
         global_transform: Mat4::IDENTITY,
         parent: None,
@@ -170,7 +173,7 @@ fn main() {
     let viewport_sampler = app.engine.renderer.common_sampler;
     ui.viewport_texture_id = Some(app.engine.renderer.register_egui_texture(viewport_view, viewport_sampler));
 
-    app.run_with_ui(move |window, event, scene, rm, renderer, project, fps| {
+    app.run_with_ui(move |window, event, scene, rm, renderer, project, resources, fps| {
         match event {
             winit::event::Event::WindowEvent { event, .. } => {
                 (ui.handle_event(window, event), None)
@@ -183,11 +186,7 @@ fn main() {
                 // Update simulation state
                 let delta = 1.0 / fps.max(0.001);
                 if ui.sim_state == crate::ui::SimulationState::Playing {
-                    // Safety: In editor mode, we can access task system via raw pointer or similar if needed,
-                    // but for simplicity we'll create a temporary one or pass it correctly.
-                    // Actually, let's just use a dummy task system for now or move task system to project/context.
-                    let dummy_tasks = spark_core::task::TaskSystem::new();
-                    scene.update_components(delta, renderer, rm, project, &dummy_tasks);
+                    scene.update_components(delta, renderer, rm, project, &task_system, resources);
                 }
 
                 let full_output = ui.end_frame(window);

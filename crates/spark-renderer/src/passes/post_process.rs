@@ -304,7 +304,7 @@ impl RenderPass for PostProcessPass {
                 dof_enabled: f32,
                 lut_index: f32,
                 time: f32,
-                padding: [f32; 0],
+                padding: [f32; 2],
             }
             let pc = PostProcessPC {
                 exposure: renderer.settings.exposure,
@@ -319,7 +319,7 @@ impl RenderPass for PostProcessPass {
                 dof_enabled: if renderer.settings.enable_dof { 1.0 } else { 0.0 },
                 lut_index: if renderer.settings.enable_color_grading { renderer.settings.lut_index as f32 } else { -1.0 },
                 time: (renderer.frame_index as f32) * 0.016,
-                padding: [0.0; 0],
+                padding: [0.0; 2],
             };
             let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PostProcessPC>());
             renderer.device.device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);

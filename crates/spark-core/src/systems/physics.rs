@@ -1,6 +1,6 @@
 use crate::scene::{Component, NodeKey};
 use serde::{Serialize, Deserialize};
-use spark_math::{Vec3, Vec4Swizzles};
+use spark_math::Vec3;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RigidBody {

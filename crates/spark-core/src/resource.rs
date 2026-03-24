@@ -437,6 +437,7 @@ impl GltfLoader {
             name: node.name().unwrap_or("Unnamed Node").to_string(),
             visible: true,
             locked: false,
+            is_dirty: true,
             local_transform,
             global_transform: Mat4::IDENTITY,
             parent: None,

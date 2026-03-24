@@ -94,6 +94,7 @@ pub struct Node {
     pub name: String,
     pub visible: bool,
     pub locked: bool,
+    pub is_dirty: bool,
     pub local_transform: Mat4,
     #[serde(skip)]
     pub global_transform: Mat4,
@@ -108,6 +109,7 @@ impl Clone for Node {
             name: self.name.clone(),
             visible: self.visible,
             locked: self.locked,
+            is_dirty: self.is_dirty,
             local_transform: self.local_transform,
             global_transform: self.global_transform,
             parent: self.parent,
@@ -123,6 +125,8 @@ pub struct Scene {
     pub root: NodeKey,
     #[serde(skip)]
     pub last_view_matrix: Mat4,
+    #[serde(skip)]
+    pub component_registry: std::collections::HashMap<std::any::TypeId, Vec<NodeKey>>,
 }
 
 type TextureHandle = crate::resource::Handle<spark_renderer::vulkan::texture::Texture>;
@@ -164,6 +168,7 @@ impl Scene {
             name: "Root".to_string(),
             visible: true,
             locked: false,
+            is_dirty: true,
             local_transform: Mat4::IDENTITY,
             global_transform: Mat4::IDENTITY,
             parent: None,
@@ -171,7 +176,22 @@ impl Scene {
             components: Vec::new(),
         });
 
-        Self { nodes, root, last_view_matrix: Mat4::IDENTITY }
+        Self {
+            nodes,
+            root,
+            last_view_matrix: Mat4::IDENTITY,
+            component_registry: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn rebuild_component_registry(&mut self) {
+        self.component_registry.clear();
+        for (key, node) in &self.nodes {
+            for component in &node.components {
+                let type_id = component.as_any().type_id();
+                self.component_registry.entry(type_id).or_default().push(key);
+            }
+        }
     }
 }
 
@@ -181,7 +201,48 @@ impl Default for Scene {
     }
 }
 
+pub struct Query<'a> {
+    scene: &'a Scene,
+    matches: std::collections::HashSet<NodeKey>,
+}
+
+impl<'a> Query<'a> {
+    pub fn with<T: 'static>(mut self) -> Self {
+        let tid = std::any::TypeId::of::<T>();
+        if let Some(nodes) = self.scene.component_registry.get(&tid) {
+            let set: std::collections::HashSet<_> = nodes.iter().copied().collect();
+            self.matches.retain(|k| set.contains(k));
+        } else {
+            self.matches.clear();
+        }
+        self
+    }
+
+    pub fn without<T: 'static>(mut self) -> Self {
+        let tid = std::any::TypeId::of::<T>();
+        if let Some(nodes) = self.scene.component_registry.get(&tid) {
+            for k in nodes {
+                self.matches.remove(k);
+            }
+        }
+        self
+    }
+
+    pub fn build(self) -> Vec<NodeKey> {
+        self.matches.into_iter().collect()
+    }
+}
+
 impl Scene {
+    pub fn query(&self) -> Query {
+        let all_nodes: std::collections::HashSet<_> = self.nodes.keys().collect();
+        Query { scene: self, matches: all_nodes }
+    }
+
+    pub fn query_components<T: 'static>(&self) -> Vec<NodeKey> {
+        self.component_registry.get(&std::any::TypeId::of::<T>()).cloned().unwrap_or_default()
+    }
+
     pub fn update_components(&mut self, delta: f32, renderer: *mut spark_renderer::Renderer, resource_manager: *mut crate::resource::ResourceManager, project: &crate::Project, task_system: &crate::task::TaskSystem, resources: &crate::resource_container::Resources) {
         let ctx = crate::FrameContext {
             scene: self as *mut Scene,
@@ -213,8 +274,9 @@ impl Scene {
     }
 
     pub fn remove_node(&mut self, key: NodeKey) {
-        let (children, parent_key) = if let Some(node) = self.nodes.get(key) {
-            (node.children.clone(), node.parent)
+        let (children, parent_key, components_types) = if let Some(node) = self.nodes.get(key) {
+            let types: Vec<_> = node.components.iter().map(|c| c.as_any().type_id()).collect();
+            (node.children.clone(), node.parent, types)
         } else {
             return;
         };
@@ -229,6 +291,13 @@ impl Scene {
             }
         }
 
+        // Update registry
+        for tid in components_types {
+            if let Some(list) = self.component_registry.get_mut(&tid) {
+                list.retain(|&k| k != key);
+            }
+        }
+
         self.nodes.remove(key);
     }
 
@@ -238,53 +307,44 @@ impl Scene {
         if let Some(parent_node) = self.nodes.get_mut(parent) {
             parent_node.children.push(key);
         }
+
+        // Update registry
+        for component in &self.nodes[key].components {
+            let type_id = component.as_any().type_id();
+            self.component_registry.entry(type_id).or_default().push(key);
+        }
+
         self.update_all_transforms();
         key
     }
 
     pub fn update_all_transforms(&mut self) {
-        let mut levels = Vec::new();
-        let mut current_level = vec![self.root];
+        self.update_transform_recursive(self.root, Mat4::IDENTITY, false);
+    }
 
-        while !current_level.is_empty() {
-            let mut next_level = Vec::new();
-            for &key in &current_level {
-                if let Some(node) = self.nodes.get(key) {
-                    next_level.extend(node.children.iter().copied());
+    fn update_transform_recursive(&mut self, key: NodeKey, parent_global: Mat4, parent_dirty: bool) {
+        let (dirty, global) = if let Some(node) = self.nodes.get_mut(key) {
+            let dirty = node.is_dirty || parent_dirty;
+            if dirty {
+                node.global_transform = parent_global * node.local_transform;
+                node.is_dirty = false;
+            }
+            (dirty, node.global_transform)
+        } else {
+            return;
+        };
+
+        if dirty {
+             for component in &self.nodes[key].components {
+                if component.as_any().is::<CameraComponent>() {
+                    self.last_view_matrix = global.inverse();
                 }
             }
-            levels.push(current_level);
-            current_level = next_level;
         }
 
-        for level in levels {
-            use rayon::prelude::*;
-            level.into_par_iter().for_each(|key| {
-                // Safety: We process level by level. All parents for the current level
-                // have already been updated in the previous level. Nodes within the same level
-                // do not depend on each other's global_transform.
-                unsafe {
-                    let scene_ptr = self as *const Scene as *mut Scene;
-                    let scene = &mut *scene_ptr;
-
-                    let parent_global = if let Some(node) = scene.nodes.get(key) {
-                        node.parent.and_then(|pk| scene.nodes.get(pk)).map(|p| p.global_transform).unwrap_or(Mat4::IDENTITY)
-                    } else {
-                        Mat4::IDENTITY
-                    };
-
-                    if let Some(node) = scene.nodes.get_mut(key) {
-                        node.global_transform = parent_global * node.local_transform;
-                        let current_global = node.global_transform;
-
-                        for component in &node.components {
-                            if component.as_any().is::<CameraComponent>() {
-                                scene.last_view_matrix = current_global.inverse();
-                            }
-                        }
-                    }
-                }
-            });
+        let children = self.nodes[key].children.clone();
+        for child in children {
+            self.update_transform_recursive(child, global, dirty);
         }
     }
 

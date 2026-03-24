@@ -33,6 +33,7 @@ impl Command for TransformCommand {
             } else {
                 node.local_transform = self.transform;
             }
+            node.is_dirty = true;
         }
     }
 }

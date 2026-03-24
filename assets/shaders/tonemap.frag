@@ -2,16 +2,17 @@
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
 
-layout(binding = 0) uniform sampler2D hdrSampler;
-layout(binding = 1) uniform sampler2D bloomSampler;
-layout(binding = 2) uniform sampler2D fogSampler;
-layout(binding = 3) uniform sampler2D spriteSampler;
-layout(binding = 4) uniform sampler2D velocitySampler;
-layout(binding = 5) buffer LuminanceBuffer {
+layout(set = 1, binding = 0) uniform sampler2D hdrSampler;
+layout(set = 1, binding = 1) uniform sampler2D bloomSampler;
+layout(set = 1, binding = 2) uniform sampler2D fogSampler;
+layout(set = 1, binding = 3) uniform sampler2D spriteSampler;
+layout(set = 1, binding = 4) uniform sampler2D velocitySampler;
+layout(set = 1, binding = 5) buffer LuminanceBuffer {
     float avgLuminance;
     float targetExposure;
 } lum;
-layout(binding = 6) uniform sampler2D dofSampler;
+layout(set = 1, binding = 6) uniform sampler2D dofSampler;
+
 layout(set = 0, binding = 0) uniform sampler3D luts[16];
 
 layout(push_constant) uniform PostProcessParams {
@@ -63,8 +64,6 @@ void main() {
         }
         hdrColor /= float(samples);
     } else {
-    vec2 finalUV = inUV;
-
         // Just Chromatic Aberration
         vec2 dist = inUV - 0.5;
         vec2 r_offset = dist * params.chromatic_aberration;
@@ -83,9 +82,6 @@ void main() {
     // Apply DoF
     if (params.dof_enabled > 0.5) {
         vec3 dofColor = texture(dofSampler, inUV).rgb;
-        color = mix(color, dofColor, 1.0); // Pass-through for now, dof.comp does the heavy lifting
-        // Actually, dof.comp already has the blurred result.
-        // We should just sample from it instead of hdrColor if enabled.
         color = dofColor + fogColor;
     }
 

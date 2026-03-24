@@ -36,7 +36,7 @@ impl InputManager {
         }
     }
 
-    pub fn update(&mut self, events: &[EngineEvent]) {
+    pub fn update(&mut self, events: &[crate::event::EngineEvent]) {
         for event in events {
             match event {
                 EngineEvent::KeyDown { key } => {
