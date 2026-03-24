@@ -144,7 +144,7 @@ impl Scheduler {
                     unsafe {
                         let systems_ptr = registry.systems.as_ptr() as *mut Box<dyn crate::System>;
                         let ctx_ptr = ctx as *const FrameContext as *mut FrameContext;
-                        (*systems_ptr.add(idx)).update(&mut *ctx_ptr);
+                        (*systems_ptr.add(idx)).update(&*ctx_ptr);
                     }
                 });
             } else if let Some(&idx) = stage.first() {
@@ -172,7 +172,7 @@ impl System for HierarchySystem {
             resource_manager: crate::Access::None,
         }
     }
-    fn update(&mut self, ctx: &mut FrameContext) {
+    fn update(&mut self, ctx: &FrameContext) {
         unsafe { ctx.scene_mut().update_all_transforms(); }
     }
 }
@@ -188,7 +188,7 @@ impl System for ResourceSystem {
             resource_manager: crate::Access::Write,
         }
     }
-    fn update(&mut self, ctx: &mut FrameContext) {
+    fn update(&mut self, ctx: &FrameContext) {
         unsafe {
             let renderer = ctx.renderer_mut();
             ctx.resource_manager_mut().upload_global_buffers(renderer);

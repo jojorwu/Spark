@@ -9,7 +9,7 @@ new_key_type! {
 #[typetag::serde(tag = "type")]
 pub trait Component: Send + Sync {
     fn on_init(&mut self, _node: NodeKey, _scene: &mut Scene) {}
-    fn on_update(&mut self, _node: NodeKey, _scene: &mut Scene, _delta: f32) {}
+    fn on_update(&mut self, _node: NodeKey, _ctx: &crate::FrameContext) {}
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
     fn clone_box(&self) -> Box<dyn Component>;
@@ -179,31 +179,53 @@ impl Scene {
         if let Some(parent_node) = self.nodes.get_mut(parent) {
             parent_node.children.push(key);
         }
-        let parent_global = self.nodes.get(parent).map(|p| p.global_transform).unwrap_or(Mat4::IDENTITY);
-        self.update_transforms_recursive(key, parent_global);
+        self.update_all_transforms();
         key
     }
 
     pub fn update_all_transforms(&mut self) {
-        let root = self.root;
-        self.update_transforms_recursive(root, Mat4::IDENTITY);
-    }
+        let mut levels = Vec::new();
+        let mut current_level = vec![self.root];
 
-    fn update_transforms_recursive(&mut self, node_key: NodeKey, parent_global: Mat4) {
-        if let Some(node) = self.nodes.get_mut(node_key) {
-            node.global_transform = parent_global * node.local_transform;
-            let current_global = node.global_transform;
-
-            for component in &node.components {
-                if component.as_any().is::<CameraComponent>() {
-                    self.last_view_matrix = current_global.inverse();
+        while !current_level.is_empty() {
+            let mut next_level = Vec::new();
+            for &key in &current_level {
+                if let Some(node) = self.nodes.get(key) {
+                    next_level.extend(node.children.iter().copied());
                 }
             }
+            levels.push(current_level);
+            current_level = next_level;
+        }
 
-            let children = node.children.clone();
-            for child_key in children {
-                self.update_transforms_recursive(child_key, current_global);
-            }
+        for level in levels {
+            use rayon::prelude::*;
+            level.into_par_iter().for_each(|key| {
+                // Safety: We process level by level. All parents for the current level
+                // have already been updated in the previous level. Nodes within the same level
+                // do not depend on each other's global_transform.
+                unsafe {
+                    let scene_ptr = self as *const Scene as *mut Scene;
+                    let scene = &mut *scene_ptr;
+
+                    let parent_global = if let Some(node) = scene.nodes.get(key) {
+                        node.parent.and_then(|pk| scene.nodes.get(pk)).map(|p| p.global_transform).unwrap_or(Mat4::IDENTITY)
+                    } else {
+                        Mat4::IDENTITY
+                    };
+
+                    if let Some(node) = scene.nodes.get_mut(key) {
+                        node.global_transform = parent_global * node.local_transform;
+                        let current_global = node.global_transform;
+
+                        for component in &node.components {
+                            if component.as_any().is::<CameraComponent>() {
+                                scene.last_view_matrix = current_global.inverse();
+                            }
+                        }
+                    }
+                }
+            });
         }
     }
 
@@ -256,37 +278,50 @@ impl Scene {
         use rayon::prelude::*;
         let data = self.collect_data_recursive(self.root, frustum);
 
-        // Parallel processing of renderables
-        let (opaque_meshes, transparent_meshes): (Vec<_>, Vec<_>) = data.renderables.par_iter().map(|r| {
-            let mat_idx = r.6.unwrap_or(0);
-            let is_transparent = resource_manager.all_materials.get(mat_idx as usize).is_some_and(|m| (m.flags & 1) != 0);
-
-            let draw = spark_renderer::resource::MeshDraw {
-                model: r.0,
-                vertex_count: r.1,
-                index_count: r.2,
-                first_index: r.3,
-                vertex_offset: r.4,
-                material_index: mat_idx,
-                bounding_radius: r.7,
-            };
-            (draw, is_transparent)
-        }).partition(|(_, is_trans)| !*is_trans);
-
-        // Strip the boolean from the partition result
-        let mut opaque_meshes: Vec<_> = opaque_meshes.into_iter().map(|(d, _)| d).collect();
-        let mut transparent_meshes: Vec<_> = transparent_meshes.into_iter().map(|(d, _)| d).collect();
-
-        // Parallel sort transparent meshes back-to-front
-        let view_pos = self.last_view_matrix.inverse().w_axis.xyz();
-        transparent_meshes.par_sort_by(|a, b| {
-            let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
-            let dist_b = (b.model.w_axis.xyz() - view_pos).length_squared();
-            dist_b.partial_cmp(&dist_a).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // Pre-calculate transparency to avoid repeat resource_manager lookups
+        let (mut opaque_meshes, mut transparent_meshes): (Vec<_>, Vec<_>) = rayon::join(
+            || {
+                data.renderables.par_iter().filter_map(|r| {
+                    let mat_idx = r.6.unwrap_or(0);
+                    let is_transparent = resource_manager.all_materials.get(mat_idx as usize).is_some_and(|m| (m.flags & 1) != 0);
+                    if !is_transparent {
+                        Some(spark_renderer::resource::MeshDraw {
+                            model: r.0,
+                            vertex_count: r.1,
+                            index_count: r.2,
+                            first_index: r.3,
+                            vertex_offset: r.4,
+                            material_index: mat_idx,
+                            bounding_radius: r.7,
+                        })
+                    } else {
+                        None
+                    }
+                }).collect()
+            },
+            || {
+                data.renderables.par_iter().filter_map(|r| {
+                    let mat_idx = r.6.unwrap_or(0);
+                    let is_transparent = resource_manager.all_materials.get(mat_idx as usize).is_some_and(|m| (m.flags & 1) != 0);
+                    if is_transparent {
+                        Some(spark_renderer::resource::MeshDraw {
+                            model: r.0,
+                            vertex_count: r.1,
+                            index_count: r.2,
+                            first_index: r.3,
+                            vertex_offset: r.4,
+                            material_index: mat_idx,
+                            bounding_radius: r.7,
+                        })
+                    } else {
+                        None
+                    }
+                }).collect()
+            }
+        );
 
         // Parallel processing of instanced data
-        let instanced_results: Vec<_> = data.instanced.par_iter().flat_map(|((ic, fi, vo, _tex, mat_idx, br_bits), transforms)| {
+        let instanced_results: Vec<Vec<(spark_renderer::resource::MeshDraw, bool)>> = data.instanced.par_iter().map(|((ic, fi, vo, _tex, mat_idx, br_bits), transforms)| {
             let br = f32::from_bits(*br_bits);
             let midx = mat_idx.unwrap_or(0);
             let is_transparent = resource_manager.all_materials.get(midx as usize).is_some_and(|m| (m.flags & 1) != 0);
@@ -302,18 +337,28 @@ impl Scene {
                     bounding_radius: br,
                 };
                 (draw, is_transparent)
-            }).collect::<Vec<_>>()
+            }).collect()
         }).collect();
 
-        for (draw, is_trans) in instanced_results {
-            if is_trans {
-                transparent_meshes.push(draw);
-            } else {
-                opaque_meshes.push(draw);
+        for batch in instanced_results {
+            for (draw, is_trans) in batch {
+                if is_trans {
+                    transparent_meshes.push(draw);
+                } else {
+                    opaque_meshes.push(draw);
+                }
             }
         }
 
-        let lights = data.lights.into_iter().map(|(t, _type, color, intensity, _range)| {
+        // Parallel sort transparent meshes back-to-front
+        let view_pos = self.last_view_matrix.inverse().w_axis.xyz();
+        transparent_meshes.par_sort_by(|a, b| {
+            let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
+            let dist_b = (b.model.w_axis.xyz() - view_pos).length_squared();
+            dist_b.partial_cmp(&dist_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let lights = data.lights.into_par_iter().map(|(t, _type, color, intensity, _range)| {
             let translation = spark_math::Vec3::new(t.w_axis.x, t.w_axis.y, t.w_axis.z);
             spark_renderer::resource::LightDraw {
                 position: translation,
@@ -369,10 +414,13 @@ impl Scene {
             }
 
             if !node.children.is_empty() {
-                if node.children.len() > 1 {
+                // Heuristic: Use parallel collection only for branches with many children
+                if node.children.len() > 100 {
                     data.merge(self.collect_data_parallel(&node.children, frustum));
                 } else {
-                    data.merge(self.collect_data_recursive(node.children[0], frustum));
+                    for &child_key in &node.children {
+                        data.merge(self.collect_data_recursive(child_key, frustum));
+                    }
                 }
             }
         }
