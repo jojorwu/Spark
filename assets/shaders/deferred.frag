@@ -111,9 +111,6 @@ float interleavedGradientNoise(vec2 n) {
     return fract(sin(dot(n, vec2(12.9898, 78.233))) * 43758.5453);
 }
 
-/**
- * PCSS (Percentage-Closer Soft Shadows) with Poisson Disk sampling.
- */
 float calculateShadow(vec3 worldPos, float linearDepth, vec3 N) {
     uint cascadeIdx = 0;
     for (uint i = 0; i < 3; ++i) {
@@ -138,7 +135,6 @@ float calculateShadow(vec3 worldPos, float linearDepth, vec3 N) {
     float sinT = sin(noise * 2.0 * 3.14159);
     mat2 rot = mat2(cosT, sinT, -sinT, cosT);
 
-    // Blocker Search
     float avgBlockerDepth = 0.0;
     float blockers = 0.0;
     float searchRadius = 5.0 * texelSize.x;
@@ -154,11 +150,9 @@ float calculateShadow(vec3 worldPos, float linearDepth, vec3 N) {
     if (blockers < 1.0) return 1.0;
     avgBlockerDepth /= blockers;
 
-    // Penumbra Size Estimation
     float penumbraSize = (shadowCoord.z - avgBlockerDepth) * 10.0 / avgBlockerDepth;
     float filterRadius = clamp(penumbraSize * texelSize.x * 20.0, texelSize.x, 10.0 * texelSize.x);
 
-    // PCF with Poisson Disk
     float shadow = 0.0;
     for (int i = 0; i < 16; i++) {
         vec2 offset = (rot * poissonDisk[i]) * filterRadius;
@@ -169,9 +163,28 @@ float calculateShadow(vec3 worldPos, float linearDepth, vec3 N) {
     return shadow / 16.0;
 }
 
-/**
- * Physically Based Rendering (PBR) lighting using Cook-Torrance BRDF.
- */
+float calculateContactShadow(vec3 worldPos, vec3 L) {
+    vec4 startPos = global.viewProj * vec4(worldPos, 1.0);
+    startPos.xyz /= startPos.w;
+    startPos.xy = startPos.xy * 0.5 + 0.5;
+
+    vec3 rayDir = (global.viewProj * vec4(L, 0.0)).xyz;
+    rayDir = normalize(rayDir);
+
+    float shadow = 1.0;
+    vec3 currentPos = startPos.xyz;
+    for(int i=0; i<16; i++) {
+        currentPos += rayDir * 0.01;
+        if(currentPos.x < 0.0 || currentPos.x > 1.0 || currentPos.y < 0.0 || currentPos.y > 1.0) break;
+        float depth = texture(inputDepth, currentPos.xy).r; // Note: simplified access
+        if(currentPos.z > depth + 0.0001) {
+            shadow = 0.0;
+            break;
+        }
+    }
+    return shadow;
+}
+
 vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metallic, float roughness, vec3 viewPos, float ssao, vec2 uv, float depth) {
     vec3 N = normalize(normal);
     vec3 V = normalize(viewPos - worldPos);
@@ -181,8 +194,6 @@ vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metalli
     vec3 Lo = vec3(0.0);
     float shadow = calculateShadow(worldPos, depth, N);
 
-    // Clustered Light Lookup
-    // 16x9x24 grid
     uint zSlices = 24;
     float zNear = 0.1;
     float zFar = 100.0;
@@ -198,7 +209,7 @@ vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metalli
         vec3 L = normalize(lights[lightIdx].pos.xyz - worldPos);
         vec3 H = normalize(V + L);
         float distance = length(lights[lightIdx].pos.xyz - worldPos);
-        float attenuation = lights[lightIdx].color.w / (distance * distance); // Range in w
+        float attenuation = lights[lightIdx].color.w / (distance * distance);
         vec3 radiance = lights[lightIdx].color.rgb * attenuation;
 
         float NDF = DistributionGGX(N, H, roughness);
@@ -251,7 +262,7 @@ void main()
 #if MSAA_SAMPLES > 1
     vec3 color = vec3(0.0);
     for (int i = 0; i < MSAA_SAMPLES; i++) {
-    float ssao = texture(ssaoTex, texCoord).r;
+        float ssao = texture(ssaoTex, texCoord).r;
 
         vec3 albedo = subpassLoad(inputAlbedo, i).rgb;
         vec3 normal = subpassLoad(inputNormal, i).rgb * 2.0 - 1.0;
@@ -259,7 +270,6 @@ void main()
         vec3 position = worldPosFromDepth(depth, texCoord);
         vec2 pbr = subpassLoad(inputPBR, i).rg;
 
-        // linear depth for clustering
         float linearDepth = (2.0 * 0.1) / (100.0 + 0.1 - depth * (100.0 - 0.1));
 
         color += calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, texCoord, linearDepth);

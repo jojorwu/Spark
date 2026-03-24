@@ -122,7 +122,7 @@ impl Renderer {
             )?
         };
 
-        let (av, fi, in_f) = Self::create_sync_objects_impl(&device.device);
+        let (_av, _fi, _in_f) = Self::create_sync_objects_impl(&device.device);
         let dummy_buffer = device.create_buffer(
             64,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER,

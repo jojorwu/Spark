@@ -1,4 +1,5 @@
 pub mod component;
+pub mod camera;
 
 use crate::{System, FrameContext, InitContext};
 use std::collections::{HashSet, HashMap};

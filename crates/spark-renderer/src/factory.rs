@@ -31,6 +31,8 @@ pub struct PassShaders {
     pub particle_vert: Vec<u32>,
     pub particle_frag: Vec<u32>,
     pub ssr_comp: Vec<u32>,
+    pub sprite_vert: Vec<u32>,
+    pub sprite_frag: Vec<u32>,
 }
 
 impl Renderer {
@@ -108,6 +110,11 @@ impl Renderer {
         let particle_pass = crate::passes::particle::ParticlePass::new(
             self, &shaders.particle_comp, &shaders.particle_vert, &shaders.particle_frag
         )?;
+
+        let sprite_pass = crate::passes::sprite::SpritePass::new(
+            self, &shaders.sprite_vert, &shaders.sprite_frag
+        )?;
+
         post_process_pass.create_pipelines(crate::passes::post_process::PostProcessPipelineParams {
             device: &self.device.device,
             pipeline_cache: cache,
@@ -135,6 +142,7 @@ impl Renderer {
         self.add_render_pass(ssr_pass, &["GBuffer", "HDRColor", "HiZ"], &["SSR"]);
         self.add_render_pass(taa_pass, &["HDRColor", "GBuffer"], &["TAAColor"]);
         self.add_render_pass(post_process_pass, &["TAAColor"], &["FinalColor"]);
+        self.add_render_pass(sprite_pass, &["GBuffer"], &["SpriteColor"]);
 
         self.compile_render_graph();
         self.update_all_descriptor_sets();

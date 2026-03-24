@@ -99,6 +99,8 @@ fn main() {
         particle_vert: compiler.compile("assets/shaders/particle.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile particle.vert"),
         particle_frag: compiler.compile("assets/shaders/particle.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile particle.frag"),
         ssr_comp: compiler.compile("assets/shaders/ssr.comp", shaderc::ShaderKind::Compute).expect("Failed to compile ssr.comp"),
+        sprite_vert: compiler.compile("assets/shaders/sprite.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile sprite.vert"),
+        sprite_frag: compiler.compile("assets/shaders/sprite.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile sprite.frag"),
     };
 
     app.engine.renderer.setup_default_passes(shaders).expect("Failed to setup render passes");

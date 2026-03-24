@@ -129,6 +129,7 @@ pub trait Plugin {
 
 pub struct App {
     pub engine: Engine,
+    pub startup_systems: Vec<Box<dyn System>>,
 }
 
 impl App {
@@ -136,6 +137,7 @@ impl App {
         let engine = Engine::new(title, None).expect("Failed to initialize engine");
         Self {
             engine,
+            startup_systems: Vec::new(),
         }
     }
 
@@ -143,6 +145,7 @@ impl App {
         let engine = Engine::new(title, Some((vert, frag))).expect("Failed to initialize engine");
         Self {
             engine,
+            startup_systems: Vec::new(),
         }
     }
 
@@ -156,15 +159,37 @@ impl App {
         self
     }
 
-    pub fn run(self) {
+    pub fn add_startup_system<S: System + 'static>(mut self, system: S) -> Self {
+        self.startup_systems.push(Box::new(system));
+        self
+    }
+
+    pub fn run(mut self) {
+        self.run_startup();
         self.engine.run(|_, _, _, _, _, _| (false, None));
     }
 
-    pub fn run_with_ui<F>(self, ui_callback: F)
+    pub fn run_with_ui<F>(mut self, ui_callback: F)
     where
         F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
     {
+        self.run_startup();
         self.engine.run(ui_callback);
+    }
+
+    fn run_startup(&mut self) {
+        let mut init_ctx = InitContext {
+            scene: &mut self.engine.scene,
+            renderer: &mut self.engine.renderer,
+            resource_manager: &mut self.engine.resource_manager,
+            task_system: &self.engine.task_system,
+        };
+        for system in &mut self.startup_systems {
+            system.on_init(&mut init_ctx);
+            // Startup systems don't have an 'update' in the main loop,
+            // but we could call it once if needed.
+            // system.update(&FrameContext { ... });
+        }
     }
 }
 
