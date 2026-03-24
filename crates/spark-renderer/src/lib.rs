@@ -534,13 +534,17 @@ impl Renderer {
         #[derive(Copy, Clone)]
         struct LD {
             pos: [f32; 4],
+            dir: [f32; 4],
             col: [f32; 4],
+            spot_angles: [f32; 4],
         }
         let ld: Vec<LD> = lights
             .iter()
             .map(|l| LD {
-                pos: [l.position.x, l.position.y, l.position.z, 1.0],
+                pos: [l.position.x, l.position.y, l.position.z, l.range],
+                dir: [l.direction.x, l.direction.y, l.direction.z, l.light_type as f32],
                 col: [l.color.x, l.color.y, l.color.z, l.intensity],
+                spot_angles: [l.spot_angles[0], l.spot_angles[1], 0.0, 0.0],
             })
             .collect();
         let sz = (ld.len() * std::mem::size_of::<LD>()) as u64;
@@ -1602,9 +1606,11 @@ mod tests {
         #[derive(Copy, Clone)]
         struct LD {
             pos: [f32; 4],
+            dir: [f32; 4],
             col: [f32; 4],
+            spot_angles: [f32; 4],
         }
-        assert_eq!(std::mem::size_of::<LD>(), 32);
+        assert_eq!(std::mem::size_of::<LD>(), 64);
     }
 }
 

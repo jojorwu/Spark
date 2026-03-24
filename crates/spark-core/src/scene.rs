@@ -71,6 +71,8 @@ pub struct LightComponent {
     pub color: spark_math::Vec3,
     pub intensity: f32,
     pub range: f32,
+    pub spot_inner_angle: f32,
+    pub spot_outer_angle: f32,
 }
 
 #[typetag::serde]
@@ -80,10 +82,11 @@ impl Component for LightComponent {
     fn clone_box(&self) -> Box<dyn Component> { Box::new(self.clone()) }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub enum LightType {
     Directional,
     Point,
+    Spot,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -126,7 +129,7 @@ pub type InstancedKey = (u32, u32, i32, Option<TextureHandle>, Option<u32>, u32)
 struct SceneDataCollector {
     renderables: Vec<RenderableData>,
     instanced: std::collections::HashMap<InstancedKey, Vec<Mat4>>,
-    lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32)>,
+    lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32, f32, f32)>,
     sprites: Vec<(Mat4, Option<TextureHandle>, [f32; 4], Vec2)>,
 }
 
@@ -382,12 +385,21 @@ impl Scene {
             dist_b.partial_cmp(&dist_a).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let lights = data.lights.into_par_iter().map(|(t, _type, color, intensity, _range)| {
-            let translation = spark_math::Vec3::new(t.w_axis.x, t.w_axis.y, t.w_axis.z);
+        let lights = data.lights.into_par_iter().map(|(t, light_type, color, intensity, range, spot_inner, spot_outer)| {
+            let position = spark_math::Vec3::new(t.w_axis.x, t.w_axis.y, t.w_axis.z);
+            let direction = -spark_math::Vec3::new(t.z_axis.x, t.z_axis.y, t.z_axis.z).normalize();
             spark_renderer::resource::LightDraw {
-                position: translation,
+                position,
+                direction,
                 color,
                 intensity,
+                range,
+                light_type: match light_type {
+                    LightType::Directional => 0,
+                    LightType::Point => 1,
+                    LightType::Spot => 2,
+                },
+                spot_angles: [spot_inner.cos(), spot_outer.cos()],
             }
         }).collect();
 
@@ -433,7 +445,7 @@ impl Scene {
                         }
                     }
                 } else if let Some(light) = any.downcast_ref::<LightComponent>() {
-                    data.lights.push((node.global_transform, light.light_type, light.color, light.intensity, light.range));
+                    data.lights.push((node.global_transform, light.light_type, light.color, light.intensity, light.range, light.spot_inner_angle.to_radians(), light.spot_outer_angle.to_radians()));
                 } else if let Some(sprite) = any.downcast_ref::<SpriteComponent>() {
                      data.sprites.push((node.global_transform, sprite.texture_handle, sprite.color, sprite.size));
                 }

@@ -170,6 +170,8 @@ impl EditorUI {
                         color: spark_math::Vec3::ONE,
                         intensity: 1.0,
                         range: 10.0,
+                        spot_inner_angle: 30.0,
+                        spot_outer_angle: 45.0,
                     }));
                     scene.add_node(parent, node);
                 }
@@ -428,6 +430,8 @@ impl EditorUI {
             color: spark_math::Vec3::ONE,
             intensity: 1.0,
             range: 10.0,
+            spot_inner_angle: 30.0,
+            spot_outer_angle: 45.0,
         }));
         scene.add_node(scene.root, new_node);
     }
@@ -495,6 +499,8 @@ impl EditorUI {
                                         color: spark_math::Vec3::ONE,
                                         intensity: 1.0,
                                         range: 10.0,
+                                        spot_inner_angle: 30.0,
+                                        spot_outer_angle: 45.0,
                                     }));
                                     ui.close_menu();
                                 }
@@ -624,6 +630,16 @@ impl EditorUI {
         if let Some(light) = any.downcast_mut::<spark_core::scene::LightComponent>() {
             ui.collapsing("Light Component", |ui| {
                 ui.horizontal(|ui| {
+                    ui.label("Type:");
+                    egui::ComboBox::from_id_source("light_type")
+                        .selected_text(format!("{:?}", light.light_type))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut light.light_type, spark_core::scene::LightType::Directional, "Directional");
+                            ui.selectable_value(&mut light.light_type, spark_core::scene::LightType::Point, "Point");
+                            ui.selectable_value(&mut light.light_type, spark_core::scene::LightType::Spot, "Spot");
+                        });
+                });
+                ui.horizontal(|ui| {
                     ui.label("Color:");
                     ui.color_edit_button_rgb(light.color.as_mut());
                 });
@@ -635,6 +651,16 @@ impl EditorUI {
                     ui.label("Range:");
                     ui.add(egui::DragValue::new(&mut light.range).speed(0.1));
                 });
+                if let spark_core::scene::LightType::Spot = light.light_type {
+                    ui.horizontal(|ui| {
+                        ui.label("Inner Angle:");
+                        ui.add(egui::DragValue::new(&mut light.spot_inner_angle).speed(1.0).clamp_range(0.0..=180.0));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Outer Angle:");
+                        ui.add(egui::DragValue::new(&mut light.spot_outer_angle).speed(1.0).clamp_range(0.0..=180.0));
+                    });
+                }
             });
         } else if let Some(mesh) = any.downcast_mut::<spark_core::scene::MeshComponent>() {
             ui.collapsing("Mesh Component", |ui| {

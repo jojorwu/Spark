@@ -114,8 +114,12 @@ pub struct MeshDraw {
 
 pub struct LightDraw {
     pub position: spark_math::Vec3,
+    pub direction: spark_math::Vec3,
     pub color: spark_math::Vec3,
     pub intensity: f32,
+    pub range: f32,
+    pub light_type: u32, // 0: Dir, 1: Point, 2: Spot
+    pub spot_angles: [f32; 2], // inner, outer (cos)
 }
 
 pub struct FramePacket {
