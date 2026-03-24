@@ -19,6 +19,24 @@ impl Command for AddNodeCommand {
     }
 }
 
+pub struct TransformCommand {
+    pub node: NodeKey,
+    pub transform: spark_math::Mat4,
+    pub relative: bool,
+}
+
+impl Command for TransformCommand {
+    fn apply(&mut self, scene: &mut Scene, _rm: &mut ResourceManager) {
+        if let Some(node) = scene.nodes.get_mut(self.node) {
+            if self.relative {
+                node.local_transform = node.local_transform * self.transform;
+            } else {
+                node.local_transform = self.transform;
+            }
+        }
+    }
+}
+
 pub struct RemoveNodeCommand {
     pub key: NodeKey,
 }

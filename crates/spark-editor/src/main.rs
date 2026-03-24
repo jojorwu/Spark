@@ -37,9 +37,10 @@ struct EditorPlugin {
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
+        app.engine.add_system_to_stage(spark_core::systems::CoreStage::First, spark_core::systems::time::TimeSystem);
         app.engine.add_system(spark_core::systems::component::ComponentSystem);
         app.engine.add_system(spark_core::systems::HierarchySystem);
-        app.engine.add_system(spark_core::systems::ResourceSystem);
+        app.engine.add_system_to_stage(spark_core::systems::CoreStage::Last, spark_core::systems::ResourceSystem);
     }
 }
 

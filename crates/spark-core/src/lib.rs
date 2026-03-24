@@ -10,6 +10,7 @@ pub mod input;
 pub mod command;
 pub mod event_bus;
 pub mod prefab;
+pub mod resource_container;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Access {
@@ -87,6 +88,7 @@ pub struct InitContext<'a> {
     pub scene: &'a mut Scene,
     pub renderer: &'a mut Renderer,
     pub resource_manager: &'a mut ResourceManager,
+    pub resources: &'a mut crate::resource_container::Resources,
     pub task_system: &'a TaskSystem,
 }
 
@@ -96,6 +98,7 @@ pub struct FrameContext<'a> {
     pub renderer: *mut Renderer,
     pub resource_manager: *mut ResourceManager,
     pub project: &'a Project,
+    pub resources: &'a crate::resource_container::Resources,
     pub task_system: &'a TaskSystem,
     pub delta: f32,
     pub event_proxy: crate::systems_events::events::EventProxy<'a>,
@@ -121,6 +124,10 @@ impl<'a> FrameContext<'a> {
     /// Returns a mutable reference to the resource manager.
     /// Safety: Caller must ensure no other threads are accessing the resource manager concurrently.
     pub unsafe fn resource_manager_mut(&self) -> &mut ResourceManager { &mut *self.resource_manager }
+
+    pub fn get_resource<T: 'static>(&self) -> Option<std::sync::Arc<std::sync::RwLock<Box<dyn std::any::Any + Send + Sync>>>> {
+        self.resources.get::<T>()
+    }
 }
 
 /// A trait representing a system that processes engine state.
@@ -177,8 +184,22 @@ impl App {
         self
     }
 
+    pub fn add_system_to_stage<S: System + 'static>(mut self, stage: crate::systems::CoreStage, system: S) -> Self {
+        self.engine.add_system_to_stage(stage, system);
+        self
+    }
+
+    pub fn add_plugin_to_app<P: Plugin + 'static>(&mut self, plugin: P) {
+        plugin.build(self);
+    }
+
     pub fn add_startup_system<S: System + 'static>(mut self, system: S) -> Self {
         self.startup_systems.push(Box::new(system));
+        self
+    }
+
+    pub fn insert_resource<T: Send + Sync + 'static>(mut self, resource: T) -> Self {
+        self.engine.resources.insert(resource);
         self
     }
 
@@ -200,6 +221,7 @@ impl App {
             scene: &mut self.engine.scene,
             renderer: &mut self.engine.renderer,
             resource_manager: &mut self.engine.resource_manager,
+            resources: &mut self.engine.resources,
             task_system: &self.engine.task_system,
         };
         for system in &mut self.startup_systems {
@@ -215,6 +237,7 @@ pub struct Engine {
     pub renderer: Renderer,
     pub task_system: TaskSystem,
     pub resource_manager: ResourceManager,
+    pub resources: crate::resource_container::Resources,
     pub event_queue: EventQueue,
     pub input_manager: crate::input::InputManager,
     pub command_queue: crate::command::CommandQueue,
@@ -241,6 +264,7 @@ impl Engine {
         let scene = Scene::new();
         let task_system = TaskSystem::new();
         let resource_manager = ResourceManager::new();
+        let resources = crate::resource_container::Resources::new();
         let event_queue = EventQueue::new();
         let input_manager = crate::input::InputManager::new();
         let command_queue = crate::command::CommandQueue::new();
@@ -254,6 +278,7 @@ impl Engine {
             renderer,
             task_system,
             resource_manager,
+            resources,
             event_queue,
             input_manager,
             command_queue,
@@ -268,6 +293,10 @@ impl Engine {
 
     pub fn add_system<S: System + 'static>(&mut self, system: S) {
         self.system_registry.add_system(system);
+    }
+
+    pub fn add_system_to_stage<S: System + 'static>(&mut self, stage: crate::systems::CoreStage, system: S) {
+        self.system_registry.add_system_to_stage(stage, system);
     }
 
     pub fn add_boxed_system(&mut self, system: Box<dyn System>) {
@@ -294,6 +323,7 @@ impl Engine {
                 scene: &mut self.scene,
                 renderer: &mut self.renderer,
                 resource_manager: &mut self.resource_manager,
+                resources: &mut self.resources,
                 task_system: &self.task_system,
             };
             crate::systems::Scheduler::init(&mut self.system_registry, &mut init_ctx);
@@ -328,6 +358,7 @@ impl Engine {
                     scene: &mut self.scene,
                     renderer: &mut self.renderer,
                     resource_manager: &mut self.resource_manager,
+                    resources: &mut self.resources,
                     task_system: &self.task_system,
                 };
                 crate::systems::Scheduler::shutdown(&mut self.system_registry, &mut init_ctx);
@@ -346,6 +377,7 @@ impl Engine {
                 renderer: &mut self.renderer as *mut Renderer,
                 resource_manager: &mut self.resource_manager as *mut ResourceManager,
                 project: &self.project,
+                resources: &self.resources,
                 task_system: &self.task_system,
                 delta,
                 event_proxy: crate::systems_events::events::EventProxy {

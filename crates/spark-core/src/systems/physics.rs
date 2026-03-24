@@ -20,16 +20,17 @@ impl Component for RigidBody {
             self.velocity += gravity * ctx.delta;
         }
 
-        unsafe {
-            let scene = ctx.scene_mut();
-            if let Some(node) = scene.nodes.get_mut(node_key) {
-                let translation = node.local_transform.w_axis.xyz() + self.velocity * ctx.delta;
-                node.local_transform.w_axis.x = translation.x;
-                node.local_transform.w_axis.y = translation.y;
-                node.local_transform.w_axis.z = translation.z;
-            }
-        }
+        ctx.command_queue.push(crate::command::TransformCommand {
+             node: node_key,
+             transform: spark_math::Mat4::from_translation(self.velocity * ctx.delta),
+             relative: true,
+        });
     }
+}
+
+pub struct CollisionEvent {
+    pub node_a: NodeKey,
+    pub node_b: NodeKey,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -49,6 +50,14 @@ pub struct PhysicsSystem;
 
 impl crate::System for PhysicsSystem {
     fn name(&self) -> &str { "PhysicsSystem" }
+    fn dependencies(&self) -> Vec<&'static str> { vec!["TimeSystem"] }
+    fn resource_access(&self) -> crate::ResourceAccess {
+        crate::ResourceAccess {
+            scene: crate::Access::Write,
+            renderer: crate::Access::None,
+            resource_manager: crate::Access::None,
+        }
+    }
     fn update(&mut self, _ctx: &crate::FrameContext) {
         // Advanced collision detection logic would go here
     }

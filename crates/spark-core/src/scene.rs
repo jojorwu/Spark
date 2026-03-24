@@ -182,12 +182,13 @@ impl Default for Scene {
 }
 
 impl Scene {
-    pub fn update_components(&mut self, delta: f32, renderer: *mut spark_renderer::Renderer, resource_manager: *mut crate::resource::ResourceManager, project: &crate::Project, task_system: &crate::task::TaskSystem) {
+    pub fn update_components(&mut self, delta: f32, renderer: *mut spark_renderer::Renderer, resource_manager: *mut crate::resource::ResourceManager, project: &crate::Project, task_system: &crate::task::TaskSystem, resources: &crate::resource_container::Resources) {
         let ctx = crate::FrameContext {
             scene: self as *mut Scene,
             renderer,
             resource_manager,
             project,
+            resources,
             task_system,
             delta,
             event_proxy: crate::systems_events::events::EventProxy {
