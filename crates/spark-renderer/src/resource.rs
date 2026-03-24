@@ -19,6 +19,13 @@ pub struct RenderSettings {
     pub ssao_strength: f32,
     pub bloom_threshold: f32,
     pub bloom_intensity: f32,
+    pub vignette_intensity: f32,
+    pub vignette_smoothness: f32,
+    pub chromatic_aberration: f32,
+    pub film_grain: f32,
+    pub fog_color: [f32; 3],
+    pub fog_density: f32,
+    pub fog_height_falloff: f32,
 }
 
 impl Default for RenderSettings {
@@ -37,6 +44,13 @@ impl Default for RenderSettings {
             ssao_strength: 1.0,
             bloom_threshold: 1.0,
             bloom_intensity: 0.5,
+            vignette_intensity: 0.15,
+            vignette_smoothness: 0.5,
+            chromatic_aberration: 0.002,
+            film_grain: 0.02,
+            fog_color: [0.5, 0.6, 0.7],
+            fog_density: 0.01,
+            fog_height_falloff: 0.1,
         }
     }
 }

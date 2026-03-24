@@ -38,7 +38,7 @@ impl RenderPass for VolumetricPass {
         let current_frame = ctx.current_frame;
 
         let global_ds = renderer.frames[current_frame].global_descriptor_set;
-        self.record_commands_impl(&renderer.device.device, command_buffer, current_frame, global_ds, renderer.swapchain.extent);
+        self.record_commands_impl(renderer, command_buffer, current_frame, global_ds, renderer.swapchain.extent);
     }
 
     fn get_resource_view(&self, name: &str, frame_index: usize) -> Option<vk::ImageView> {
@@ -83,7 +83,13 @@ impl VolumetricPass {
 
         let layout = unsafe {
             device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::default().set_layouts(&[renderer.global_descriptor_set_layout, ds_layout]),
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(&[renderer.global_descriptor_set_layout, ds_layout])
+                    .push_constant_ranges(&[vk::PushConstantRange {
+                        stage_flags: vk::ShaderStageFlags::COMPUTE,
+                        offset: 0,
+                        size: 32,
+                    }]),
                 None,
             )?
         };
@@ -134,7 +140,8 @@ impl VolumetricPass {
         }
     }
 
-    pub fn record_commands_impl(&self, device: &ash::Device, cb: vk::CommandBuffer, current_frame: usize, global_ds: vk::DescriptorSet, extent: vk::Extent2D) {
+    pub fn record_commands_impl(&self, renderer: &Renderer, cb: vk::CommandBuffer, current_frame: usize, global_ds: vk::DescriptorSet, extent: vk::Extent2D) {
+        let device = &renderer.device.device;
         unsafe {
             let barrier = vk::ImageMemoryBarrier::default()
                 .image(self.output_images[current_frame].image)
@@ -147,6 +154,23 @@ impl VolumetricPass {
 
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.pipeline);
             device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[global_ds, self.descriptor_sets[current_frame]], &[]);
+
+            #[repr(C)]
+            struct FogPC {
+                color: [f32; 3],
+                density: f32,
+                height_falloff: f32,
+                padding: [f32; 3],
+            }
+            let pc = FogPC {
+                color: renderer.settings.fog_color,
+                density: renderer.settings.fog_density,
+                height_falloff: renderer.settings.fog_height_falloff,
+                padding: [0.0; 3],
+            };
+            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<FogPC>());
+            device.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::COMPUTE, 0, pc_bytes);
+
             device.cmd_dispatch(cb, (extent.width / 2).div_ceil(8), (extent.height / 2).div_ceil(8), 1);
 
             let barrier_read = vk::ImageMemoryBarrier::default()

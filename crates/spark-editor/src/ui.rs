@@ -331,24 +331,77 @@ impl EditorUI {
                     }
                 }
                 BottomTab::Settings => {
-                    ui.heading("Renderer Settings");
-                    ui.horizontal(|ui| {
-                        ui.label("Exposure:");
-                        ui.add(egui::Slider::new(&mut renderer.settings.exposure, 0.1..=10.0));
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.heading("Post-Processing");
+                        ui.horizontal(|ui| {
+                            ui.label("Exposure:");
+                            ui.add(egui::Slider::new(&mut renderer.settings.exposure, 0.1..=10.0));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Gamma:");
+                            ui.add(egui::Slider::new(&mut renderer.settings.gamma, 1.0..=3.0));
+                        });
+                        ui.separator();
+
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut renderer.settings.enable_bloom, "Bloom");
+                            if renderer.settings.enable_bloom {
+                                ui.label("Threshold:");
+                                ui.add(egui::Slider::new(&mut renderer.settings.bloom_threshold, 0.1..=2.0));
+                                ui.label("Intensity:");
+                                ui.add(egui::Slider::new(&mut renderer.settings.bloom_intensity, 0.0..=2.0));
+                            }
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Vignette Intensity:");
+                            ui.add(egui::Slider::new(&mut renderer.settings.vignette_intensity, 0.0..=1.0));
+                            ui.label("Smoothness:");
+                            ui.add(egui::Slider::new(&mut renderer.settings.vignette_smoothness, 0.0..=1.0));
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Chromatic Aberration:");
+                            ui.add(egui::Slider::new(&mut renderer.settings.chromatic_aberration, 0.0..=0.01));
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Film Grain:");
+                            ui.add(egui::Slider::new(&mut renderer.settings.film_grain, 0.0..=0.1));
+                        });
+
+                        ui.separator();
+                        ui.heading("Environmental Effects");
+                        ui.checkbox(&mut renderer.settings.enable_volumetric, "Volumetric Fog");
+                        if renderer.settings.enable_volumetric {
+                            ui.horizontal(|ui| {
+                                ui.label("Fog Color:");
+                                ui.color_edit_button_rgb(&mut renderer.settings.fog_color);
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Density:");
+                                ui.add(egui::Slider::new(&mut renderer.settings.fog_density, 0.0..=0.1));
+                                ui.label("Height Falloff:");
+                                ui.add(egui::Slider::new(&mut renderer.settings.fog_height_falloff, 0.0..=1.0));
+                            });
+                        }
+
+                        ui.separator();
+                        ui.heading("General Features");
+                        ui.checkbox(&mut renderer.settings.enable_shadows, "Shadows");
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut renderer.settings.enable_ssao, "SSAO");
+                            if renderer.settings.enable_ssao {
+                                ui.label("Radius:");
+                                ui.add(egui::Slider::new(&mut renderer.settings.ssao_radius, 0.1..=2.0));
+                                ui.label("Strength:");
+                                ui.add(egui::Slider::new(&mut renderer.settings.ssao_strength, 0.1..=5.0));
+                            }
+                        });
+                        ui.checkbox(&mut renderer.settings.enable_taa, "TAA");
+                        ui.checkbox(&mut renderer.settings.enable_grid, "Ground Grid");
+                        ui.checkbox(&mut renderer.settings.enable_ibl, "IBL");
                     });
-                    ui.horizontal(|ui| {
-                        ui.label("Gamma:");
-                        ui.add(egui::Slider::new(&mut renderer.settings.gamma, 1.0..=3.0));
-                    });
-                    ui.separator();
-                    ui.heading("Visual Features");
-                    ui.checkbox(&mut renderer.settings.enable_shadows, "Shadows");
-                    ui.checkbox(&mut renderer.settings.enable_ssao, "SSAO");
-                    ui.checkbox(&mut renderer.settings.enable_taa, "TAA");
-                    ui.checkbox(&mut renderer.settings.enable_volumetric, "Volumetric Fog");
-                    ui.checkbox(&mut renderer.settings.enable_grid, "Ground Grid");
-                    ui.checkbox(&mut renderer.settings.enable_ibl, "IBL");
-                    ui.checkbox(&mut renderer.settings.enable_bloom, "Bloom");
                 }
                 BottomTab::Statistics => {
                     ui.horizontal(|ui| {

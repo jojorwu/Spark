@@ -267,8 +267,28 @@ impl RenderPass for PostProcessPass {
             renderer.device.device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.unwrap());
             renderer.device.device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.descriptor_sets[ctx.current_frame]], &[]);
 
-            let pc = [renderer.settings.exposure, renderer.settings.gamma, if renderer.settings.enable_bloom { 1.0 } else { 0.0 }, 0.0];
-            let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 16);
+            #[repr(C)]
+            struct PostProcessPC {
+                exposure: f32,
+                gamma: f32,
+                bloom_enabled: f32,
+                vignette_intensity: f32,
+                vignette_smoothness: f32,
+                chromatic_aberration: f32,
+                film_grain: f32,
+                time: f32,
+            }
+            let pc = PostProcessPC {
+                exposure: renderer.settings.exposure,
+                gamma: renderer.settings.gamma,
+                bloom_enabled: if renderer.settings.enable_bloom { 1.0 } else { 0.0 },
+                vignette_intensity: renderer.settings.vignette_intensity,
+                vignette_smoothness: renderer.settings.vignette_smoothness,
+                chromatic_aberration: renderer.settings.chromatic_aberration,
+                film_grain: renderer.settings.film_grain,
+                time: (renderer.frame_index as f32) * 0.016,
+            };
+            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PostProcessPC>());
             renderer.device.device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
 
             let viewport = vk::Viewport::default().width(extent.width as f32).height(extent.height as f32).max_depth(1.0);
@@ -360,7 +380,7 @@ impl PostProcessPass {
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,
-                        size: 16,
+                        size: 32, // Increased size for new PC
                     }]),
                 None,
             )?
