@@ -31,6 +31,14 @@ pub struct PassShaders {
     pub particle_vert: Vec<u32>,
     pub particle_frag: Vec<u32>,
     pub ssr_comp: Vec<u32>,
+    pub sprite_vert: Vec<u32>,
+    pub sprite_frag: Vec<u32>,
+    pub luminance: Vec<u32>,
+    pub dof: Vec<u32>,
+    pub skinning: Vec<u32>,
+    pub point_shadow_vert: Vec<u32>,
+    pub point_shadow_frag: Vec<u32>,
+    pub ssgi: Vec<u32>,
 }
 
 impl Renderer {
@@ -97,6 +105,13 @@ impl Renderer {
 
         let ssr_pass = crate::passes::ssr::SSRPass::new(self, &shaders.ssr_comp)?;
 
+        let luminance_pass = crate::passes::luminance::LuminancePass::new(self, &shaders.luminance)?;
+
+        let dof_pass = crate::passes::dof::DoFPass::new(self, &shaders.dof)?;
+
+        let point_shadow_pass = crate::passes::point_shadow::PointShadowPass::new(self, &shaders.point_shadow_vert, &shaders.point_shadow_frag)?;
+        let ssgi_pass = crate::passes::ssgi::SSGIPass::new(self, &shaders.ssgi)?;
+
         let mut post_process_pass = crate::passes::post_process::PostProcessPass::new(
             self, self.swapchain.format, extent
         ).map_err(|_| RendererError::NoSuitableDevice)?;
@@ -108,6 +123,11 @@ impl Renderer {
         let particle_pass = crate::passes::particle::ParticlePass::new(
             self, &shaders.particle_comp, &shaders.particle_vert, &shaders.particle_frag
         )?;
+
+        let sprite_pass = crate::passes::sprite::SpritePass::new(
+            self, &shaders.sprite_vert, &shaders.sprite_frag
+        )?;
+
         post_process_pass.create_pipelines(crate::passes::post_process::PostProcessPipelineParams {
             device: &self.device.device,
             pipeline_cache: cache,
@@ -133,8 +153,13 @@ impl Renderer {
         self.add_render_pass(forward_pass, &["GBuffer"], &["ForwardColor"]);
         self.add_render_pass(particle_pass, &["GBuffer"], &["ParticleColor"]);
         self.add_render_pass(ssr_pass, &["GBuffer", "HDRColor", "HiZ"], &["SSR"]);
+        self.add_render_pass(luminance_pass, &["HDRColor"], &["Luminance"]);
         self.add_render_pass(taa_pass, &["HDRColor", "GBuffer"], &["TAAColor"]);
-        self.add_render_pass(post_process_pass, &["TAAColor"], &["FinalColor"]);
+        self.add_render_pass(dof_pass, &["HDRColor", "GBuffer"], &["DoF"]);
+        self.add_render_pass(point_shadow_pass, &[], &["PointShadowMap"]);
+        self.add_render_pass(ssgi_pass, &["GBuffer", "HDRColor"], &["SSGI"]);
+        self.add_render_pass(sprite_pass, &["GBuffer"], &["SpriteColor"]);
+        self.add_render_pass(post_process_pass, &["TAAColor", "SpriteColor", "Luminance", "DoF", "SSGI"], &["FinalColor"]);
 
         self.compile_render_graph();
         self.update_all_descriptor_sets();

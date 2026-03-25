@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 spark-core = { path = "../spark-core" }
+serde_json = "1.0"
 spark-renderer = { path = "../spark-renderer" }
 spark-script = { path = "../spark-script" }
 spark-math = { path = "../spark-math" }

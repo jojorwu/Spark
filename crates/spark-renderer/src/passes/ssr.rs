@@ -25,10 +25,10 @@ impl RenderPass for SSRPass {
         let hdr_view = renderer.get_pass_resource_view("LightingPass", "HDRColor", current_frame).unwrap_or(renderer.common_shadow_view);
 
         let img_infos = [
-            vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.get_pass_resource_view("", "GBufferAlbedo", current_frame).unwrap()).sampler(sampler),
-            vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.get_pass_resource_view("", "GBufferNormal", current_frame).unwrap()).sampler(sampler),
-            vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.get_pass_resource_view("", "GBufferPBR", current_frame).unwrap()).sampler(sampler),
-            vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.get_pass_resource_view("", "GBufferDepth", current_frame).unwrap()).sampler(sampler),
+            vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.get_pass_resource_view("", "GBufferAlbedo", current_frame).unwrap_or(renderer.common_shadow_view)).sampler(sampler),
+            vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.get_pass_resource_view("", "GBufferNormal", current_frame).unwrap_or(renderer.common_shadow_view)).sampler(sampler),
+            vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.get_pass_resource_view("", "GBufferPBR", current_frame).unwrap_or(renderer.common_shadow_view)).sampler(sampler),
+            vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(renderer.get_pass_resource_view("", "GBufferDepth", current_frame).unwrap_or(renderer.common_shadow_view)).sampler(sampler),
             vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(hdr_view).sampler(sampler),
             vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(hiz_view).sampler(sampler),
         ];
@@ -49,15 +49,33 @@ impl RenderPass for SSRPass {
     }
 
     fn record_commands(&self, ctx: &RenderContext) {
-        let device = &ctx.renderer.device.device;
-        let extent = ctx.renderer.get_extent();
+        if self.pipeline == vk::Pipeline::null() { return; }
+        let renderer = ctx.renderer;
+        let device = &renderer.device.device;
+        let extent = renderer.get_extent();
 
         unsafe {
             device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-            device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[ctx.renderer.frames[ctx.current_frame].global_descriptor_set, self.descriptor_sets[ctx.current_frame]], &[]);
+            device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[renderer.frames[ctx.current_frame].global_descriptor_set, self.descriptor_sets[ctx.current_frame]], &[]);
 
-            let pc = [extent.width, extent.height, 20.0f32.to_bits(), 0.5f32.to_bits(), 0.1f32.to_bits(), 64u32];
-            let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 24);
+            #[repr(C)]
+            struct SSRPC {
+                width: u32,
+                height: u32,
+                max_steps: u32,
+                step_size: f32,
+                thickness: f32,
+                enabled: f32,
+            }
+            let pc = SSRPC {
+                width: extent.width,
+                height: extent.height,
+                max_steps: renderer.settings.ssr_max_steps,
+                step_size: renderer.settings.ssr_step,
+                thickness: renderer.settings.ssr_thickness,
+                enabled: if renderer.settings.enable_ssr { 1.0 } else { 0.0 },
+            };
+            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<SSRPC>());
             device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::COMPUTE, 0, pc_bytes);
 
             device.cmd_dispatch(ctx.command_buffer, (extent.width + 15) / 16, (extent.height + 15) / 16, 1);

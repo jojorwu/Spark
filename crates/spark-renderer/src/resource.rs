@@ -1,7 +1,99 @@
 use ash::vk;
 use std::sync::{Arc, Mutex};
+use serde::{Serialize, Deserialize};
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RenderSettings {
+    pub exposure: f32,
+    pub gamma: f32,
+    pub enable_ssao: bool,
+    pub enable_taa: bool,
+    pub enable_shadows: bool,
+    pub enable_volumetric: bool,
+    pub enable_grid: bool,
+    pub enable_ibl: bool,
+    pub enable_bloom: bool,
+    pub enable_ssr: bool,
+    pub enable_ssgi: bool,
+    pub enable_motion_blur: bool,
+    pub enable_dof: bool,
+    pub enable_auto_exposure: bool,
+    pub ssao_radius: f32,
+    pub ssao_strength: f32,
+    pub bloom_threshold: f32,
+    pub bloom_intensity: f32,
+    pub vignette_intensity: f32,
+    pub vignette_smoothness: f32,
+    pub chromatic_aberration: f32,
+    pub film_grain: f32,
+    pub fog_color: [f32; 3],
+    pub fog_density: f32,
+    pub fog_height_falloff: f32,
+    pub ssr_step: f32,
+    pub ssr_max_steps: u32,
+    pub ssr_thickness: f32,
+    pub ssgi_intensity: f32,
+    pub motion_blur_strength: f32,
+    pub dof_focus_distance: f32,
+    pub dof_focus_range: f32,
+    pub dof_bokeh_size: f32,
+    pub auto_exposure_min: f32,
+    pub auto_exposure_max: f32,
+    pub auto_exposure_speed: f32,
+    pub shadow_resolution: u32,
+    pub shadow_pcf_samples: u32,
+    pub enable_color_grading: bool,
+    pub lut_index: i32,
+}
+
+impl Default for RenderSettings {
+    fn default() -> Self {
+        Self {
+            exposure: 1.0,
+            gamma: 2.2,
+            enable_ssao: true,
+            enable_taa: true,
+            enable_shadows: true,
+            enable_volumetric: true,
+            enable_grid: true,
+            enable_ibl: true,
+            enable_bloom: true,
+            enable_ssr: true,
+            enable_ssgi: false,
+            enable_motion_blur: true,
+            enable_dof: false,
+            enable_auto_exposure: true,
+            ssao_radius: 0.5,
+            ssao_strength: 1.0,
+            bloom_threshold: 1.0,
+            bloom_intensity: 0.5,
+            vignette_intensity: 0.15,
+            vignette_smoothness: 0.5,
+            chromatic_aberration: 0.002,
+            film_grain: 0.02,
+            fog_color: [0.5, 0.6, 0.7],
+            fog_density: 0.01,
+            fog_height_falloff: 0.1,
+            ssr_step: 0.1,
+            ssr_max_steps: 128,
+            ssr_thickness: 0.02,
+            ssgi_intensity: 1.0,
+            motion_blur_strength: 0.5,
+            dof_focus_distance: 5.0,
+            dof_focus_range: 2.0,
+            dof_bokeh_size: 5.0,
+            auto_exposure_min: 0.1,
+            auto_exposure_max: 2.0,
+            auto_exposure_speed: 1.0,
+            shadow_resolution: 2048,
+            shadow_pcf_samples: 1, // 0: Simple, 1: 3x3 PCF, 2: PCSS placeholder
+            enable_color_grading: false,
+            lut_index: -1,
+        }
+    }
+}
 
 /// Represents a Vulkan buffer with its associated memory, size, and versioning for cache optimization.
 pub struct Buffer {
@@ -76,8 +168,12 @@ pub struct MeshDraw {
 
 pub struct LightDraw {
     pub position: spark_math::Vec3,
+    pub direction: spark_math::Vec3,
     pub color: spark_math::Vec3,
     pub intensity: f32,
+    pub range: f32,
+    pub light_type: u32, // 0: Dir, 1: Point, 2: Spot
+    pub spot_angles: [f32; 2], // inner, outer (cos)
 }
 
 pub struct FramePacket {

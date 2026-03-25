@@ -8,7 +8,7 @@ pub enum SystemEvent {
 use std::sync::Mutex;
 
 pub struct EventProxy<'a> {
-    pub events: &'a [EngineEvent],
+    pub events: &'a [crate::event::EngineEvent],
     pub(crate) outgoing: &'a Mutex<Vec<SystemEvent>>,
 }
 

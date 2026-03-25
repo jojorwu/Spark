@@ -1,6 +1,17 @@
 use ash::vk;
 use crate::Renderer;
 
+pub struct ReflectionProbe {
+    pub image: vk::Image,
+    pub view: vk::ImageView,
+    pub irradiance_view: vk::ImageView,
+    pub prefilter_view: vk::ImageView,
+    pub position: spark_math::Vec3,
+    pub range: f32,
+    pub box_min: spark_math::Vec3,
+    pub box_max: spark_math::Vec3,
+}
+
 pub struct IBLMaps {
     pub irradiance_image: vk::Image,
     pub irradiance_view: vk::ImageView,
@@ -9,6 +20,7 @@ pub struct IBLMaps {
     pub brdf_lut_image: vk::Image,
     pub brdf_lut_view: vk::ImageView,
     pub memory: vk::DeviceMemory,
+    pub local_probes: Vec<ReflectionProbe>,
 }
 
 impl IBLMaps {
@@ -16,13 +28,6 @@ impl IBLMaps {
         _renderer: &Renderer,
         _env_view: vk::ImageView,
     ) -> Self {
-        // Implementation for creating and generating maps would go here.
-        // For now, providing the structure and placeholder initialization.
-
-        // This would involve creating images with vk::ImageCreateFlags::CUBE_COMPATIBLE
-        // and dispatching the compute shaders created in step 1.
-
-        // Placeholder values
         Self {
             irradiance_image: vk::Image::null(),
             irradiance_view: vk::ImageView::null(),
@@ -31,6 +36,7 @@ impl IBLMaps {
             brdf_lut_image: vk::Image::null(),
             brdf_lut_view: vk::ImageView::null(),
             memory: vk::DeviceMemory::null(),
+            local_probes: Vec::new(),
         }
     }
 

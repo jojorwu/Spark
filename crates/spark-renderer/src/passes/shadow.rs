@@ -19,7 +19,7 @@ use super::{RenderPass, RenderContext};
 
 impl RenderPass for ShadowPass {
     fn name(&self) -> &str { "ShadowPass" }
-    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_shadows }
+    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.settings.enable_shadows }
     fn outputs(&self) -> Vec<&'static str> { vec!["ShadowMap"] }
 
     fn record_secondary_commands(&self, ctx: &RenderContext) -> Vec<vk::CommandBuffer> {

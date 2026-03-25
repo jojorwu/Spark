@@ -92,6 +92,11 @@ impl LightingPass {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(11)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
 
         let ds_layout = unsafe {
@@ -312,6 +317,19 @@ impl RenderPass for LightingPass {
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let ssao_view = renderer.get_pass_resource_view("SSAOPass", "ssao", i).unwrap_or(renderer.common_shadow_view);
+            let ssgi_view = renderer.get_pass_resource_view("SSGIPass", "output", i).unwrap_or(renderer.common_shadow_view);
+
+            let device = &renderer.device.device;
+            let ssgi_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(ssgi_view)
+                .sampler(renderer.common_sampler)];
+            let write = [vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[i])
+                .dst_binding(11)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&ssgi_info)];
+            unsafe { device.update_descriptor_sets(&write, &[]); }
 
             let params = LightingDescriptorParams {
                 light_buffers: &light_buffers,
@@ -343,7 +361,8 @@ impl RenderPass for LightingPass {
             roughness: f32,
             width: f32,
             height: f32,
-            padding: u32,
+            ssgi_intensity: f32,
+            shadow_pcf: u32,
             object_buffer_address: u64,
             prev_view_proj: spark_math::Mat4,
         }
@@ -353,7 +372,8 @@ impl RenderPass for LightingPass {
             roughness: 0.5,
             width: extent.width as f32,
             height: extent.height as f32,
-            padding: 0,
+            ssgi_intensity: if renderer.settings.enable_ssgi { renderer.settings.ssgi_intensity } else { 0.0 },
+            shadow_pcf: renderer.settings.shadow_pcf_samples,
             object_buffer_address: renderer.frames[current_frame].object_data_buffer.as_ref().map_or(0, |b| b.address),
             prev_view_proj: renderer.prev_view_proj,
         };

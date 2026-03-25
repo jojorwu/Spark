@@ -34,7 +34,7 @@ pub struct PostProcessPass {
 
 impl RenderPass for PostProcessPass {
     fn name(&self) -> &str { "PostProcessPass" }
-    fn dependencies(&self) -> Vec<&'static str> { vec!["LightingPass", "TAAPass", "VolumetricPass"] }
+    fn dependencies(&self) -> Vec<&'static str> { vec!["LightingPass", "TAAPass", "VolumetricPass", "SpritePass"] }
 
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let device = &renderer.device.device;
@@ -42,9 +42,14 @@ impl RenderPass for PostProcessPass {
 
         let taa_view = renderer.get_pass_resource_view("TAAPass", "history", current_frame);
         let fog_view = renderer.get_pass_resource_view("VolumetricPass", "output", current_frame);
+        let sprite_view = renderer.get_pass_resource_view("SpritePass", "SpriteColor", current_frame);
+        let velocity_view = renderer.get_pass_resource_view("", "GBufferVelocity", current_frame);
+        let dof_view = renderer.get_pass_resource_view("DoFPass", "output", current_frame);
 
         let input_view = taa_view.unwrap_or(renderer.get_pass_resource_view("", "GBufferHDR", current_frame).unwrap_or(renderer.common_shadow_view));
         let final_fog_view = fog_view.unwrap_or(input_view);
+        let final_sprite_view = sprite_view.unwrap_or(renderer.common_shadow_view);
+        let final_velocity_view = velocity_view.unwrap_or(renderer.common_shadow_view);
 
         let img_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -62,7 +67,22 @@ impl RenderPass for PostProcessPass {
             .image_view(final_fog_view)
             .sampler(sampler)];
 
-        let writes = [
+        let sprite_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(final_sprite_view)
+            .sampler(sampler)];
+
+        let velocity_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(final_velocity_view)
+            .sampler(sampler)];
+
+        let dof_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(dof_view.unwrap_or(renderer.common_shadow_view))
+            .sampler(sampler)];
+
+        let mut writes = vec![
             vk::WriteDescriptorSet::default()
                 .dst_set(self.descriptor_sets[current_frame])
                 .dst_binding(0)
@@ -78,7 +98,33 @@ impl RenderPass for PostProcessPass {
                 .dst_binding(2)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(&fog_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[current_frame])
+                .dst_binding(3)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&sprite_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[current_frame])
+                .dst_binding(4)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&velocity_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[current_frame])
+                .dst_binding(6)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&dof_info),
         ];
+
+        let lum_buffer = renderer.get_resource_buffer("LuminancePass", "Luminance");
+        let lum_info;
+        if let Some(buf) = lum_buffer {
+            lum_info = [vk::DescriptorBufferInfo::default().buffer(buf.handle).range(buf.size)];
+            writes.push(vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[current_frame])
+                .dst_binding(5)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&lum_info));
+        }
 
         unsafe {
             device.update_descriptor_sets(&writes, &[]);
@@ -253,10 +299,40 @@ impl RenderPass for PostProcessPass {
 
             renderer.device.device.cmd_begin_rendering(ctx.command_buffer, &rendering_info);
             renderer.device.device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.unwrap());
-            renderer.device.device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.descriptor_sets[ctx.current_frame]], &[]);
+            renderer.device.device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[renderer.bindless_descriptor_set, self.descriptor_sets[ctx.current_frame]], &[]);
 
-            let pc = [renderer.exposure, renderer.gamma, if renderer.enable_bloom { 1.0 } else { 0.0 }, 0.0];
-            let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 16);
+            #[repr(C)]
+            struct PostProcessPC {
+                exposure: f32,
+                gamma: f32,
+                bloom_enabled: f32,
+                vignette_intensity: f32,
+                vignette_smoothness: f32,
+                chromatic_aberration: f32,
+                film_grain: f32,
+                motion_blur_strength: f32,
+                auto_exposure_enabled: f32,
+                dof_enabled: f32,
+                lut_index: f32,
+                time: f32,
+                padding: [f32; 2],
+            }
+            let pc = PostProcessPC {
+                exposure: renderer.settings.exposure,
+                gamma: renderer.settings.gamma,
+                bloom_enabled: if renderer.settings.enable_bloom { 1.0 } else { 0.0 },
+                vignette_intensity: renderer.settings.vignette_intensity,
+                vignette_smoothness: renderer.settings.vignette_smoothness,
+                chromatic_aberration: renderer.settings.chromatic_aberration,
+                film_grain: renderer.settings.film_grain,
+                motion_blur_strength: if renderer.settings.enable_motion_blur { renderer.settings.motion_blur_strength } else { 0.0 },
+                auto_exposure_enabled: if renderer.settings.enable_auto_exposure { 1.0 } else { 0.0 },
+                dof_enabled: if renderer.settings.enable_dof { 1.0 } else { 0.0 },
+                lut_index: if renderer.settings.enable_color_grading { renderer.settings.lut_index as f32 } else { -1.0 },
+                time: (renderer.frame_index as f32) * 0.016,
+                padding: [0.0; 2],
+            };
+            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PostProcessPC>());
             renderer.device.device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
 
             let viewport = vk::Viewport::default().width(extent.width as f32).height(extent.height as f32).max_depth(1.0);
@@ -328,6 +404,26 @@ impl PostProcessPass {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(5)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(6)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
         let ds_layout = unsafe {
             device.create_descriptor_set_layout(
@@ -339,11 +435,11 @@ impl PostProcessPass {
         let layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(std::slice::from_ref(&ds_layout))
+                    .set_layouts(&[renderer.bindless_descriptor_set_layout, ds_layout])
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,
-                        size: 16,
+                        size: 64, // Increased size for new PC
                     }]),
                 None,
             )?
@@ -353,7 +449,10 @@ impl PostProcessPass {
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count((MAX_FRAMES_IN_FLIGHT as u32 * 3) + (num_bloom_mips as u32 * MAX_FRAMES_IN_FLIGHT as u32)),
+                .descriptor_count((MAX_FRAMES_IN_FLIGHT as u32 * 6) + (num_bloom_mips as u32 * MAX_FRAMES_IN_FLIGHT as u32)),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32),
         ];
         let descriptor_pool = unsafe {
             device.create_descriptor_pool(

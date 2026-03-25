@@ -1,0 +1,53 @@
+#version 450
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (binding = 0) uniform sampler2D hdrColor;
+layout (binding = 1) uniform sampler2D depthBuffer;
+layout (binding = 2, rgba16f) uniform writeonly image2D outDoF;
+
+layout(push_constant) uniform DoFParams {
+    float focusDistance;
+    float focusRange;
+    float bokehSize;
+    float enabled;
+} params;
+
+float getBlurSize(float depth) {
+    float d = (2.0 * 0.1) / (100.0 + 0.1 - depth * (100.0 - 0.1)); // Linearize
+    d *= 100.0; // World units
+    float coc = abs(d - params.focusDistance) / params.focusRange;
+    return clamp(coc, 0.0, 1.0) * params.bokehSize;
+}
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outDoF);
+    if (texel.x >= size.x || texel.y >= size.y) return;
+
+    if (params.enabled < 0.5) {
+        imageStore(outDoF, texel, texture(hdrColor, (vec2(texel) + 0.5) / vec2(size)));
+        return;
+    }
+
+    vec2 uv = (vec2(texel) + 0.5) / vec2(size);
+    float centerDepth = texture(depthBuffer, uv).r;
+    float blurSize = getBlurSize(centerDepth);
+
+    if (blurSize < 0.5) {
+        imageStore(outDoF, texel, texture(hdrColor, uv));
+        return;
+    }
+
+    vec3 color = vec3(0.0);
+    float totalWeight = 0.0;
+    const int SAMPLES = 8;
+    for (int x = -SAMPLES/2; x < SAMPLES/2; x++) {
+        for (int y = -SAMPLES/2; y < SAMPLES/2; y++) {
+            vec2 offset = vec2(x, y) * blurSize / vec2(size);
+            color += texture(hdrColor, uv + offset).rgb;
+            totalWeight += 1.0;
+        }
+    }
+
+    imageStore(outDoF, texel, vec4(color / totalWeight, 1.0));
+}

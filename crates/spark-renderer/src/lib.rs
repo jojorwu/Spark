@@ -10,7 +10,7 @@ pub mod vulkan;
 
 use crate::error::RendererError;
 use crate::pipeline::Pipeline;
-pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT, ObjectDataSSBO, MaterialDataSSBO};
+pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT, ObjectDataSSBO, MaterialDataSSBO, RenderSettings};
 use crate::ui::EguiRenderer;
 use crate::vulkan::context::VulkanContext;
 use crate::vulkan::device::VulkanDevice;
@@ -58,15 +58,7 @@ pub struct Renderer {
     pub next_bindless_index: std::sync::atomic::AtomicU32,
     pub viewport_attachment: Option<Attachment>,
     pub ibl_maps: Option<crate::vulkan::ibl::IBLMaps>,
-    pub exposure: f32,
-    pub gamma: f32,
-    pub enable_ssao: bool,
-    pub enable_taa: bool,
-    pub enable_shadows: bool,
-    pub enable_volumetric: bool,
-    pub enable_grid: bool,
-    pub enable_ibl: bool,
-    pub enable_bloom: bool,
+    pub settings: RenderSettings,
     pub main_light_view_proj: spark_math::Mat4,
     pub current_view_proj: spark_math::Mat4,
     pub last_object_count: u32,
@@ -130,7 +122,6 @@ impl Renderer {
             )?
         };
 
-        let (av, fi, in_f) = Self::create_sync_objects_impl(&device.device);
         let dummy_buffer = device.create_buffer(
             64,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER,
@@ -225,6 +216,8 @@ impl Renderer {
             )?
         };
 
+        let (av, fi, in_f) = Self::create_sync_objects_impl(&device.device);
+
         let frames = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|i| {
                 let alloc_info = vk::CommandBufferAllocateInfo::default()
@@ -299,15 +292,7 @@ impl Renderer {
             next_bindless_index: std::sync::atomic::AtomicU32::new(0),
             viewport_attachment: None,
             ibl_maps: None,
-            exposure: 1.0,
-            gamma: 2.2,
-            enable_ssao: true,
-            enable_taa: true,
-            enable_shadows: true,
-            enable_volumetric: true,
-            enable_grid: true,
-            enable_ibl: true,
-            enable_bloom: true,
+            settings: RenderSettings::default(),
             main_light_view_proj: spark_math::Mat4::IDENTITY,
             current_view_proj: spark_math::Mat4::IDENTITY,
             last_object_count: 0,
@@ -548,13 +533,17 @@ impl Renderer {
         #[derive(Copy, Clone)]
         struct LD {
             pos: [f32; 4],
+            dir: [f32; 4],
             col: [f32; 4],
+            spot_angles: [f32; 4],
         }
         let ld: Vec<LD> = lights
             .iter()
             .map(|l| LD {
-                pos: [l.position.x, l.position.y, l.position.z, 1.0],
+                pos: [l.position.x, l.position.y, l.position.z, l.range],
+                dir: [l.direction.x, l.direction.y, l.direction.z, l.light_type as f32],
                 col: [l.color.x, l.color.y, l.color.z, l.intensity],
+                spot_angles: [l.spot_angles[0], l.spot_angles[1], 0.0, 0.0],
             })
             .collect();
         let sz = (ld.len() * std::mem::size_of::<LD>()) as u64;
@@ -1227,6 +1216,17 @@ impl Renderer {
         }
         None
     }
+
+    pub fn get_resource_buffer(&self, pass_name: &str, resource_name: &str) -> Option<Buffer> {
+        for pass_node in &self.render_graph.passes {
+            if pass_node.pass.name() == pass_name {
+                if let Some(buffer) = pass_node.pass.get_resource_buffer(resource_name) {
+                    return Some(buffer);
+                }
+            }
+        }
+        None
+    }
     /// Returns the current swapchain extent.
     pub fn get_extent(&self) -> vk::Extent2D {
         self.swapchain.extent
@@ -1590,6 +1590,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
+    fn test_render_settings_default() {
+        let settings = RenderSettings::default();
+        assert!(settings.enable_shadows);
+        assert_eq!(settings.gamma, 2.2);
+    }
+
+    #[test]
     fn test_buffer_struct() {
         let buffer = Buffer {
             handle: vk::Buffer::null(),
@@ -1609,9 +1616,11 @@ mod tests {
         #[derive(Copy, Clone)]
         struct LD {
             pos: [f32; 4],
+            dir: [f32; 4],
             col: [f32; 4],
+            spot_angles: [f32; 4],
         }
-        assert_eq!(std::mem::size_of::<LD>(), 32);
+        assert_eq!(std::mem::size_of::<LD>(), 64);
     }
 }
 

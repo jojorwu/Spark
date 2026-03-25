@@ -12,6 +12,11 @@ pub mod volumetric;
 pub mod forward;
 pub mod particle;
 pub mod ssr;
+pub mod sprite;
+pub mod point_shadow;
+pub mod ssgi;
+pub mod luminance;
+pub mod dof;
 
 use ash::vk;
 use crate::Renderer;

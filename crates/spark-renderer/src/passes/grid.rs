@@ -6,7 +6,7 @@ use super::{RenderPass, RenderContext};
 
 impl RenderPass for GridPass {
     fn name(&self) -> &str { "GridPass" }
-    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_grid }
+    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.settings.enable_grid }
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
         let command_buffer = ctx.command_buffer;

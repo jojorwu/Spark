@@ -48,7 +48,7 @@ use super::{RenderPass, RenderContext};
 impl RenderPass for SSAOPass {
     fn name(&self) -> &str { "SSAOPass" }
     fn dependencies(&self) -> Vec<&'static str> { vec!["GBufferPass"] }
-    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.enable_ssao }
+    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.settings.enable_ssao }
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let extent = renderer.get_extent();
         let view = renderer.scene_view_matrix_for_pos;

@@ -9,6 +9,8 @@ pub mod event_mapper;
 pub mod input;
 pub mod command;
 pub mod event_bus;
+pub mod prefab;
+pub mod resource_container;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Access {
@@ -51,16 +53,33 @@ use winit::{
 use crate::scene::Scene;
 use crate::task::TaskSystem;
 use crate::resource::ResourceManager;
-use crate::event::EventQueue;
 use spark_renderer::Renderer;
+use spark_renderer::resource::RenderSettings;
 use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PhysicsSettings {
+    pub gravity: spark_math::Vec3,
+    pub simulation_frequency: f32,
+}
+
+impl Default for PhysicsSettings {
+    fn default() -> Self {
+        Self {
+            gravity: spark_math::Vec3::new(0.0, -9.81, 0.0),
+            simulation_frequency: 60.0,
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Project {
     pub name: String,
     pub asset_root: PathBuf,
     pub startup_scene: PathBuf,
+    pub render_settings: RenderSettings,
+    pub physics_settings: PhysicsSettings,
 }
 
 /// Context passed to systems during initialization and cleanup.
@@ -68,6 +87,7 @@ pub struct InitContext<'a> {
     pub scene: &'a mut Scene,
     pub renderer: &'a mut Renderer,
     pub resource_manager: &'a mut ResourceManager,
+    pub resources: &'a mut crate::resource_container::Resources,
     pub task_system: &'a TaskSystem,
 }
 
@@ -76,6 +96,8 @@ pub struct FrameContext<'a> {
     pub scene: *mut Scene,
     pub renderer: *mut Renderer,
     pub resource_manager: *mut ResourceManager,
+    pub project: &'a Project,
+    pub resources: &'a crate::resource_container::Resources,
     pub task_system: &'a TaskSystem,
     pub delta: f32,
     pub event_proxy: crate::systems_events::events::EventProxy<'a>,
@@ -101,6 +123,29 @@ impl<'a> FrameContext<'a> {
     /// Returns a mutable reference to the resource manager.
     /// Safety: Caller must ensure no other threads are accessing the resource manager concurrently.
     pub unsafe fn resource_manager_mut(&self) -> &mut ResourceManager { &mut *self.resource_manager }
+
+    pub fn get_component<T: 'static>(&self, node: crate::scene::NodeKey) -> Option<&T> {
+        if let Some(node) = self.scene().nodes.get(node) {
+            for comp in &node.components {
+                if let Some(c) = comp.as_any().downcast_ref::<T>() {
+                    return Some(c);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn query_nodes<T: 'static>(&self) -> Vec<crate::scene::NodeKey> {
+        self.scene().query_components::<T>()
+    }
+
+    pub fn query(&self) -> crate::scene::Query {
+        self.scene().query()
+    }
+
+    pub fn get_resource<T: 'static>(&self) -> Option<std::sync::Arc<std::sync::RwLock<Box<dyn std::any::Any + Send + Sync>>>> {
+        self.resources.get::<T>()
+    }
 }
 
 /// A trait representing a system that processes engine state.
@@ -110,12 +155,109 @@ pub trait System: Send + Sync {
     fn on_init(&mut self, _ctx: &mut InitContext) {}
     fn update(&mut self, ctx: &FrameContext);
     fn on_stop(&mut self, _ctx: &mut InitContext) {}
+    fn on_enter(&mut self, _ctx: &mut InitContext) {}
+    fn on_exit(&mut self, _ctx: &mut InitContext) {}
+    fn run_in_states(&self) -> Vec<String> { Vec::new() }
     fn dependencies(&self) -> Vec<&'static str> { Vec::new() }
     fn resource_access(&self) -> ResourceAccess {
         ResourceAccess {
             scene: Access::Write,
             renderer: Access::Write,
             resource_manager: Access::Write,
+        }
+    }
+}
+
+/// A trait for engine plugins.
+pub trait Plugin {
+    fn build(&self, app: &mut App);
+}
+
+pub struct App {
+    pub engine: Engine,
+    pub startup_systems: Vec<Box<dyn System>>,
+}
+
+impl App {
+    pub fn new(title: &str) -> Self {
+        let engine = Engine::new(title, None).expect("Failed to initialize engine");
+        Self {
+            engine,
+            startup_systems: Vec::new(),
+        }
+    }
+
+    pub fn with_ui_shaders(title: &str, vert: &[u32], frag: &[u32]) -> Self {
+        let engine = Engine::new(title, Some((vert, frag))).expect("Failed to initialize engine");
+        Self {
+            engine,
+            startup_systems: Vec::new(),
+        }
+    }
+
+    pub fn add_plugin<P: Plugin + 'static>(mut self, plugin: P) -> Self {
+        plugin.build(&mut self);
+        self
+    }
+
+    pub fn add_system<S: System + 'static>(mut self, system: S) -> Self {
+        self.engine.add_system(system);
+        self
+    }
+
+    pub fn add_system_to_stage<S: System + 'static>(mut self, stage: crate::systems::CoreStage, system: S) -> Self {
+        self.engine.add_system_to_stage(stage, system);
+        self
+    }
+
+    pub fn add_plugin_to_app<P: Plugin + 'static>(&mut self, plugin: P) {
+        plugin.build(self);
+    }
+
+    pub fn add_startup_system<S: System + 'static>(mut self, system: S) -> Self {
+        self.startup_systems.push(Box::new(system));
+        self
+    }
+
+    pub fn insert_resource<T: Send + Sync + 'static>(mut self, resource: T) -> Self {
+        self.engine.resources.insert(resource);
+        self
+    }
+
+    pub fn set_state(&mut self, state: &str) {
+        let mut init_ctx = InitContext {
+            scene: &mut self.engine.scene,
+            renderer: &mut self.engine.renderer,
+            resource_manager: &mut self.engine.resource_manager,
+            resources: &mut self.engine.resources,
+            task_system: &self.engine.task_system,
+        };
+        crate::systems::Scheduler::set_state(&mut self.engine.system_registry, state, &mut init_ctx);
+    }
+
+    pub fn run(mut self) {
+        self.run_startup();
+        self.engine.run(|_, _, _, _, _, _, _, _| (false, None));
+    }
+
+    pub fn run_with_ui<F>(mut self, ui_callback: F)
+    where
+        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, &mut Project, &mut crate::resource_container::Resources, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
+    {
+        self.run_startup();
+        self.engine.run(ui_callback);
+    }
+
+    fn run_startup(&mut self) {
+        let mut init_ctx = InitContext {
+            scene: &mut self.engine.scene,
+            renderer: &mut self.engine.renderer,
+            resource_manager: &mut self.engine.resource_manager,
+            resources: &mut self.engine.resources,
+            task_system: &self.engine.task_system,
+        };
+        for system in &mut self.startup_systems {
+            system.on_init(&mut init_ctx);
         }
     }
 }
@@ -127,7 +269,7 @@ pub struct Engine {
     pub renderer: Renderer,
     pub task_system: TaskSystem,
     pub resource_manager: ResourceManager,
-    pub event_queue: EventQueue,
+    pub resources: crate::resource_container::Resources,
     pub input_manager: crate::input::InputManager,
     pub command_queue: crate::command::CommandQueue,
     pub event_bus: crate::event_bus::EventBus,
@@ -135,6 +277,7 @@ pub struct Engine {
     pub last_frame_time: instant::Instant,
     pub current_fps: f32,
     pub system_events: std::sync::Mutex<Vec<crate::systems_events::events::SystemEvent>>,
+    pub project: Project,
 }
 
 impl Engine {
@@ -152,7 +295,7 @@ impl Engine {
         let scene = Scene::new();
         let task_system = TaskSystem::new();
         let resource_manager = ResourceManager::new();
-        let event_queue = EventQueue::new();
+        let resources = crate::resource_container::Resources::new();
         let input_manager = crate::input::InputManager::new();
         let command_queue = crate::command::CommandQueue::new();
         let event_bus = crate::event_bus::EventBus::new();
@@ -165,7 +308,7 @@ impl Engine {
             renderer,
             task_system,
             resource_manager,
-            event_queue,
+            resources,
             input_manager,
             command_queue,
             event_bus,
@@ -173,11 +316,16 @@ impl Engine {
             last_frame_time: instant::Instant::now(),
             current_fps: 0.0,
             system_events: std::sync::Mutex::new(Vec::new()),
+            project: Project::default(),
         })
     }
 
     pub fn add_system<S: System + 'static>(&mut self, system: S) {
         self.system_registry.add_system(system);
+    }
+
+    pub fn add_system_to_stage<S: System + 'static>(&mut self, stage: crate::systems::CoreStage, system: S) {
+        self.system_registry.add_system_to_stage(stage, system);
     }
 
     pub fn add_boxed_system(&mut self, system: Box<dyn System>) {
@@ -190,12 +338,14 @@ impl Engine {
             return;
         }
 
-        crate::event_mapper::EventMapper::map_window_event(event, &mut self.event_queue);
+        if let Some(engine_event) = crate::event_mapper::EventMapper::map_window_event(event) {
+            self.event_bus.publish(engine_event);
+        }
     }
 
     pub fn run<F>(mut self, mut ui_callback: F)
     where
-        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
+        F: FnMut(&winit::window::Window, &winit::event::Event<()>, &mut Scene, &mut ResourceManager, &mut Renderer, &mut Project, &mut crate::resource_container::Resources, f32) -> (bool, Option<(egui::FullOutput, egui::Context)>) + 'static,
     {
         let event_loop = self.event_loop.take().unwrap();
 
@@ -204,13 +354,14 @@ impl Engine {
                 scene: &mut self.scene,
                 renderer: &mut self.renderer,
                 resource_manager: &mut self.resource_manager,
+                resources: &mut self.resources,
                 task_system: &self.task_system,
             };
             crate::systems::Scheduler::init(&mut self.system_registry, &mut init_ctx);
         }
 
         event_loop.run(move |event, elwt| {
-            let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene, &mut self.resource_manager, &mut self.renderer, self.current_fps);
+            let (ui_consumed, egui_output) = ui_callback(&self.window, &event, &mut self.scene, &mut self.resource_manager, &mut self.renderer, &mut self.project, &mut self.resources, self.current_fps);
             if ui_consumed {
                 // UI consumed the event
             }
@@ -228,7 +379,7 @@ impl Engine {
                     self.update_phase(delta);
                     self.render_phase(egui_output, delta);
 
-                    self.event_queue.clear();
+                    self.event_bus.clear_events();
                 }
                 _ => (),
             }
@@ -238,6 +389,7 @@ impl Engine {
                     scene: &mut self.scene,
                     renderer: &mut self.renderer,
                     resource_manager: &mut self.resource_manager,
+                    resources: &mut self.resources,
                     task_system: &self.task_system,
                 };
                 crate::systems::Scheduler::shutdown(&mut self.system_registry, &mut init_ctx);
@@ -246,7 +398,8 @@ impl Engine {
     }
 
     fn update_phase(&mut self, delta: f32) {
-        self.input_manager.update(&self.event_queue.events);
+        let events = self.event_bus.read_events::<crate::event::EngineEvent>();
+        self.input_manager.update(&events);
 
         self.system_events.lock().unwrap().clear(); // Reset for this frame
 
@@ -255,10 +408,12 @@ impl Engine {
                 scene: &mut self.scene as *mut Scene,
                 renderer: &mut self.renderer as *mut Renderer,
                 resource_manager: &mut self.resource_manager as *mut ResourceManager,
+                project: &self.project,
+                resources: &self.resources,
                 task_system: &self.task_system,
                 delta,
                 event_proxy: crate::systems_events::events::EventProxy {
-                    events: &self.event_queue.events,
+                    events: &events,
                     outgoing: &self.system_events,
                 },
                 input: &self.input_manager,
@@ -282,12 +437,20 @@ impl Engine {
             for component in &node.components {
                 if let Some(camera) = component.as_any().downcast_ref::<crate::scene::CameraComponent>() {
                     let view = node.global_transform.inverse();
-                    projection_matrix = spark_math::Mat4::perspective_rh(
-                        camera.fov.to_radians(),
-                        self.renderer.get_extent().width as f32 / self.renderer.get_extent().height as f32,
-                        camera.near,
-                        camera.far,
-                    );
+                    if camera.orthographic {
+                        let aspect = self.renderer.get_extent().width as f32 / self.renderer.get_extent().height as f32;
+                        let size = camera.ortho_size;
+                        projection_matrix = spark_math::Mat4::orthographic_rh(
+                            -size * aspect, size * aspect, -size, size, camera.near, camera.far
+                        );
+                    } else {
+                        projection_matrix = spark_math::Mat4::perspective_rh(
+                            camera.fov.to_radians(),
+                            self.renderer.get_extent().width as f32 / self.renderer.get_extent().height as f32,
+                            camera.near,
+                            camera.far,
+                        );
+                    }
                     camera_matrix = projection_matrix * view;
                     break;
                 }

@@ -1,0 +1,55 @@
+#version 450
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (binding = 0) uniform sampler2D hdrColor;
+layout (binding = 1) buffer LuminanceBuffer {
+    float avgLuminance;
+    float targetExposure;
+} lum;
+
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+    float minLogLum;
+    float maxLogLum;
+    float speed;
+    float deltaTime;
+} push;
+
+shared float sharedLums[256];
+
+void main() {
+    uint localId = gl_LocalInvocationIndex;
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+
+    float luminance = 0.0;
+    if (texel.x < push.width && texel.y < push.height) {
+        vec3 color = texture(hdrColor, (vec2(texel) + 0.5) / vec2(push.width, push.height)).rgb;
+        luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    }
+
+    sharedLums[localId] = luminance;
+    memoryBarrierShared();
+    barrier();
+
+    // Simple reduction
+    for (uint i = 128; i > 0; i >>= 1) {
+        if (localId < i) {
+            sharedLums[localId] += sharedLums[localId + i];
+        }
+        memoryBarrierShared();
+        barrier();
+    }
+
+    if (localId == 0) {
+        float avg = sharedLums[0] / 256.0;
+        float logLum = clamp(log2(max(avg, 0.001)), push.minLogLum, push.maxLogLum);
+
+        // Eye adaptation
+        float currentLum = lum.avgLuminance;
+        float nextLum = currentLum + (logLum - currentLum) * (1.0 - exp(-push.deltaTime * push.speed));
+
+        lum.avgLuminance = nextLum;
+        lum.targetExposure = 1.0 / exp2(nextLum);
+    }
+}
