@@ -17,6 +17,10 @@ pub struct RenderSettings {
     pub enable_bloom: bool,
     pub enable_ssr: bool,
     pub enable_ssgi: bool,
+    pub enable_rt_reflections: bool,
+    pub enable_rt_shadows: bool,
+    pub enable_rt_ao: bool,
+    pub enable_rt_gi: bool,
     pub enable_motion_blur: bool,
     pub enable_dof: bool,
     pub enable_auto_exposure: bool,
@@ -62,6 +66,10 @@ impl Default for RenderSettings {
             enable_bloom: true,
             enable_ssr: true,
             enable_ssgi: false,
+            enable_rt_reflections: false,
+            enable_rt_shadows: false,
+            enable_rt_ao: false,
+            enable_rt_gi: false,
             enable_motion_blur: true,
             enable_dof: false,
             enable_auto_exposure: true,
@@ -164,6 +172,7 @@ pub struct MeshDraw {
     pub vertex_offset: i32,
     pub material_index: u32,
     pub bounding_radius: f32,
+    pub mesh_id: u32,
 }
 
 pub struct LightDraw {
@@ -202,6 +211,7 @@ pub struct RenderFrame {
     pub transparent_object_buffer: Option<Buffer>,
     pub secondary_command_buffers: Vec<vk::CommandBuffer>,
     pub light_view_projs: [spark_math::Mat4; 4],
+    pub scratch_buffers: Vec<Buffer>,
 }
 
 #[repr(C)]

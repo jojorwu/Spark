@@ -109,6 +109,9 @@ fn main() {
         point_shadow_vert: compiler.compile("assets/shaders/point_shadow.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile point_shadow.vert"),
         point_shadow_frag: compiler.compile("assets/shaders/point_shadow.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile point_shadow.frag"),
         ssgi: compiler.compile("assets/shaders/ssgi.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile ssgi.frag"),
+        rgen: compiler.compile("assets/shaders/raytrace.rgen", shaderc::ShaderKind::RayGeneration).expect("Failed to compile raytrace.rgen"),
+        rmiss: compiler.compile("assets/shaders/raytrace.rmiss", shaderc::ShaderKind::Miss).expect("Failed to compile raytrace.rmiss"),
+        rchit: compiler.compile("assets/shaders/raytrace.rchit", shaderc::ShaderKind::ClosestHit).expect("Failed to compile raytrace.rchit"),
     };
 
     app.engine.renderer.setup_default_passes(shaders).expect("Failed to setup render passes");

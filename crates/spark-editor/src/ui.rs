@@ -589,6 +589,17 @@ impl EditorUI {
                                 ui.add(egui::Slider::new(&mut renderer.settings.motion_blur_strength, 0.0..=1.0));
                             }
                         });
+
+                        ui.separator();
+                        ui.heading("Ray Tracing");
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut renderer.settings.enable_rt_reflections, "RT Reflections");
+                            ui.checkbox(&mut renderer.settings.enable_rt_shadows, "RT Shadows");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut renderer.settings.enable_rt_ao, "RT Ambient Occlusion");
+                            ui.checkbox(&mut renderer.settings.enable_rt_gi, "RT Global Illumination");
+                        });
                     });
                 }
                 BottomTab::Statistics => {

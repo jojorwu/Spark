@@ -1,0 +1,59 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(binding = 0, set = 1) uniform accelerationStructureEXT topLevelAS;
+layout(binding = 1, set = 1, rgba16f) uniform image2D image;
+
+struct RayPayload {
+    vec3 color;
+    float dist;
+    uint hit;
+};
+
+layout(location = 0) rayPayloadEXT RayPayload payload;
+
+layout(set = 0, binding = 0) uniform GlobalUBO {
+    mat4 vp;
+    mat4 lvp[4];
+    mat4 inv_vp;
+    vec4 camera_pos;
+    vec4 frustum[6];
+    vec4 cascade_splits;
+} ubo;
+
+void main()
+{
+    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+    const vec2 inUV = pixelCenter/vec2(gl_LaunchSizeEXT.xy);
+    vec2 d = inUV * 2.0 - 1.0;
+
+    vec4 target = ubo.inv_vp * vec4(d.x, d.y, 1.0, 1.0);
+    vec3 origin = ubo.camera_pos.xyz;
+    vec3 direction = normalize(target.xyz / target.w - origin);
+
+    payload.color = vec3(0.0);
+    payload.dist = -1.0;
+    payload.hit = 0;
+
+    traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, origin, 0.001, direction, 10000.0, 0);
+
+    vec3 finalColor = payload.color;
+
+    // Second bounce for shadows if we hit something
+    if (payload.hit == 1) {
+        vec3 hitPos = origin + direction * payload.dist;
+        vec3 lightDir = normalize(vec3(0.5, 1.0, 0.5)); // Directional light
+
+        uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+
+        // Reusing payload for shadow ray (hit will be 0 if it misses, 1 if it hits anything)
+        payload.hit = 0;
+        traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos, 0.01, lightDir, 1000.0, 0);
+
+        if (payload.hit == 1) {
+             finalColor *= 0.2; // Shadowed
+        }
+    }
+
+    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(finalColor, 1.0));
+}

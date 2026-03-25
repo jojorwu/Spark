@@ -17,6 +17,7 @@ pub mod point_shadow;
 pub mod ssgi;
 pub mod luminance;
 pub mod dof;
+pub mod rt;
 
 use ash::vk;
 use crate::Renderer;
@@ -44,6 +45,8 @@ pub trait RenderPass: Send + Sync {
 
     /// Per-frame resource updates (e.g., uploading UBOs, updating dynamic descriptor sets).
     fn prepare(&self, _renderer: &Renderer, _current_frame: usize) {}
+
+    fn set_tlas(&self, _tlas: crate::vulkan::as_manager::AccelerationStructure, _frame_index: usize, _renderer: &Renderer) {}
 
     /// Performs initial or global descriptor set updates for the pass.
     fn update_descriptor_sets(&self, _renderer: &Renderer) {}

@@ -34,7 +34,7 @@ pub struct PostProcessPass {
 
 impl RenderPass for PostProcessPass {
     fn name(&self) -> &str { "PostProcessPass" }
-    fn dependencies(&self) -> Vec<&'static str> { vec!["LightingPass", "TAAPass", "VolumetricPass", "SpritePass"] }
+    fn dependencies(&self) -> Vec<&'static str> { vec!["LightingPass", "TAAPass", "VolumetricPass", "SpritePass", "RayTracingPass"] }
 
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let device = &renderer.device.device;
@@ -45,6 +45,7 @@ impl RenderPass for PostProcessPass {
         let sprite_view = renderer.get_pass_resource_view("SpritePass", "SpriteColor", current_frame);
         let velocity_view = renderer.get_pass_resource_view("", "GBufferVelocity", current_frame);
         let dof_view = renderer.get_pass_resource_view("DoFPass", "output", current_frame);
+        let rt_view = renderer.get_pass_resource_view("RayTracingPass", "RTOutput", current_frame);
 
         let input_view = taa_view.unwrap_or(renderer.get_pass_resource_view("", "GBufferHDR", current_frame).unwrap_or(renderer.common_shadow_view));
         let final_fog_view = fog_view.unwrap_or(input_view);
@@ -82,6 +83,11 @@ impl RenderPass for PostProcessPass {
             .image_view(dof_view.unwrap_or(renderer.common_shadow_view))
             .sampler(sampler)];
 
+        let rt_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(rt_view.unwrap_or(renderer.common_shadow_view))
+            .sampler(sampler)];
+
         let mut writes = vec![
             vk::WriteDescriptorSet::default()
                 .dst_set(self.descriptor_sets[current_frame])
@@ -113,6 +119,11 @@ impl RenderPass for PostProcessPass {
                 .dst_binding(6)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(&dof_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[current_frame])
+                .dst_binding(7)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&rt_info),
         ];
 
         let lum_buffer = renderer.get_resource_buffer("LuminancePass", "Luminance");
@@ -315,7 +326,10 @@ impl RenderPass for PostProcessPass {
                 dof_enabled: f32,
                 lut_index: f32,
                 time: f32,
-                padding: [f32; 2],
+                rt_reflections: f32,
+                rt_shadows: f32,
+                rt_ao: f32,
+                rt_gi: f32,
             }
             let pc = PostProcessPC {
                 exposure: renderer.settings.exposure,
@@ -330,7 +344,10 @@ impl RenderPass for PostProcessPass {
                 dof_enabled: if renderer.settings.enable_dof { 1.0 } else { 0.0 },
                 lut_index: if renderer.settings.enable_color_grading { renderer.settings.lut_index as f32 } else { -1.0 },
                 time: (renderer.frame_index as f32) * 0.016,
-                padding: [0.0; 2],
+                rt_reflections: if renderer.settings.enable_rt_reflections { 1.0 } else { 0.0 },
+                rt_shadows: if renderer.settings.enable_rt_shadows { 1.0 } else { 0.0 },
+                rt_ao: if renderer.settings.enable_rt_ao { 1.0 } else { 0.0 },
+                rt_gi: if renderer.settings.enable_rt_gi { 1.0 } else { 0.0 },
             };
             let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PostProcessPC>());
             renderer.device.device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
@@ -421,6 +438,11 @@ impl PostProcessPass {
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(6)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(7)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),

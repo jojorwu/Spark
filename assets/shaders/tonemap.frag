@@ -12,6 +12,7 @@ layout(set = 1, binding = 5) buffer LuminanceBuffer {
     float targetExposure;
 } lum;
 layout(set = 1, binding = 6) uniform sampler2D dofSampler;
+layout(set = 1, binding = 7) uniform sampler2D rtSampler;
 
 layout(set = 0, binding = 0) uniform sampler3D luts[16];
 
@@ -28,6 +29,10 @@ layout(push_constant) uniform PostProcessParams {
     float dof_enabled;
     float lut_index;
     float time;
+    float rt_reflections_enabled;
+    float rt_shadows_enabled;
+    float rt_ao_enabled;
+    float rt_gi_enabled;
 } params;
 
 // ACES Tone Mapping
@@ -75,9 +80,26 @@ void main() {
     vec3 bloomColor = texture(bloomSampler, inUV).rgb;
     vec3 fogColor = texture(fogSampler, inUV).rgb;
     vec4 spriteColor = texture(spriteSampler, inUV);
+    vec3 rtColor = texture(rtSampler, inUV).rgb;
 
     // Combine with Fog
     vec3 color = hdrColor + fogColor;
+
+    // Apply RT effects
+    if (params.rt_reflections_enabled > 0.5) {
+        // Use RT reflections where appropriate (simplified)
+        color = mix(color, rtColor, 0.4);
+    }
+
+    if (params.rt_gi_enabled > 0.5) {
+        color += rtColor * 0.15;
+    }
+
+    if (params.rt_shadows_enabled > 0.5) {
+        // Darken based on RT shadow data (rtColor.a or similar could be used)
+        // For now just a subtle multiplier if GI/Reflections aren't full
+        color *= (1.0 - (1.0 - rtColor.g) * 0.2);
+    }
 
     // Apply DoF
     if (params.dof_enabled > 0.5) {
