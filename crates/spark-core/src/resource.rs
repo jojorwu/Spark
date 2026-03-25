@@ -426,7 +426,8 @@ impl GltfLoader {
                     vertex_offset: v_offset,
                     texture_handle: None,
                     material_index: Some(mat_idx),
-                    bounding_radius: max_dist_sq.sqrt()
+                    bounding_radius: max_dist_sq.sqrt(),
+                    skin_index: node.skin().map(|s| s.index() as u32),
                 };
                 components.push(Box::new(mesh_comp) as Box<dyn Component>);
                 rm.needs_upload = true;

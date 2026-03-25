@@ -105,6 +105,10 @@ fn main() {
         sprite_frag: compiler.compile("assets/shaders/sprite.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile sprite.frag"),
         luminance: compiler.compile("assets/shaders/luminance.comp", shaderc::ShaderKind::Compute).expect("Failed to compile luminance.comp"),
         dof: compiler.compile("assets/shaders/dof.comp", shaderc::ShaderKind::Compute).expect("Failed to compile dof.comp"),
+        skinning: compiler.compile("assets/shaders/skinning.comp", shaderc::ShaderKind::Compute).expect("Failed to compile skinning.comp"),
+        point_shadow_vert: compiler.compile("assets/shaders/point_shadow.vert", shaderc::ShaderKind::Vertex).expect("Failed to compile point_shadow.vert"),
+        point_shadow_frag: compiler.compile("assets/shaders/point_shadow.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile point_shadow.frag"),
+        ssgi: compiler.compile("assets/shaders/ssgi.frag", shaderc::ShaderKind::Fragment).expect("Failed to compile ssgi.frag"),
     };
 
     app.engine.renderer.setup_default_passes(shaders).expect("Failed to setup render passes");
@@ -146,6 +150,7 @@ fn main() {
             texture_handle: None,
             material_index: Some(0),
             bounding_radius: 1.0,
+            skin_index: None,
         })],
     };
 

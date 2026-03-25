@@ -24,6 +24,7 @@ pub struct MeshComponent {
     pub texture_handle: Option<crate::resource::Handle<spark_renderer::vulkan::texture::Texture>>,
     pub material_index: Option<u32>,
     pub bounding_radius: f32,
+    pub skin_index: Option<u32>,
 }
 
 #[typetag::serde]
@@ -353,9 +354,9 @@ impl Scene {
             }
         }
 
-        let children = self.nodes[key].children.clone();
-        for child in children {
-            self.update_transform_recursive(child, global, dirty);
+        for i in 0..self.nodes[key].children.len() {
+            let child_key = self.nodes[key].children[i];
+            self.update_transform_recursive(child_key, global, dirty);
         }
     }
 

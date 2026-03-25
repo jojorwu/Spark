@@ -17,6 +17,7 @@ impl RenderPass for SSGIPass {
     fn outputs(&self) -> Vec<&'static str> { vec!["SSGI"] }
 
     fn record_commands(&self, _ctx: &RenderContext) {
+        if self.pipeline == vk::Pipeline::null() { return; }
         // Implementation for drawing a fullscreen quad with SSGI shader
     }
 

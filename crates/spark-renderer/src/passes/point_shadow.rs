@@ -13,6 +13,7 @@ impl RenderPass for PointShadowPass {
     fn name(&self) -> &str { "PointShadowPass" }
 
     fn record_commands(&self, _ctx: &RenderContext) {
+        if self.pipeline == vk::Pipeline::null() { return; }
         // Implementation for recording 6 faces of a cube map for a point light
         // For now, this is a placeholder.
     }

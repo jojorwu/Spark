@@ -185,6 +185,7 @@ impl EditorUI {
                     node.components.push(Box::new(spark_core::scene::MeshComponent {
                         vertex_count: 0, index_count: 0, first_index: 0, vertex_offset: 0,
                         texture_handle: None, material_index: None, bounding_radius: 1.0,
+                        skin_index: None,
                     }));
                     scene.add_node(parent, node);
                 }
@@ -663,6 +664,7 @@ impl EditorUI {
             texture_handle: None,
             material_index: None,
             bounding_radius: 1.0,
+            skin_index: None,
         }));
         scene.add_node(scene.root, new_node);
     }
@@ -747,6 +749,7 @@ impl EditorUI {
                                     node.components.push(Box::new(spark_core::scene::MeshComponent {
                                         vertex_count: 0, index_count: 0, first_index: 0, vertex_offset: 0,
                                         texture_handle: None, material_index: None, bounding_radius: 1.0,
+                                        skin_index: None,
                                     }));
                                     ui.close_menu();
                                 }

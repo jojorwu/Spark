@@ -6,6 +6,9 @@ fn test_scene_node_management() {
     let mut scene = Scene::new();
     let node = Node {
         name: "TestNode".to_string(),
+        visible: true,
+        locked: false,
+        is_dirty: true,
         local_transform: Mat4::IDENTITY,
         global_transform: Mat4::IDENTITY,
         parent: None,
@@ -25,6 +28,9 @@ fn test_transform_propagation() {
     let mut scene = Scene::new();
     let parent_node = Node {
         name: "Parent".to_string(),
+        visible: true,
+        locked: false,
+        is_dirty: true,
         local_transform: Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0)),
         global_transform: Mat4::IDENTITY,
         parent: None,
@@ -35,6 +41,9 @@ fn test_transform_propagation() {
 
     let child_node = Node {
         name: "Child".to_string(),
+        visible: true,
+        locked: false,
+        is_dirty: true,
         local_transform: Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
         global_transform: Mat4::IDENTITY,
         parent: None,

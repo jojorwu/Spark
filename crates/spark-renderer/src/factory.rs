@@ -35,6 +35,10 @@ pub struct PassShaders {
     pub sprite_frag: Vec<u32>,
     pub luminance: Vec<u32>,
     pub dof: Vec<u32>,
+    pub skinning: Vec<u32>,
+    pub point_shadow_vert: Vec<u32>,
+    pub point_shadow_frag: Vec<u32>,
+    pub ssgi: Vec<u32>,
 }
 
 impl Renderer {
@@ -105,6 +109,9 @@ impl Renderer {
 
         let dof_pass = crate::passes::dof::DoFPass::new(self, &shaders.dof)?;
 
+        let point_shadow_pass = crate::passes::point_shadow::PointShadowPass::new(self, &shaders.point_shadow_vert, &shaders.point_shadow_frag)?;
+        let ssgi_pass = crate::passes::ssgi::SSGIPass::new(self, &shaders.ssgi)?;
+
         let mut post_process_pass = crate::passes::post_process::PostProcessPass::new(
             self, self.swapchain.format, extent
         ).map_err(|_| RendererError::NoSuitableDevice)?;
@@ -149,8 +156,10 @@ impl Renderer {
         self.add_render_pass(luminance_pass, &["HDRColor"], &["Luminance"]);
         self.add_render_pass(taa_pass, &["HDRColor", "GBuffer"], &["TAAColor"]);
         self.add_render_pass(dof_pass, &["HDRColor", "GBuffer"], &["DoF"]);
+        self.add_render_pass(point_shadow_pass, &[], &["PointShadowMap"]);
+        self.add_render_pass(ssgi_pass, &["GBuffer", "HDRColor"], &["SSGI"]);
         self.add_render_pass(sprite_pass, &["GBuffer"], &["SpriteColor"]);
-        self.add_render_pass(post_process_pass, &["TAAColor", "SpriteColor", "Luminance", "DoF"], &["FinalColor"]);
+        self.add_render_pass(post_process_pass, &["TAAColor", "SpriteColor", "Luminance", "DoF", "SSGI"], &["FinalColor"]);
 
         self.compile_render_graph();
         self.update_all_descriptor_sets();

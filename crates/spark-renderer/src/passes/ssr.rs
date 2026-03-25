@@ -49,6 +49,7 @@ impl RenderPass for SSRPass {
     }
 
     fn record_commands(&self, ctx: &RenderContext) {
+        if self.pipeline == vk::Pipeline::null() { return; }
         let renderer = ctx.renderer;
         let device = &renderer.device.device;
         let extent = renderer.get_extent();
