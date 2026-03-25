@@ -71,15 +71,16 @@ impl AccelerationStructureManager {
                 vertex_offset: mesh.vertex_offset,
                 first_index: mesh.first_index,
             };
-            let blas = self.blas_cache.entry(key).or_insert_with(|| {
+            if !self.blas_cache.contains_key(&key) {
                 let (b, scratch) = AccelerationStructure::new_blas(
                     device, as_loader, cb, global_vb, global_ib,
                     mesh.vertex_count, mesh.index_count, vertex_stride,
                     mesh.vertex_offset, mesh.first_index
-                ).expect("Failed to build BLAS");
+                )?;
                 scratch_buffers.push(scratch);
-                b
-            });
+                self.blas_cache.insert(key, b);
+            }
+            let blas = self.blas_cache.get(&key).unwrap();
 
             let m = mesh.model.transpose();
             let transform = vk::TransformMatrixKHR {

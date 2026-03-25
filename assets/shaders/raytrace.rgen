@@ -50,12 +50,15 @@ void main()
         // Basic lighting at hit point
         vec3 lightDir = normalize(vec3(0.5, 1.0, 0.5));
         float diff = max(dot(normal, lightDir), 0.0);
-        finalColor = vec3(0.8) * diff;
+        finalColor = payload.color * diff;
 
         // Shadows
         if (pc.shadows_enabled > 0.5) {
             uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
-            payload.hit = 0;
+
+            RayPayload shadowPayload;
+            shadowPayload.hit = 0;
+            // Trace from hit point towards light
             traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos + normal * 0.01, 0.01, lightDir, 1000.0, 0);
 
             if (payload.hit == 1) {

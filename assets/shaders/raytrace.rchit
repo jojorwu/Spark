@@ -12,11 +12,13 @@ hitAttributeEXT vec2 attribs;
 layout(binding = 2, set = 1, scalar) buffer Vertices { Vertex v[]; } vertices;
 layout(binding = 3, set = 1) buffer Indices { uint i[]; } indices;
 layout(binding = 4, set = 1, scalar) buffer Meshes { MeshData m[]; } meshes;
+layout(binding = 5, set = 1, scalar) buffer Materials { MaterialData m[]; } materials;
 
 void main()
 {
   uint instanceID = gl_InstanceCustomIndexEXT;
   MeshData mesh = meshes.m[instanceID];
+  MaterialData mat = materials.m[mesh.material_index];
 
   uint primitiveID = gl_PrimitiveID;
   uint i0 = indices.i[mesh.first_index + 3 * primitiveID + 0];
@@ -37,8 +39,9 @@ void main()
   mat3 normalMatrix = mat3(gl_ObjectToWorldEXT);
   normal = normalize(normalMatrix * normal);
 
-  payload.color = vec3(0.7);
+  payload.color = mat.albedo_factor.rgb;
   payload.dist = gl_HitTEXT;
   payload.hit = 1;
   payload.normal = normal;
+  payload.material_index = mesh.material_index;
 }
