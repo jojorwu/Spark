@@ -4,6 +4,7 @@ use crate::Renderer;
 use super::{RenderPass, RenderContext};
 use crate::vulkan::as_manager::AccelerationStructure;
 
+/// A rendering pass that performs hardware-accelerated ray tracing.
 pub struct RayTracingPass {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
@@ -25,6 +26,8 @@ impl RenderPass for RayTracingPass {
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         if self.pipeline == vk::Pipeline::null() { return; }
         let device = &renderer.device.device;
+
+        // Update settings in push constants or UBO if needed
         let ds = self.descriptor_sets[current_frame];
 
         let out_info = [vk::DescriptorImageInfo::default()
@@ -58,6 +61,14 @@ impl RenderPass for RayTracingPass {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(&ib_info));
         }
+
+        let md_buf = renderer.frames[current_frame].object_data_buffer.as_ref().unwrap_or(&renderer.dummy_buffer);
+        let md_info = [vk::DescriptorBufferInfo::default().buffer(md_buf.handle).range(md_buf.size)];
+        writes.push(vk::WriteDescriptorSet::default()
+            .dst_set(ds)
+            .dst_binding(4)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .buffer_info(&md_info));
 
         let tlas_lock = self.tlas.lock().unwrap();
         if let Some(ref tlas) = tlas_lock[current_frame] {
@@ -161,8 +172,8 @@ impl RenderPass for RayTracingPass {
 impl RayTracingPass {
     pub fn new(renderer: &Renderer, rgen_spirv: &[u32], rmiss_spirv: &[u32], rchit_spirv: &[u32]) -> Result<Self, crate::error::RendererError> {
         let device = &renderer.device.device;
-        let as_loader = ash::khr::acceleration_structure::Device::new(&renderer.context.instance, device);
-        let rt_loader = ash::khr::ray_tracing_pipeline::Device::new(&renderer.context.instance, device);
+        let as_loader = renderer.device.as_loader.as_ref().unwrap().clone();
+        let rt_loader = renderer.device.rt_loader.as_ref().unwrap().clone();
 
         if !renderer.device.rt_supported {
             return Ok(Self {
@@ -212,6 +223,11 @@ impl RayTracingPass {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR), // Indices
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR), // Mesh Data (offsets)
         ];
 
         let ds_layout = unsafe {

@@ -2,12 +2,118 @@ use ash::vk;
 use crate::vulkan::device::VulkanDevice;
 use crate::resource::Buffer;
 
+/// Represents a Vulkan Acceleration Structure (BLAS or TLAS).
 pub struct AccelerationStructure {
     pub handle: vk::AccelerationStructureKHR,
     pub buffer: Buffer,
+    pub address: u64,
+}
+
+/// A unique key identifying a Bottom-Level Acceleration Structure (BLAS) in the cache.
+#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
+pub struct BlasKey {
+    pub mesh_id: u32,
+    pub vertex_offset: i32,
+    pub first_index: u32,
+}
+
+/// Manages the creation, caching, and lifecycle of Vulkan Acceleration Structures.
+pub struct AccelerationStructureManager {
+    pub blas_cache: std::collections::HashMap<BlasKey, AccelerationStructure>,
+}
+
+impl AccelerationStructureManager {
+    /// Creates a new AccelerationStructureManager.
+    pub fn new() -> Self {
+        Self { blas_cache: std::collections::HashMap::new() }
+    }
+
+    /// Builds a Top-Level Acceleration Structure (TLAS) for the entire scene and builds/caches BLAS as needed.
+    ///
+    /// # Arguments
+    /// * `device` - The Vulkan device.
+    /// * `cb` - The command buffer to record build commands into.
+    /// * `packet` - The frame packet containing scene geometry.
+    /// * `global_vb` - The global vertex buffer.
+    /// * `global_ib` - The global index buffer.
+    /// * `vertex_stride` - Stride of the vertex data in bytes.
+    pub fn build_scene_tlas(
+        &mut self,
+        device: &VulkanDevice,
+        cb: vk::CommandBuffer,
+        packet: &crate::resource::FramePacket,
+        global_vb: &Buffer,
+        global_ib: &Buffer,
+        vertex_stride: u64,
+    ) -> Result<(AccelerationStructure, Vec<Buffer>), crate::error::RendererError> {
+        let as_loader = device.as_loader.as_ref().ok_or(crate::error::RendererError::NoSuitableDevice)?;
+        let mut scratch_buffers = Vec::new();
+        let mut instances = Vec::new();
+
+        for (i, mesh) in packet.opaque_meshes.iter().enumerate() {
+            let key = BlasKey {
+                mesh_id: mesh.mesh_id,
+                vertex_offset: mesh.vertex_offset,
+                first_index: mesh.first_index,
+            };
+            let blas = self.blas_cache.entry(key).or_insert_with(|| {
+                let (b, scratch) = AccelerationStructure::new_blas(
+                    device, as_loader, cb, global_vb, global_ib,
+                    mesh.vertex_count, mesh.index_count, vertex_stride,
+                    mesh.vertex_offset, mesh.first_index
+                ).expect("Failed to build BLAS");
+                scratch_buffers.push(scratch);
+                b
+            });
+
+            let m = mesh.model.transpose();
+            let transform = vk::TransformMatrixKHR {
+                matrix: [
+                    m.row(0).x, m.row(0).y, m.row(0).z, m.row(0).w,
+                    m.row(1).x, m.row(1).y, m.row(1).z, m.row(1).w,
+                    m.row(2).x, m.row(2).y, m.row(2).z, m.row(2).w,
+                ],
+            };
+
+            instances.push(vk::AccelerationStructureInstanceKHR {
+                transform,
+                instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, 0xFF),
+                instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8),
+                acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: blas.address },
+            });
+        }
+
+        // Barrier for BLAS builds to complete before TLAS build
+        let barrier_data = [vk::MemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+            .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
+            .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+            .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR)];
+
+        let as_barrier = vk::DependencyInfo::default()
+            .memory_barriers(&barrier_data);
+
+        unsafe {
+             device.device.cmd_pipeline_barrier2(cb, &as_barrier);
+        }
+
+        let (tlas, t_scratch, t_inst) = AccelerationStructure::new_tlas(device, as_loader, cb, &instances)?;
+        scratch_buffers.push(t_scratch);
+        scratch_buffers.push(t_inst);
+
+        Ok((tlas, scratch_buffers))
+    }
+
+    /// Cleans up all cached BLAS.
+    pub fn cleanup(&mut self, device: &VulkanDevice) {
+        for (_, mut blas) in self.blas_cache.drain() {
+            blas.destroy(device);
+        }
+    }
 }
 
 impl AccelerationStructure {
+    /// Creates a new Bottom-Level Acceleration Structure (BLAS).
     pub fn new_blas(
         device: &VulkanDevice,
         as_loader: &ash::khr::acceleration_structure::Device,
@@ -70,6 +176,11 @@ impl AccelerationStructure {
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
 
         let handle = unsafe { as_loader.create_acceleration_structure(&create_info, None)? };
+        let address = unsafe {
+            as_loader.get_acceleration_structure_device_address(
+                &vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(handle)
+            )
+        };
 
         let scratch_buffer = device.create_buffer(
             size_info.build_scratch_size,
@@ -85,9 +196,10 @@ impl AccelerationStructure {
             as_loader.cmd_build_acceleration_structures(cb, &[build_info], &[&[build_range]]);
         }
 
-        Ok((Self { handle, buffer: as_buffer }, scratch_buffer))
+        Ok((Self { handle, buffer: as_buffer, address }, scratch_buffer))
     }
 
+    /// Creates a new Top-Level Acceleration Structure (TLAS).
     pub fn new_tlas(
         device: &VulkanDevice,
         as_loader: &ash::khr::acceleration_structure::Device,
@@ -136,6 +248,11 @@ impl AccelerationStructure {
             .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL);
 
         let handle = unsafe { as_loader.create_acceleration_structure(&create_info, None)? };
+        let address = unsafe {
+            as_loader.get_acceleration_structure_device_address(
+                &vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(handle)
+            )
+        };
 
         let scratch_buffer = device.create_buffer(
             size_info.build_scratch_size,
@@ -157,9 +274,10 @@ impl AccelerationStructure {
             as_loader.cmd_build_acceleration_structures(cb, &[build_info], &[&[build_range]]);
         }
 
-        Ok((Self { handle, buffer: as_buffer }, scratch_buffer, instance_buffer))
+        Ok((Self { handle, buffer: as_buffer, address }, scratch_buffer, instance_buffer))
     }
 
+    /// Destroys the acceleration structure and its buffer.
     pub fn destroy(&mut self, device: &VulkanDevice) {
         if let Some(ref as_loader) = device.as_loader {
             unsafe {

@@ -163,7 +163,7 @@ impl Clone for Attachment {
 }
 
 /// Represents the data required to draw a single mesh instance.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MeshDraw {
     pub model: spark_math::Mat4,
     pub vertex_count: u32,

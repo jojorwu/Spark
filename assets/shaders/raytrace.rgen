@@ -8,6 +8,7 @@ struct RayPayload {
     vec3 color;
     float dist;
     uint hit;
+    vec3 normal;
 };
 
 layout(location = 0) rayPayloadEXT RayPayload payload;
@@ -37,22 +38,35 @@ void main()
 
     traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, origin, 0.001, direction, 10000.0, 0);
 
-    vec3 finalColor = payload.color;
+    vec3 finalColor = vec3(0.0);
 
-    // Second bounce for shadows if we hit something
     if (payload.hit == 1) {
         vec3 hitPos = origin + direction * payload.dist;
-        vec3 lightDir = normalize(vec3(0.5, 1.0, 0.5)); // Directional light
+        vec3 normal = payload.normal;
 
-        uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+        // Basic lighting at hit point
+        vec3 lightDir = normalize(vec3(0.5, 1.0, 0.5));
+        float diff = max(dot(normal, lightDir), 0.0);
+        finalColor = vec3(0.8) * diff; // Placeholder for material color
 
-        // Reusing payload for shadow ray (hit will be 0 if it misses, 1 if it hits anything)
-        payload.hit = 0;
-        traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos, 0.01, lightDir, 1000.0, 0);
+        // Shadows
+        RayPayload shadowPayload;
+        shadowPayload.hit = 0;
+        traceRayEXT(topLevelAS, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT, 0xff, 0, 0, 0, hitPos + normal * 0.01, 0.01, lightDir, 1000.0, 0);
 
-        if (payload.hit == 1) {
-             finalColor *= 0.2; // Shadowed
+        if (payload.hit == 1) { // Shadow ray logic
+             finalColor *= 0.2;
         }
+
+        // Reflection
+        vec3 reflectDir = reflect(direction, normal);
+        payload.hit = 0;
+        traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, hitPos + normal * 0.01, 0.01, reflectDir, 1000.0, 0);
+        if (payload.hit == 1) {
+            finalColor = mix(finalColor, payload.color, 0.3);
+        }
+    } else {
+        finalColor = payload.color; // Background from miss shader
     }
 
     imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(finalColor, 1.0));

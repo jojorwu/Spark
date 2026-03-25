@@ -67,7 +67,7 @@ pub struct Renderer {
     pub pass_descriptor_versions: Vec<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
     pub dummy_buffer: Buffer,
     pub culling_finished_semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
-    pub blas_cache: std::collections::HashMap<u32, crate::vulkan::as_manager::AccelerationStructure>,
+    pub as_manager: crate::vulkan::as_manager::AccelerationStructureManager,
 }
 
 #[repr(C)]
@@ -303,7 +303,7 @@ impl Renderer {
             pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).collect(),
             dummy_buffer,
             culling_finished_semaphores: [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT],
-            blas_cache: std::collections::HashMap::new(),
+            as_manager: crate::vulkan::as_manager::AccelerationStructureManager::new(),
         };
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
@@ -1315,7 +1315,7 @@ impl Renderer {
         let total_objects = object_ssbos.len() as u32;
 
         // 1.1 Prepare Transparent buffers (with simple back-to-front sorting)
-        let mut transparent_meshes = packet.transparent_meshes;
+        let mut transparent_meshes = packet.transparent_meshes.clone();
         let view_pos = packet.view_matrix.inverse().w_axis.xyz();
         transparent_meshes.par_sort_by(|a, b| {
             let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
@@ -1450,48 +1450,15 @@ impl Renderer {
         let mut tlas = None;
         if self.device.rt_supported && !packet.opaque_meshes.is_empty() {
              if let (Some(vb), Some(ib)) = (self.global_vertex_buffer.as_ref(), self.global_index_buffer.as_ref()) {
-                 let as_loader = self.device.as_loader.as_ref().unwrap();
                  let cb = self.frames[cf].command_buffer;
                  let frame_scratch = &mut self.frames[cf].scratch_buffers;
                  for b in frame_scratch.drain(..) { self.device.destroy_buffer(b); }
 
-                 let mut instances = Vec::new();
-                 for mesh in &packet.opaque_meshes {
-                     let id = mesh.mesh_id; // Using actual Mesh ID
-                     let blas = self.blas_cache.entry(id).or_insert_with(|| {
-                          let (b, scratch) = crate::vulkan::as_manager::AccelerationStructure::new_blas(
-                              &self.device, as_loader, cb, vb, ib,
-                             mesh.vertex_count,
-                             mesh.index_count,
-                             std::mem::size_of::<crate::vertex::Vertex>() as u64,
-                             mesh.vertex_offset,
-                             mesh.first_index
-                          ).expect("Failed to build BLAS");
-                          frame_scratch.push(scratch);
-                          b
-                     });
-
-                     let m = mesh.model.transpose();
-                     let transform = vk::TransformMatrixKHR {
-                         matrix: [
-                             m.row(0).x, m.row(0).y, m.row(0).z, m.row(0).w,
-                             m.row(1).x, m.row(1).y, m.row(1).z, m.row(1).w,
-                             m.row(2).x, m.row(2).y, m.row(2).z, m.row(2).w,
-                         ],
-                     };
-
-                     instances.push(vk::AccelerationStructureInstanceKHR {
-                         transform,
-                         instance_custom_index_and_mask: vk::Packed24_8::new(0, 0xFF),
-                         instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8),
-                         acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: blas.buffer.address },
-                     });
-                 }
-
-                 if let Ok((new_tlas, t_scratch, t_inst)) = crate::vulkan::as_manager::AccelerationStructure::new_tlas(&self.device, as_loader, cb, &instances) {
+                 if let Ok((new_tlas, scratch)) = self.as_manager.build_scene_tlas(
+                     &self.device, cb, &packet, vb, ib, std::mem::size_of::<crate::vertex::Vertex>() as u64
+                 ) {
                      tlas = Some(new_tlas);
-                     frame_scratch.push(t_scratch);
-                     frame_scratch.push(t_inst);
+                     frame_scratch.extend(scratch);
                  }
              }
         }
@@ -1756,9 +1723,7 @@ impl Drop for Renderer {
                 self.device.destroy_buffer(mb);
             }
 
-            for (_, mut blas) in self.blas_cache.drain() {
-                blas.destroy(&self.device);
-            }
+            self.as_manager.cleanup(&self.device);
 
             for frame in &self.frames {
                 for b in &frame.scratch_buffers {
