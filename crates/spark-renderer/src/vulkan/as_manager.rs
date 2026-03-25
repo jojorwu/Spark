@@ -20,12 +20,18 @@ pub struct BlasKey {
 /// Manages the creation, caching, and lifecycle of Vulkan Acceleration Structures.
 pub struct AccelerationStructureManager {
     pub blas_cache: std::collections::HashMap<BlasKey, AccelerationStructure>,
+    pub current_tlas: [Option<AccelerationStructure>; crate::MAX_FRAMES_IN_FLIGHT],
+    pub frame_scratch: [Vec<Buffer>; crate::MAX_FRAMES_IN_FLIGHT],
 }
 
 impl AccelerationStructureManager {
     /// Creates a new AccelerationStructureManager.
     pub fn new() -> Self {
-        Self { blas_cache: std::collections::HashMap::new() }
+        Self {
+            blas_cache: std::collections::HashMap::new(),
+            current_tlas: Default::default(),
+            frame_scratch: Default::default(),
+        }
     }
 
     /// Builds a Top-Level Acceleration Structure (TLAS) for the entire scene and builds/caches BLAS as needed.
@@ -45,7 +51,16 @@ impl AccelerationStructureManager {
         global_vb: &Buffer,
         global_ib: &Buffer,
         vertex_stride: u64,
-    ) -> Result<(AccelerationStructure, Vec<Buffer>), crate::error::RendererError> {
+        frame_index: usize,
+    ) -> Result<(), crate::error::RendererError> {
+        // Cleanup old resources for this frame slot
+        if let Some(mut old_tlas) = self.current_tlas[frame_index].take() {
+            old_tlas.destroy(device);
+        }
+        for b in self.frame_scratch[frame_index].drain(..) {
+            device.destroy_buffer(b);
+        }
+
         let as_loader = device.as_loader.as_ref().ok_or(crate::error::RendererError::NoSuitableDevice)?;
         let mut scratch_buffers = Vec::new();
         let mut instances = Vec::new();
@@ -101,13 +116,26 @@ impl AccelerationStructureManager {
         scratch_buffers.push(t_scratch);
         scratch_buffers.push(t_inst);
 
-        Ok((tlas, scratch_buffers))
+        self.current_tlas[frame_index] = Some(tlas);
+        self.frame_scratch[frame_index] = scratch_buffers;
+
+        Ok(())
     }
 
     /// Cleans up all cached BLAS.
     pub fn cleanup(&mut self, device: &VulkanDevice) {
         for (_, mut blas) in self.blas_cache.drain() {
             blas.destroy(device);
+        }
+        for tlas in self.current_tlas.iter_mut() {
+            if let Some(mut t) = tlas.take() {
+                t.destroy(device);
+            }
+        }
+        for scratch_list in self.frame_scratch.iter_mut() {
+            for b in scratch_list.drain(..) {
+                device.destroy_buffer(b);
+            }
         }
     }
 }

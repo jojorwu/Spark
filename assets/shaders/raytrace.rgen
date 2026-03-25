@@ -1,15 +1,11 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : enable
+
+#include "raytrace_common.glsl"
 
 layout(binding = 0, set = 1) uniform accelerationStructureEXT topLevelAS;
 layout(binding = 1, set = 1, rgba16f) uniform image2D image;
-
-struct RayPayload {
-    vec3 color;
-    float dist;
-    uint hit;
-    vec3 normal;
-};
 
 layout(location = 0) rayPayloadEXT RayPayload payload;
 
@@ -21,6 +17,13 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     vec4 frustum[6];
     vec4 cascade_splits;
 } ubo;
+
+layout(push_constant) uniform PushConstants {
+    float reflections_enabled;
+    float shadows_enabled;
+    float ao_enabled;
+    float gi_enabled;
+} pc;
 
 void main()
 {
@@ -47,26 +50,30 @@ void main()
         // Basic lighting at hit point
         vec3 lightDir = normalize(vec3(0.5, 1.0, 0.5));
         float diff = max(dot(normal, lightDir), 0.0);
-        finalColor = vec3(0.8) * diff; // Placeholder for material color
+        finalColor = vec3(0.8) * diff;
 
         // Shadows
-        RayPayload shadowPayload;
-        shadowPayload.hit = 0;
-        traceRayEXT(topLevelAS, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT, 0xff, 0, 0, 0, hitPos + normal * 0.01, 0.01, lightDir, 1000.0, 0);
+        if (pc.shadows_enabled > 0.5) {
+            uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+            payload.hit = 0;
+            traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos + normal * 0.01, 0.01, lightDir, 1000.0, 0);
 
-        if (payload.hit == 1) { // Shadow ray logic
-             finalColor *= 0.2;
+            if (payload.hit == 1) {
+                 finalColor *= 0.2;
+            }
         }
 
         // Reflection
-        vec3 reflectDir = reflect(direction, normal);
-        payload.hit = 0;
-        traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, hitPos + normal * 0.01, 0.01, reflectDir, 1000.0, 0);
-        if (payload.hit == 1) {
-            finalColor = mix(finalColor, payload.color, 0.3);
+        if (pc.reflections_enabled > 0.5) {
+            vec3 reflectDir = reflect(direction, normal);
+            payload.hit = 0;
+            traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, hitPos + normal * 0.01, 0.01, reflectDir, 1000.0, 0);
+            if (payload.hit == 1) {
+                finalColor = mix(finalColor, payload.color, 0.3);
+            }
         }
     } else {
-        finalColor = payload.color; // Background from miss shader
+        finalColor = payload.color;
     }
 
     imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(finalColor, 1.0));

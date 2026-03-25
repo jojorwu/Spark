@@ -1,12 +1,8 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : enable
 
-struct RayPayload {
-    vec3 color;
-    float dist;
-    uint hit;
-    vec3 normal;
-};
+#include "raytrace_common.glsl"
 
 layout(location = 0) rayPayloadInEXT RayPayload payload;
 

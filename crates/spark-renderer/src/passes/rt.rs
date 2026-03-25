@@ -2,7 +2,6 @@ use ash::vk;
 use crate::resource::{Attachment, MAX_FRAMES_IN_FLIGHT};
 use crate::Renderer;
 use super::{RenderPass, RenderContext};
-use crate::vulkan::as_manager::AccelerationStructure;
 
 /// A rendering pass that performs hardware-accelerated ray tracing.
 pub struct RayTracingPass {
@@ -13,7 +12,6 @@ pub struct RayTracingPass {
     pub output_images: Vec<Attachment>,
     pub as_loader: ash::khr::acceleration_structure::Device,
     pub rt_loader: ash::khr::ray_tracing_pipeline::Device,
-    pub tlas: std::sync::Arc<std::sync::Mutex<Vec<Option<AccelerationStructure>>>>,
     pub sbt_buffer: Option<crate::resource::Buffer>,
     pub sbt_regions: [vk::StridedDeviceAddressRegionKHR; 4],
 }
@@ -70,8 +68,7 @@ impl RenderPass for RayTracingPass {
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(&md_info));
 
-        let tlas_lock = self.tlas.lock().unwrap();
-        if let Some(ref tlas) = tlas_lock[current_frame] {
+        if let Some(ref tlas) = renderer.as_manager.current_tlas[current_frame] {
             let mut as_info = vk::WriteDescriptorSetAccelerationStructureKHR::default()
                 .acceleration_structures(std::slice::from_ref(&tlas.handle));
 
@@ -110,6 +107,22 @@ impl RenderPass for RayTracingPass {
                 &[],
             );
 
+            #[repr(C)]
+            struct RTPC {
+                reflections: f32,
+                shadows: f32,
+                ao: f32,
+                gi: f32,
+            }
+            let pc = RTPC {
+                reflections: if renderer.settings.enable_rt_reflections { 1.0 } else { 0.0 },
+                shadows: if renderer.settings.enable_rt_shadows { 1.0 } else { 0.0 },
+                ao: if renderer.settings.enable_rt_ao { 1.0 } else { 0.0 },
+                gi: if renderer.settings.enable_rt_gi { 1.0 } else { 0.0 },
+            };
+            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<RTPC>());
+            device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::RAYGEN_KHR, 0, pc_bytes);
+
             self.rt_loader.cmd_trace_rays(
                 ctx.command_buffer,
                 &self.sbt_regions[0],
@@ -139,16 +152,6 @@ impl RenderPass for RayTracingPass {
         }).collect();
     }
 
-    fn set_tlas(&self, tlas: AccelerationStructure, frame_index: usize, renderer: &Renderer) {
-        let mut t = self.tlas.lock().unwrap();
-        if frame_index < t.len() {
-             if let Some(mut old) = t[frame_index].take() {
-                 old.destroy(&renderer.device);
-             }
-             t[frame_index] = Some(tlas);
-        }
-    }
-
     fn destroy(&mut self, renderer: &mut Renderer) {
         let device = &renderer.device.device;
         unsafe {
@@ -157,10 +160,6 @@ impl RenderPass for RayTracingPass {
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             for img in self.output_images.drain(..) {
                 img.destroy(device, &renderer.device.allocator);
-            }
-            let mut tlas = self.tlas.lock().unwrap();
-            for mut t in tlas.drain(..).flatten() {
-                t.destroy(&renderer.device);
             }
             if let Some(sbt) = self.sbt_buffer.take() {
                 renderer.device.destroy_buffer(sbt);
@@ -184,7 +183,6 @@ impl RayTracingPass {
                 output_images: Vec::new(),
                 as_loader,
                 rt_loader,
-                tlas: std::sync::Arc::new(std::sync::Mutex::new(vec![None, None])),
                 sbt_buffer: None,
                 sbt_regions: [vk::StridedDeviceAddressRegionKHR::default(); 4],
             });
@@ -240,7 +238,12 @@ impl RayTracingPass {
         let layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(&[renderer.global_descriptor_set_layout, ds_layout]),
+                    .set_layouts(&[renderer.global_descriptor_set_layout, ds_layout])
+                    .push_constant_ranges(&[vk::PushConstantRange {
+                        stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
+                        offset: 0,
+                        size: 16,
+                    }]),
                 None,
             )?
         };
@@ -355,7 +358,6 @@ impl RayTracingPass {
             output_images,
             as_loader,
             rt_loader,
-            tlas: std::sync::Arc::new(std::sync::Mutex::new(vec![None, None])),
             sbt_buffer: Some(sbt_buffer),
             sbt_regions,
         })

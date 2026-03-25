@@ -2,48 +2,16 @@
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_nonuniform_qualifier : enable
 #extension GL_EXT_scalar_block_layout : enable
+#extension GL_GOOGLE_include_directive : enable
 
-struct RayPayload {
-    vec3 color;
-    float dist;
-    uint hit;
-    vec3 normal;
-};
+#include "raytrace_common.glsl"
 
 layout(location = 0) rayPayloadInEXT RayPayload payload;
 hitAttributeEXT vec2 attribs;
 
-struct Vertex {
-    vec3 pos;
-    float padding;
-    uint normal;
-    uint tex_coord;
-    uint color;
-    uint tangent;
-};
-
-struct MeshData {
-    vec4 model_row0;
-    vec4 model_row1;
-    vec4 model_row2;
-    vec4 sphere;
-    uint index_count;
-    uint first_index;
-    int vertex_offset;
-    uint material_index;
-};
-
 layout(binding = 2, set = 1, scalar) buffer Vertices { Vertex v[]; } vertices;
 layout(binding = 3, set = 1) buffer Indices { uint i[]; } indices;
 layout(binding = 4, set = 1, scalar) buffer Meshes { MeshData m[]; } meshes;
-
-vec3 unpackNormal(uint p) {
-    vec3 n;
-    n.x = float(p & 0x3FF) / 1023.0 * 2.0 - 1.0;
-    n.y = float((p >> 10) & 0x3FF) / 1023.0 * 2.0 - 1.0;
-    n.z = float((p >> 20) & 0x3FF) / 1023.0 * 2.0 - 1.0;
-    return normalize(n);
-}
 
 void main()
 {

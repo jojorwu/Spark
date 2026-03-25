@@ -1447,28 +1447,16 @@ impl Renderer {
         // 4. Prepare Passes
         let cf = self.current_frame;
 
-        let mut tlas = None;
         if self.device.rt_supported && !packet.opaque_meshes.is_empty() {
              if let (Some(vb), Some(ib)) = (self.global_vertex_buffer.as_ref(), self.global_index_buffer.as_ref()) {
                  let cb = self.frames[cf].command_buffer;
-                 let frame_scratch = &mut self.frames[cf].scratch_buffers;
-                 for b in frame_scratch.drain(..) { self.device.destroy_buffer(b); }
-
-                 if let Ok((new_tlas, scratch)) = self.as_manager.build_scene_tlas(
-                     &self.device, cb, &packet, vb, ib, std::mem::size_of::<crate::vertex::Vertex>() as u64
-                 ) {
-                     tlas = Some(new_tlas);
-                     frame_scratch.extend(scratch);
-                 }
+                 let _ = self.as_manager.build_scene_tlas(
+                     &self.device, cb, &packet, vb, ib, std::mem::size_of::<crate::vertex::Vertex>() as u64, cf
+                 );
              }
         }
 
         for pass_node in &self.render_graph.passes {
-            if pass_node.pass.name() == "RayTracingPass" {
-                 if let Some(t) = tlas.take() {
-                      pass_node.pass.set_tlas(t, cf, self);
-                 }
-            }
             pass_node.pass.prepare(self, cf);
         }
 
@@ -1725,11 +1713,6 @@ impl Drop for Renderer {
 
             self.as_manager.cleanup(&self.device);
 
-            for frame in &self.frames {
-                for b in &frame.scratch_buffers {
-                    self.device.destroy_buffer(b.clone());
-                }
-            }
 
             for sem in self.culling_finished_semaphores {
                 self.device.device.destroy_semaphore(sem, None);

@@ -13,9 +13,20 @@ impl ShaderCompiler {
     }
 
     fn compile(&self, path: &str, kind: shaderc::ShaderKind) -> Result<Vec<u32>, String> {
+        let mut options = shaderc::CompileOptions::new().unwrap();
+        options.set_include_callback(|name, _, _, _| {
+            let p = format!("assets/shaders/{}", name);
+            fs::read_to_string(&p)
+                .map(|content| shaderc::ResolvedInclude {
+                    resolved_name: name.to_string(),
+                    content,
+                })
+                .map_err(|e| e.to_string())
+        });
+
         let code = fs::read_to_string(path).map_err(|e| format!("Failed to read shader {}: {}", path, e))?;
         let name = std::path::Path::new(path).file_name().unwrap().to_str().unwrap();
-        self.compiler.compile_into_spirv(&code, kind, name, "main", None)
+        self.compiler.compile_into_spirv(&code, kind, name, "main", Some(&options))
             .map(|artifact| artifact.as_binary().to_vec())
             .map_err(|e| format!("Shader compilation error in {}: {}", path, e))
     }
