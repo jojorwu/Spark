@@ -82,7 +82,7 @@ impl RenderPass for PostProcessPass {
             .image_view(dof_view.unwrap_or(renderer.common_shadow_view))
             .sampler(sampler)];
 
-        let writes = [
+        let mut writes = vec![
             vk::WriteDescriptorSet::default()
                 .dst_set(self.descriptor_sets[current_frame])
                 .dst_binding(0)
@@ -114,6 +114,17 @@ impl RenderPass for PostProcessPass {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(&dof_info),
         ];
+
+        let lum_buffer = renderer.get_resource_buffer("LuminancePass", "Luminance");
+        let lum_info;
+        if let Some(buf) = lum_buffer {
+            lum_info = [vk::DescriptorBufferInfo::default().buffer(buf.handle).range(buf.size)];
+            writes.push(vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[current_frame])
+                .dst_binding(5)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&lum_info));
+        }
 
         unsafe {
             device.update_descriptor_sets(&writes, &[]);
@@ -438,7 +449,10 @@ impl PostProcessPass {
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count((MAX_FRAMES_IN_FLIGHT as u32 * 5) + (num_bloom_mips as u32 * MAX_FRAMES_IN_FLIGHT as u32)),
+                .descriptor_count((MAX_FRAMES_IN_FLIGHT as u32 * 6) + (num_bloom_mips as u32 * MAX_FRAMES_IN_FLIGHT as u32)),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32),
         ];
         let descriptor_pool = unsafe {
             device.create_descriptor_pool(

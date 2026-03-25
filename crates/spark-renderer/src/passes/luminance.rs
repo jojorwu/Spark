@@ -105,7 +105,10 @@ impl LuminancePass {
             device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(renderer.descriptor_pool).set_layouts(&[ds_layout; MAX_FRAMES_IN_FLIGHT]))?
         };
 
-        let luminance_buffer = renderer.create_buffer(16, vk::BufferUsageFlags::STORAGE_BUFFER, vk::MemoryPropertyFlags::DEVICE_LOCAL);
+        let luminance_buffer = renderer.create_buffer(16, vk::BufferUsageFlags::STORAGE_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
+
+        let initial_data = [1.0f32, 1.0f32, 0.0f32, 0.0f32];
+        renderer.upload_to_buffer(&luminance_buffer, &initial_data);
 
         let module = crate::pipeline::Pipeline::create_shader_module(device, shader_spirv);
         let entry = std::ffi::CString::new("main").unwrap();

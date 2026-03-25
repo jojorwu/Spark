@@ -1216,6 +1216,17 @@ impl Renderer {
         }
         None
     }
+
+    pub fn get_resource_buffer(&self, pass_name: &str, resource_name: &str) -> Option<Buffer> {
+        for pass_node in &self.render_graph.passes {
+            if pass_node.pass.name() == pass_name {
+                if let Some(buffer) = pass_node.pass.get_resource_buffer(resource_name) {
+                    return Some(buffer);
+                }
+            }
+        }
+        None
+    }
     /// Returns the current swapchain extent.
     pub fn get_extent(&self) -> vk::Extent2D {
         self.swapchain.extent

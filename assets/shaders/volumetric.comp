@@ -1,9 +1,9 @@
 #version 450
 layout (local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-layout (binding = 0, rgba16f) uniform writeonly image2D volumetricFog;
-layout (binding = 1) uniform sampler2D depthBuffer;
-layout (binding = 2) uniform sampler2DArray shadowMap;
+layout (set = 1, binding = 0, rgba16f) uniform writeonly image2D volumetricFog;
+layout (set = 1, binding = 1) uniform sampler2D depthBuffer;
+layout (set = 1, binding = 2) uniform sampler2DArray shadowMap;
 
 layout (set = 0, binding = 0) uniform GlobalUBO {
     mat4 viewProj;

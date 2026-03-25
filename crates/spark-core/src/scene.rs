@@ -203,7 +203,7 @@ impl Default for Scene {
 
 pub struct Query<'a> {
     scene: &'a Scene,
-    matches: std::collections::HashSet<NodeKey>,
+    matches: Option<std::collections::HashSet<NodeKey>>,
 }
 
 impl<'a> Query<'a> {
@@ -211,9 +211,13 @@ impl<'a> Query<'a> {
         let tid = std::any::TypeId::of::<T>();
         if let Some(nodes) = self.scene.component_registry.get(&tid) {
             let set: std::collections::HashSet<_> = nodes.iter().copied().collect();
-            self.matches.retain(|k| set.contains(k));
+            if let Some(ref mut matches) = self.matches {
+                matches.retain(|k| set.contains(k));
+            } else {
+                self.matches = Some(set);
+            }
         } else {
-            self.matches.clear();
+            self.matches = Some(std::collections::HashSet::new());
         }
         self
     }
@@ -221,22 +225,29 @@ impl<'a> Query<'a> {
     pub fn without<T: 'static>(mut self) -> Self {
         let tid = std::any::TypeId::of::<T>();
         if let Some(nodes) = self.scene.component_registry.get(&tid) {
-            for k in nodes {
-                self.matches.remove(k);
+            if let Some(ref mut matches) = self.matches {
+                for k in nodes {
+                    matches.remove(k);
+                }
+            } else {
+                let mut all: std::collections::HashSet<_> = self.scene.nodes.keys().collect();
+                for k in nodes {
+                    all.remove(k);
+                }
+                self.matches = Some(all);
             }
         }
         self
     }
 
     pub fn build(self) -> Vec<NodeKey> {
-        self.matches.into_iter().collect()
+        self.matches.map(|m| m.into_iter().collect()).unwrap_or_else(|| self.scene.nodes.keys().collect())
     }
 }
 
 impl Scene {
     pub fn query(&self) -> Query {
-        let all_nodes: std::collections::HashSet<_> = self.nodes.keys().collect();
-        Query { scene: self, matches: all_nodes }
+        Query { scene: self, matches: None }
     }
 
     pub fn query_components<T: 'static>(&self) -> Vec<NodeKey> {
