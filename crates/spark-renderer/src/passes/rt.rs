@@ -10,6 +10,8 @@ const BINDING_INDICES: u32 = 3;
 const BINDING_MESHES: u32 = 4;
 const BINDING_MATERIALS: u32 = 5;
 const BINDING_LIGHTS: u32 = 6;
+const BINDING_GBUFFER_DEPTH: u32 = 7;
+const BINDING_GBUFFER_NORMAL: u32 = 8;
 
 /// A rendering pass that performs hardware-accelerated ray tracing.
 pub struct RayTracingPass {
@@ -22,14 +24,131 @@ pub struct RayTracingPass {
     pub rt_loader: ash::khr::ray_tracing_pipeline::Device,
     pub sbt_buffer: Option<crate::resource::Buffer>,
     pub sbt_regions: [vk::StridedDeviceAddressRegionKHR; 4],
+    pub descriptor_versions: Vec<u64>,
 }
 
 impl RenderPass for RayTracingPass {
     fn name(&self) -> &str { "RayTracingPass" }
     fn inputs(&self) -> Vec<&'static str> { vec!["GBufferDepth", "GBufferNormal", "GBufferPBR", "HiZ"] }
+    fn on_resize(&mut self, renderer: &mut Renderer, new_extent: vk::Extent2D) {
+        for img in self.output_images.drain(..) {
+            img.destroy(&renderer.device.device, &renderer.device.allocator);
+        }
+        self.output_images = (0..MAX_FRAMES_IN_FLIGHT).map(|_| {
+            Attachment::create_image_resource(
+                &renderer.device,
+                new_extent.width,
+                new_extent.height,
+                vk::Format::R16G16B16A16_SFLOAT,
+                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
+                vk::SampleCountFlags::TYPE_1,
+            ).unwrap()
+        }).collect();
+    }
+
+    fn destroy(&mut self, renderer: &mut Renderer) {
+        let device = &renderer.device.device;
+        unsafe {
+            device.destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline_layout(self.layout, None);
+            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            for img in self.output_images.drain(..) {
+                img.destroy(device, &renderer.device.allocator);
+            }
+            if let Some(sbt) = self.sbt_buffer.take() {
+                renderer.device.destroy_buffer(sbt);
+            }
+        }
+    }
+    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![
+            ("GBufferDepth".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
+            ("GBufferNormal".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
+            ("GBufferPBR".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
+            ("RTOutput".to_string(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
+        ]
+    }
     fn outputs(&self) -> Vec<&'static str> { vec!["RTOutput"] }
 
-    fn prepare(&self, renderer: &Renderer, current_frame: usize) {
+    fn needs_descriptor_update(&self, renderer: &Renderer, frame_index: usize) -> bool {
+        if self.pipeline == vk::Pipeline::null() { return false; }
+
+        let mut version = 0u64;
+        if let Some(ref vb) = renderer.global_vertex_buffer { version += vb.version.load(std::sync::atomic::Ordering::Relaxed); }
+        if let Some(ref ib) = renderer.global_index_buffer { version += ib.version.load(std::sync::atomic::Ordering::Relaxed); }
+        if let Some(ref mat) = renderer.global_material_buffer { version += mat.version.load(std::sync::atomic::Ordering::Relaxed); }
+        if let Some(ref tlas) = renderer.as_manager.current_tlas[frame_index] { version += tlas.buffer.version.load(std::sync::atomic::Ordering::Relaxed); }
+
+        version != self.descriptor_versions[frame_index]
+    }
+
+    fn update_descriptor_sets(&self, renderer: &Renderer) {
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+             self.prepare_internal(renderer, i);
+        }
+    }
+
+    fn prepare(&self, _renderer: &Renderer, _current_frame: usize) {
+        // Handled by RenderGraph if we use versioning correctly
+    }
+
+    fn record_commands(&self, ctx: &RenderContext) {
+        self.record_commands_impl(ctx);
+    }
+
+}
+
+
+impl RayTracingPass {
+
+    fn record_commands_impl(&self, ctx: &RenderContext) {
+        if self.pipeline == vk::Pipeline::null() { return; }
+        let renderer = ctx.renderer;
+        let device = &renderer.device.device;
+        let extent = renderer.get_extent();
+
+        unsafe {
+            device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, self.pipeline);
+            device.cmd_bind_descriptor_sets(
+                ctx.command_buffer,
+                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                self.layout,
+                0,
+                &[renderer.frames[ctx.current_frame].global_descriptor_set, self.descriptor_sets[ctx.current_frame]],
+                &[],
+            );
+
+            #[repr(C)]
+            struct RTPC {
+                reflections: f32,
+                shadows: f32,
+                ao: f32,
+                gi: f32,
+            }
+            let pc = RTPC {
+                reflections: if renderer.settings.enable_rt_reflections { 1.0 } else { 0.0 },
+                shadows: if renderer.settings.enable_rt_shadows { 1.0 } else { 0.0 },
+                ao: if renderer.settings.enable_rt_ao { 1.0 } else { 0.0 },
+                gi: if renderer.settings.enable_rt_gi { 1.0 } else { 0.0 },
+            };
+            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<RTPC>());
+            device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::RAYGEN_KHR, 0, pc_bytes);
+
+            self.rt_loader.cmd_trace_rays(
+                ctx.command_buffer,
+                &self.sbt_regions[0],
+                &self.sbt_regions[1],
+                &self.sbt_regions[2],
+                &self.sbt_regions[3],
+                extent.width,
+                extent.height,
+                1,
+            );
+        }
+    }
+
+
+    fn prepare_internal(&self, renderer: &Renderer, current_frame: usize) {
         if self.pipeline == vk::Pipeline::null() { return; }
         let device = &renderer.device.device;
         let ds = self.descriptor_sets[current_frame];
@@ -94,6 +213,15 @@ impl RenderPass for RayTracingPass {
                 .buffer_info(&light_info));
         }
 
+        let depth_view = renderer.get_pass_resource_view("", "GBufferDepth", current_frame).unwrap_or(renderer.common_shadow_view);
+        let normal_view = renderer.get_pass_resource_view("", "GBufferNormal", current_frame).unwrap_or(renderer.common_shadow_view);
+
+        let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(depth_view).sampler(renderer.common_sampler)];
+        let normal_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(normal_view).sampler(renderer.common_sampler)];
+
+        writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(BINDING_GBUFFER_DEPTH).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&depth_info));
+        writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(BINDING_GBUFFER_NORMAL).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&normal_info));
+
         let mut as_info;
         if let Some(ref tlas) = renderer.as_manager.current_tlas[current_frame] {
             as_info = vk::WriteDescriptorSetAccelerationStructureKHR::default()
@@ -112,84 +240,21 @@ impl RenderPass for RayTracingPass {
         unsafe {
             device.update_descriptor_sets(&writes, &[]);
         }
-    }
 
-    fn record_commands(&self, ctx: &RenderContext) {
-        if self.pipeline == vk::Pipeline::null() { return; }
-        let renderer = ctx.renderer;
-        let device = &renderer.device.device;
-        let extent = renderer.get_extent();
+        let mut version = 0u64;
+        if let Some(ref vb) = renderer.global_vertex_buffer { version += vb.version.load(std::sync::atomic::Ordering::Relaxed); }
+        if let Some(ref ib) = renderer.global_index_buffer { version += ib.version.load(std::sync::atomic::Ordering::Relaxed); }
+        if let Some(ref mat) = renderer.global_material_buffer { version += mat.version.load(std::sync::atomic::Ordering::Relaxed); }
+        if let Some(ref tlas) = renderer.as_manager.current_tlas[current_frame] { version += tlas.buffer.version.load(std::sync::atomic::Ordering::Relaxed); }
 
+        // This is a bit of a hack since we're using interior mutability via &self
+        let ptr = self.descriptor_versions.as_ptr() as *mut u64;
         unsafe {
-            device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, self.pipeline);
-            device.cmd_bind_descriptor_sets(
-                ctx.command_buffer,
-                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                self.layout,
-                0,
-                &[renderer.frames[ctx.current_frame].global_descriptor_set, self.descriptor_sets[ctx.current_frame]],
-                &[],
-            );
-
-            #[repr(C)]
-            struct RTPC {
-                reflections: f32,
-                shadows: f32,
-                ao: f32,
-                gi: f32,
-            }
-            let pc = RTPC {
-                reflections: if renderer.settings.enable_rt_reflections { 1.0 } else { 0.0 },
-                shadows: if renderer.settings.enable_rt_shadows { 1.0 } else { 0.0 },
-                ao: if renderer.settings.enable_rt_ao { 1.0 } else { 0.0 },
-                gi: if renderer.settings.enable_rt_gi { 1.0 } else { 0.0 },
-            };
-            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<RTPC>());
-            device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::RAYGEN_KHR, 0, pc_bytes);
-
-            self.rt_loader.cmd_trace_rays(
-                ctx.command_buffer,
-                &self.sbt_regions[0],
-                &self.sbt_regions[1],
-                &self.sbt_regions[2],
-                &self.sbt_regions[3],
-                extent.width,
-                extent.height,
-                1,
-            );
+            *ptr.add(current_frame) = version;
         }
     }
 
-    fn on_resize(&mut self, renderer: &mut Renderer, new_extent: vk::Extent2D) {
-        for img in self.output_images.drain(..) {
-            img.destroy(&renderer.device.device, &renderer.device.allocator);
-        }
-        self.output_images = (0..MAX_FRAMES_IN_FLIGHT).map(|_| {
-            Attachment::create_image_resource(
-                &renderer.device,
-                new_extent.width,
-                new_extent.height,
-                vk::Format::R16G16B16A16_SFLOAT,
-                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
-                vk::SampleCountFlags::TYPE_1,
-            ).unwrap()
-        }).collect();
-    }
 
-    fn destroy(&mut self, renderer: &mut Renderer) {
-        let device = &renderer.device.device;
-        unsafe {
-            device.destroy_pipeline(self.pipeline, None);
-            device.destroy_pipeline_layout(self.layout, None);
-            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            for img in self.output_images.drain(..) {
-                img.destroy(device, &renderer.device.allocator);
-            }
-            if let Some(sbt) = self.sbt_buffer.take() {
-                renderer.device.destroy_buffer(sbt);
-            }
-        }
-    }
 }
 
 impl RayTracingPass {
@@ -232,6 +297,7 @@ impl RayTracingPass {
             rt_loader,
             sbt_buffer: Some(sbt_buffer),
             sbt_regions,
+            descriptor_versions: vec![0; MAX_FRAMES_IN_FLIGHT],
         })
     }
 
@@ -246,6 +312,7 @@ impl RayTracingPass {
             rt_loader,
             sbt_buffer: None,
             sbt_regions: [vk::StridedDeviceAddressRegionKHR::default(); 4],
+            descriptor_versions: vec![0; MAX_FRAMES_IN_FLIGHT],
         }
     }
 
@@ -258,6 +325,8 @@ impl RayTracingPass {
             vk::DescriptorSetLayoutBinding::default().binding(BINDING_MESHES).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
             vk::DescriptorSetLayoutBinding::default().binding(BINDING_MATERIALS).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
             vk::DescriptorSetLayoutBinding::default().binding(BINDING_LIGHTS).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+            vk::DescriptorSetLayoutBinding::default().binding(BINDING_GBUFFER_DEPTH).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+            vk::DescriptorSetLayoutBinding::default().binding(BINDING_GBUFFER_NORMAL).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
         ];
 
         unsafe {

@@ -1451,8 +1451,11 @@ impl Renderer {
              if let (Some(vb), Some(ib)) = (self.global_vertex_buffer.as_ref(), self.global_index_buffer.as_ref()) {
                  let cb = self.frames[cf].command_buffer;
                  let _ = self.as_manager.build_scene_tlas(
-                     &self.device, cb, &packet, vb, ib, std::mem::size_of::<crate::vertex::Vertex>() as u64, cf
+                     &self.device, cb, &packet, vb, ib, std::mem::size_of::<crate::vertex::Vertex>() as u64, cf, self.frame_index
                  );
+                 if self.frame_index % 100 == 0 {
+                     self.as_manager.evict_unused_blas(&self.device, self.frame_index);
+                 }
              }
         }
 

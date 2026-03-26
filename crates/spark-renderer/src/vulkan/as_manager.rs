@@ -20,6 +20,7 @@ pub struct BlasKey {
 /// Manages the creation, caching, and lifecycle of Vulkan Acceleration Structures.
 pub struct AccelerationStructureManager {
     pub blas_cache: std::collections::HashMap<BlasKey, AccelerationStructure>,
+    pub blas_usage: std::collections::HashMap<BlasKey, u64>,
     pub current_tlas: [Option<AccelerationStructure>; crate::MAX_FRAMES_IN_FLIGHT],
     pub frame_scratch: [Vec<Buffer>; crate::MAX_FRAMES_IN_FLIGHT],
 }
@@ -29,6 +30,7 @@ impl AccelerationStructureManager {
     pub fn new() -> Self {
         Self {
             blas_cache: std::collections::HashMap::new(),
+            blas_usage: std::collections::HashMap::new(),
             current_tlas: Default::default(),
             frame_scratch: Default::default(),
         }
@@ -52,6 +54,7 @@ impl AccelerationStructureManager {
         global_ib: &Buffer,
         vertex_stride: u64,
         frame_index: usize,
+        frame_id: u64,
     ) -> Result<(), crate::error::RendererError> {
         // Cleanup old resources for this frame slot
         if let Some(mut old_tlas) = self.current_tlas[frame_index].take() {
@@ -80,6 +83,7 @@ impl AccelerationStructureManager {
                 scratch_buffers.push(scratch);
                 self.blas_cache.insert(key, b);
             }
+            self.blas_usage.insert(key, frame_id);
             let blas = self.blas_cache.get(&key).unwrap();
 
             let m = mesh.model.transpose();
@@ -124,6 +128,21 @@ impl AccelerationStructureManager {
     }
 
     /// Cleans up all cached BLAS.
+    /// Cleans up unused BLAS that haven't been seen in several frames.
+    pub fn evict_unused_blas(&mut self, device: &VulkanDevice, current_frame_id: u64) {
+        let keys_to_remove: Vec<BlasKey> = self.blas_usage.iter()
+            .filter(|(_, &last_used)| current_frame_id > last_used + 100)
+            .map(|(&key, _)| key)
+            .collect();
+
+        for key in keys_to_remove {
+            if let Some(mut blas) = self.blas_cache.remove(&key) {
+                blas.destroy(device);
+            }
+            self.blas_usage.remove(&key);
+        }
+    }
+
     pub fn cleanup(&mut self, device: &VulkanDevice) {
         for (_, mut blas) in self.blas_cache.drain() {
             blas.destroy(device);
