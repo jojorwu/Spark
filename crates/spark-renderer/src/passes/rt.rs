@@ -9,6 +9,7 @@ const BINDING_VERTICES: u32 = 2;
 const BINDING_INDICES: u32 = 3;
 const BINDING_MESHES: u32 = 4;
 const BINDING_MATERIALS: u32 = 5;
+const BINDING_LIGHTS: u32 = 6;
 
 /// A rendering pass that performs hardware-accelerated ray tracing.
 pub struct RayTracingPass {
@@ -81,6 +82,16 @@ impl RenderPass for RayTracingPass {
                 .dst_binding(BINDING_MATERIALS)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(&mat_info));
+        }
+
+        let light_info;
+        if let Some(ref light_buf) = renderer.frames[current_frame].light_buffer {
+            light_info = [vk::DescriptorBufferInfo::default().buffer(light_buf.handle).range(light_buf.size)];
+            writes.push(vk::WriteDescriptorSet::default()
+                .dst_set(ds)
+                .dst_binding(BINDING_LIGHTS)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&light_info));
         }
 
         let mut as_info;
@@ -246,6 +257,7 @@ impl RayTracingPass {
             vk::DescriptorSetLayoutBinding::default().binding(BINDING_INDICES).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
             vk::DescriptorSetLayoutBinding::default().binding(BINDING_MESHES).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
             vk::DescriptorSetLayoutBinding::default().binding(BINDING_MATERIALS).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+            vk::DescriptorSetLayoutBinding::default().binding(BINDING_LIGHTS).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
         ];
 
         unsafe {
@@ -308,7 +320,7 @@ impl RayTracingPass {
 
         let pipeline = unsafe {
             rt_loader.create_ray_tracing_pipelines(vk::DeferredOperationKHR::null(), vk::PipelineCache::null(), &[
-                vk::RayTracingPipelineCreateInfoKHR::default().stages(&stages).groups(&groups).max_pipeline_ray_recursion_depth(1).layout(layout)
+                vk::RayTracingPipelineCreateInfoKHR::default().stages(&stages).groups(&groups).max_pipeline_ray_recursion_depth(2).layout(layout)
             ], None).unwrap()[0]
         };
 

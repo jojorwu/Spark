@@ -52,24 +52,20 @@ float noise(vec2 co) {
 void main() {
     vec2 velocity = texture(velocitySampler, inUV).rg;
 
-    // Motion Blur (Simple multi-tap)
+    // Motion Blur
     vec3 hdrColor = vec3(0.0);
     if (params.motion_blur_strength > 0.0) {
         const int samples = 8;
         for (int i = 0; i < samples; i++) {
             vec2 offset = velocity * (float(i) / float(samples - 1) - 0.5) * params.motion_blur_strength;
-
-            // Chromatic Aberration integrated into blur
             vec2 dist = (inUV + offset) - 0.5;
             vec2 r_offset = dist * params.chromatic_aberration;
-
             hdrColor.r += texture(hdrSampler, inUV + offset - r_offset).r;
             hdrColor.g += texture(hdrSampler, inUV + offset).g;
             hdrColor.b += texture(hdrSampler, inUV + offset + r_offset).b;
         }
         hdrColor /= float(samples);
     } else {
-        // Just Chromatic Aberration
         vec2 dist = inUV - 0.5;
         vec2 r_offset = dist * params.chromatic_aberration;
         hdrColor.r = texture(hdrSampler, inUV - r_offset).r;
@@ -85,20 +81,12 @@ void main() {
     // Combine with Fog
     vec3 color = hdrColor + fogColor;
 
-    // Apply RT effects
-    if (params.rt_reflections_enabled > 0.5) {
-        // Use RT reflections where appropriate (simplified)
-        color = mix(color, rtColor, 0.4);
-    }
-
-    if (params.rt_gi_enabled > 0.5) {
-        color += rtColor * 0.15;
-    }
-
-    if (params.rt_shadows_enabled > 0.5) {
-        // Darken based on RT shadow data (rtColor.a or similar could be used)
-        // For now just a subtle multiplier if GI/Reflections aren't full
-        color *= (1.0 - (1.0 - rtColor.g) * 0.2);
+    // Integrate RT results
+    bool rt_any = (params.rt_reflections_enabled > 0.5 || params.rt_shadows_enabled > 0.5 || params.rt_ao_enabled > 0.5);
+    if (rt_any) {
+        // In this implementation, the RT pass calculates the full lit scene if any RT features are on.
+        // We mix it with the rasterized result.
+        color = mix(color, rtColor + fogColor, 0.8);
     }
 
     // Apply DoF
@@ -124,8 +112,6 @@ void main() {
 
     // Tone Mapping
     vec3 mapped = aces(color);
-
-    // Gamma Correction
     mapped = pow(mapped, vec3(1.0 / params.gamma));
 
     // Vignette
@@ -133,7 +119,7 @@ void main() {
     float vignette = smoothstep(params.vignette_intensity, params.vignette_intensity - params.vignette_smoothness, d);
     mapped *= vignette;
 
-    // Color Grading (LUT)
+    // LUT
     if (params.lut_index >= 0.0) {
         int idx = int(params.lut_index);
         mapped = texture(luts[idx], mapped).rgb;

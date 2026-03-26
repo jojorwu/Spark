@@ -41,6 +41,13 @@ struct MaterialData {
     int padding[3];
 };
 
+struct Light {
+    vec4 pos_range; // pos.xyz, range
+    vec4 dir_type;  // dir.xyz, type (0: Dir, 1: Point, 2: Spot)
+    vec4 col_intensity; // col.rgb, intensity
+    vec4 spot_angles; // inner, outer, _, _
+};
+
 vec3 unpackNormal(uint p) {
     vec3 n;
     n.x = float(p & 0x3FF) / 1023.0 * 2.0 - 1.0;

@@ -1,11 +1,13 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 #extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_scalar_block_layout : enable
 
 #include "raytrace_common.glsl"
 
 layout(binding = 0, set = 1) uniform accelerationStructureEXT topLevelAS;
 layout(binding = 1, set = 1, rgba16f) uniform image2D image;
+layout(binding = 6, set = 1, scalar) buffer Lights { Light l[]; } lights;
 
 layout(location = 0) rayPayloadEXT RayPayload payload;
 
@@ -25,11 +27,79 @@ layout(push_constant) uniform PushConstants {
     float gi_enabled;
 } pc;
 
+uint seed;
+
+float random() {
+    seed = (seed ^ 61) ^ (seed >> 16);
+    seed *= 9;
+    seed = seed ^ (seed >> 4);
+    seed *= 0x27d4eb2d;
+    seed = seed ^ (seed >> 15);
+    return float(seed) / 4294967296.0;
+}
+
+vec3 randomHemispherePoint(vec3 n) {
+    float u1 = random();
+    float u2 = random();
+    float r = sqrt(u1);
+    float phi = 2.0 * 3.14159265 * u2;
+    vec3 p = vec3(r * cos(phi), r * sin(phi), sqrt(1.0 - u1));
+
+    vec3 up = abs(n.z) < 0.999 ? vec3(0, 0, 1) : vec3(1, 0, 0);
+    vec3 tangent = normalize(cross(up, n));
+    vec3 bitangent = cross(n, tangent);
+
+    return p.x * tangent + p.y * bitangent + p.z * n;
+}
+
+vec3 calculateLighting(vec3 hitPos, vec3 normal, vec3 albedo) {
+    vec3 color = vec3(0.0);
+    for (int i = 0; i < 16; i++) {
+        Light light = lights.l[i];
+        if (light.col_intensity.w <= 0.0) break;
+
+        vec3 L;
+        float dist;
+        float attenuation = 1.0;
+
+        if (light.dir_type.w == 0.0) {
+            L = normalize(-light.dir_type.xyz);
+            dist = 1000.0;
+        } else {
+            vec3 lightVec = light.pos_range.xyz - hitPos;
+            dist = length(lightVec);
+            L = lightVec / dist;
+            attenuation = max(1.0 - (dist / light.pos_range.w), 0.0);
+
+            if (light.dir_type.w == 2.0) {
+                float theta = dot(L, normalize(-light.dir_type.xyz));
+                float epsilon = light.spot_angles.x - light.spot_angles.y;
+                attenuation *= clamp((theta - light.spot_angles.y) / epsilon, 0.0, 1.0);
+            }
+        }
+
+        float diff = max(dot(normal, L), 0.0);
+        vec3 lightContrib = albedo * light.col_intensity.rgb * light.col_intensity.w * diff * attenuation;
+
+        if (pc.shadows_enabled > 0.5 && diff > 0.0) {
+            uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+            RayPayload shadowPayload;
+            shadowPayload.hit = 0;
+            traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, L, dist, 0);
+            if (payload.hit == 1) lightContrib *= 0.1;
+        }
+        color += lightContrib;
+    }
+    return color;
+}
+
 void main()
 {
     const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
     const vec2 inUV = pixelCenter/vec2(gl_LaunchSizeEXT.xy);
     vec2 d = inUV * 2.0 - 1.0;
+
+    seed = uint(gl_LaunchIDEXT.y * gl_LaunchSizeEXT.x + gl_LaunchIDEXT.x);
 
     vec4 target = ubo.inv_vp * vec4(d.x, d.y, 1.0, 1.0);
     vec3 origin = ubo.camera_pos.xyz;
@@ -46,33 +116,32 @@ void main()
     if (payload.hit == 1) {
         vec3 hitPos = origin + direction * payload.dist;
         vec3 normal = payload.normal;
+        vec3 albedo = payload.color;
 
-        // Basic lighting at hit point
-        vec3 lightDir = normalize(vec3(0.5, 1.0, 0.5));
-        float diff = max(dot(normal, lightDir), 0.0);
-        finalColor = payload.color * diff;
+        finalColor = calculateLighting(hitPos, normal, albedo);
 
-        // Shadows
-        if (pc.shadows_enabled > 0.5) {
-            uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
-
-            RayPayload shadowPayload;
-            shadowPayload.hit = 0;
-            // Trace from hit point towards light
-            traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos + normal * 0.01, 0.01, lightDir, 1000.0, 0);
-
-            if (payload.hit == 1) {
-                 finalColor *= 0.2;
+        if (pc.ao_enabled > 0.5) {
+            float ao = 0.0;
+            const int aoSamples = 4;
+            for (int i = 0; i < aoSamples; i++) {
+                vec3 aoDir = randomHemispherePoint(normal);
+                uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+                traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, aoDir, 2.0, 0);
+                if (payload.hit == 0) ao += 1.0;
             }
+            ao /= float(aoSamples);
+            finalColor *= (0.5 + 0.5 * ao);
         }
 
-        // Reflection
         if (pc.reflections_enabled > 0.5) {
             vec3 reflectDir = reflect(direction, normal);
-            payload.hit = 0;
-            traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, hitPos + normal * 0.01, 0.01, reflectDir, 1000.0, 0);
+            traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, reflectDir, 1000.0, 0);
             if (payload.hit == 1) {
-                finalColor = mix(finalColor, payload.color, 0.3);
+                vec3 rHitPos = hitPos + reflectDir * payload.dist;
+                vec3 rNormal = payload.normal;
+                vec3 rAlbedo = payload.color;
+                vec3 reflectColor = calculateLighting(rHitPos, rNormal, rAlbedo);
+                finalColor = mix(finalColor, reflectColor, 0.2);
             }
         }
     } else {
