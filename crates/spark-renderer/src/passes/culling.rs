@@ -1,12 +1,16 @@
-use ash::vk;
 use crate::resource::Buffer;
+use ash::vk;
 
-use super::{RenderPass, RenderContext};
+use super::{RenderContext, RenderPass};
 use crate::Renderer;
 
 impl RenderPass for CullingPass {
-    fn name(&self) -> &str { "CullingPass" }
-    fn dependencies(&self) -> Vec<&'static str> { vec!["HiZPass"] }
+    fn name(&self) -> &str {
+        "CullingPass"
+    }
+    fn dependencies(&self) -> Vec<&'static str> {
+        vec!["HiZPass"]
+    }
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
         let current_frame = ctx.current_frame;
@@ -14,12 +18,21 @@ impl RenderPass for CullingPass {
         let global_ds = renderer.frames[current_frame].global_descriptor_set;
         if let (Some(_), Some(ind_buf), Some(cnt_buf)) = (
             renderer.frames[current_frame].object_data_buffer.as_ref(),
-            renderer.frames[current_frame].indirect_commands_buffer.as_ref(),
-            renderer.frames[current_frame].draw_count_buffer.as_ref()
+            renderer.frames[current_frame]
+                .indirect_commands_buffer
+                .as_ref(),
+            renderer.frames[current_frame].draw_count_buffer.as_ref(),
         ) {
-            let compute_cb = renderer.device.create_command_buffer(renderer.device.compute_command_pool, vk::CommandBufferLevel::PRIMARY);
+            let compute_cb = renderer.device.create_command_buffer(
+                renderer.device.compute_command_pool,
+                vk::CommandBufferLevel::PRIMARY,
+            );
             unsafe {
-                renderer.device.device.begin_command_buffer(compute_cb, &vk::CommandBufferBeginInfo::default()).unwrap();
+                renderer
+                    .device
+                    .device
+                    .begin_command_buffer(compute_cb, &vk::CommandBufferBeginInfo::default())
+                    .unwrap();
             }
 
             let params = CullingRecordParams {
@@ -34,7 +47,11 @@ impl RenderPass for CullingPass {
             self.record_commands_impl(&params);
 
             unsafe {
-                renderer.device.device.end_command_buffer(compute_cb).unwrap();
+                renderer
+                    .device
+                    .device
+                    .end_command_buffer(compute_cb)
+                    .unwrap();
             }
 
             renderer.device.submit_commands(
@@ -112,27 +129,25 @@ impl CullingPass {
             .name(&entry_point);
 
         let pipeline = unsafe {
-            device.create_compute_pipelines(
-                vk::PipelineCache::null(),
-                &[vk::ComputePipelineCreateInfo::default()
-                    .stage(stage)
-                    .layout(layout)],
-                None,
-            ).map_err(|e| e.1)?[0]
+            device
+                .create_compute_pipelines(
+                    vk::PipelineCache::null(),
+                    &[vk::ComputePipelineCreateInfo::default()
+                        .stage(stage)
+                        .layout(layout)],
+                    None,
+                )
+                .map_err(|e| e.1)?[0]
         };
 
-        unsafe { device.destroy_shader_module(shader_module, None); }
+        unsafe {
+            device.destroy_shader_module(shader_module, None);
+        }
 
-        Ok(Self {
-            pipeline,
-            layout,
-        })
+        Ok(Self { pipeline, layout })
     }
 
-    pub fn record_commands_impl(
-        &self,
-        params: &CullingRecordParams,
-    ) {
+    pub fn record_commands_impl(&self, params: &CullingRecordParams) {
         let device = params.device;
         let command_buffer = params.command_buffer;
         let object_count = params.object_count;
@@ -158,7 +173,11 @@ impl CullingPass {
                 &[],
             );
 
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline,
+            );
 
             device.cmd_bind_descriptor_sets(
                 command_buffer,
@@ -181,7 +200,8 @@ impl CullingPass {
                 prev_view_proj: spark_math::Mat4,
                 vertex_buffer_address: u64,
             }
-            let frame = &params.renderer_ref_for_pc_extract.frames[params.renderer_ref_for_pc_extract.current_frame];
+            let frame = &params.renderer_ref_for_pc_extract.frames
+                [params.renderer_ref_for_pc_extract.current_frame];
             let pc = PC {
                 light_count: params.renderer_ref_for_pc_extract.light_count,
                 metallic: 0.0,
@@ -191,9 +211,14 @@ impl CullingPass {
                 padding: 0,
                 object_buffer_address: frame.object_data_buffer.as_ref().map_or(0, |b| b.address),
                 prev_view_proj: params.renderer_ref_for_pc_extract.prev_view_proj,
-                vertex_buffer_address: params.renderer_ref_for_pc_extract.global_vertex_buffer.as_ref().map_or(0, |b| b.address),
+                vertex_buffer_address: params
+                    .renderer_ref_for_pc_extract
+                    .global_vertex_buffer
+                    .as_ref()
+                    .map_or(0, |b| b.address),
             };
-            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+            let pc_bytes =
+                std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
 
             device.cmd_push_constants(
                 command_buffer,
@@ -222,5 +247,4 @@ impl CullingPass {
             );
         }
     }
-
 }

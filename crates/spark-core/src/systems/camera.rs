@@ -3,7 +3,9 @@ use crate::System;
 pub struct CameraSystem;
 
 impl System for CameraSystem {
-    fn name(&self) -> &str { "CameraSystem" }
+    fn name(&self) -> &str {
+        "CameraSystem"
+    }
 
     fn resource_access(&self) -> crate::ResourceAccess {
         crate::ResourceAccess {

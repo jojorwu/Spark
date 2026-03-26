@@ -1,6 +1,6 @@
+use crate::passes::{RenderContext, RenderPass};
 use ash::vk;
 use std::collections::{HashMap, HashSet};
-use crate::passes::{RenderPass, RenderContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceType {
@@ -51,7 +51,12 @@ impl RenderGraph {
         }
     }
 
-    pub fn add_pass<P: RenderPass + 'static>(&mut self, pass: P, inputs: &[&str], outputs: &[&str]) {
+    pub fn add_pass<P: RenderPass + 'static>(
+        &mut self,
+        pass: P,
+        inputs: &[&str],
+        outputs: &[&str],
+    ) {
         self.passes.push(RenderGraphPassNode {
             pass: Box::new(pass),
             inputs: inputs.iter().map(|&s| s.to_string()).collect(),
@@ -63,17 +68,33 @@ impl RenderGraph {
     pub fn compile(&mut self, renderer: &mut crate::Renderer) {
         if self.descriptor_pool == vk::DescriptorPool::null() {
             let sizes = [
-                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_IMAGE).descriptor_count(100),
-                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(100),
-                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(100),
-                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::UNIFORM_BUFFER).descriptor_count(100),
-                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(100),
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::STORAGE_IMAGE)
+                    .descriptor_count(100),
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(100),
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(100),
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(100),
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                    .descriptor_count(100),
             ];
             self.descriptor_pool = unsafe {
-                renderer.device.device.create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default().pool_sizes(&sizes).max_sets(100),
-                    None,
-                ).unwrap()
+                renderer
+                    .device
+                    .device
+                    .create_descriptor_pool(
+                        &vk::DescriptorPoolCreateInfo::default()
+                            .pool_sizes(&sizes)
+                            .max_sets(100),
+                        None,
+                    )
+                    .unwrap()
             };
         }
 
@@ -91,7 +112,10 @@ impl RenderGraph {
             }
         }
 
-        let name_to_idx: HashMap<String, usize> = self.passes.iter().enumerate()
+        let name_to_idx: HashMap<String, usize> = self
+            .passes
+            .iter()
+            .enumerate()
             .map(|(i, p)| (p.pass.name().to_string(), i))
             .collect();
 
@@ -113,14 +137,30 @@ impl RenderGraph {
                 // For each input resource, find its producer and visit it
                 for input in &passes[idx].inputs {
                     if let Some(&producer_idx) = resource_producers.get(input) {
-                        visit(producer_idx, passes, resource_producers, name_to_idx, order, visited, temp_visited);
+                        visit(
+                            producer_idx,
+                            passes,
+                            resource_producers,
+                            name_to_idx,
+                            order,
+                            visited,
+                            temp_visited,
+                        );
                     }
                 }
 
                 // Also respect explicit dependencies defined in RenderPass trait
                 for dep in passes[idx].pass.dependencies() {
                     if let Some(&dep_idx) = name_to_idx.get(dep) {
-                        visit(dep_idx, passes, resource_producers, name_to_idx, order, visited, temp_visited);
+                        visit(
+                            dep_idx,
+                            passes,
+                            resource_producers,
+                            name_to_idx,
+                            order,
+                            visited,
+                            temp_visited,
+                        );
                     }
                 }
 
@@ -131,7 +171,15 @@ impl RenderGraph {
         }
 
         for i in 0..pass_count {
-            visit(i, &self.passes, &resource_producers, &name_to_idx, &mut order, &mut visited, &mut temp_visited);
+            visit(
+                i,
+                &self.passes,
+                &resource_producers,
+                &name_to_idx,
+                &mut order,
+                &mut visited,
+                &mut temp_visited,
+            );
         }
 
         self.sorted_passes = order;
@@ -139,15 +187,21 @@ impl RenderGraph {
         // Ensure descriptor set layout is available if needed and allocate descriptor sets
         for pass_node in &mut self.passes {
             let layout = pass_node.pass.descriptor_set_layout();
-            if layout == vk::DescriptorSetLayout::null() { continue; }
+            if layout == vk::DescriptorSetLayout::null() {
+                continue;
+            }
 
             let layouts = [layout; crate::MAX_FRAMES_IN_FLIGHT];
             let ds = unsafe {
-                renderer.device.device.allocate_descriptor_sets(
-                    &vk::DescriptorSetAllocateInfo::default()
-                        .descriptor_pool(self.descriptor_pool)
-                        .set_layouts(&layouts),
-                ).unwrap()
+                renderer
+                    .device
+                    .device
+                    .allocate_descriptor_sets(
+                        &vk::DescriptorSetAllocateInfo::default()
+                            .descriptor_pool(self.descriptor_pool)
+                            .set_layouts(&layouts),
+                    )
+                    .unwrap()
             };
             pass_node.descriptor_sets = ds.clone();
             pass_node.pass.set_descriptor_sets(ds);
@@ -159,28 +213,43 @@ impl RenderGraph {
         let extent = renderer.get_extent();
         for pass in &self.passes {
             for output in &pass.outputs {
-                if !self.physical_attachments.contains_key(output) && !self.transient_attachments.contains_key(output) {
-                    let format = if output.contains("Depth") { renderer.device.depth_format }
-                                 else if output.contains("Normal") || output.contains("HDR") || output.contains("RTOutput") { vk::Format::R16G16B16A16_SFLOAT }
-                                 else { vk::Format::R8G8B8A8_UNORM };
+                if !self.physical_attachments.contains_key(output)
+                    && !self.transient_attachments.contains_key(output)
+                {
+                    let format = if output.contains("Depth") {
+                        renderer.device.depth_format
+                    } else if output.contains("Normal")
+                        || output.contains("HDR")
+                        || output.contains("RTOutput")
+                    {
+                        vk::Format::R16G16B16A16_SFLOAT
+                    } else {
+                        vk::Format::R8G8B8A8_UNORM
+                    };
 
                     let usage = if output.contains("Depth") {
                         vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED
                     } else {
-                        vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE
+                        vk::ImageUsageFlags::COLOR_ATTACHMENT
+                            | vk::ImageUsageFlags::SAMPLED
+                            | vk::ImageUsageFlags::STORAGE
                     };
 
-                    let attachments = (0..crate::MAX_FRAMES_IN_FLIGHT).map(|_| {
-                        crate::resource::Attachment::create_image_resource(
-                            &renderer.device,
-                            extent.width,
-                            extent.height,
-                            format,
-                            usage,
-                            vk::SampleCountFlags::TYPE_1,
-                        ).unwrap()
-                    }).collect();
-                    self.transient_attachments.insert(output.clone(), attachments);
+                    let attachments = (0..crate::MAX_FRAMES_IN_FLIGHT)
+                        .map(|_| {
+                            crate::resource::Attachment::create_image_resource(
+                                &renderer.device,
+                                extent.width,
+                                extent.height,
+                                format,
+                                usage,
+                                vk::SampleCountFlags::TYPE_1,
+                            )
+                            .unwrap()
+                        })
+                        .collect();
+                    self.transient_attachments
+                        .insert(output.clone(), attachments);
                 }
             }
         }
@@ -189,32 +258,38 @@ impl RenderGraph {
     pub fn execute(&self, ctx: &RenderContext, secondary_commands: &[Vec<vk::CommandBuffer>]) {
         let renderer = ctx.renderer;
 
-
         // 2. Execution
         for &idx in &self.sorted_passes {
             let pass_node = &self.passes[idx];
 
             // Automated Barrier Injection
             for (res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_access() {
-                let attachments = self.physical_attachments.get(&res_name)
+                let attachments = self
+                    .physical_attachments
+                    .get(&res_name)
                     .or_else(|| self.transient_attachments.get(&res_name));
 
                 if let Some(attachments) = attachments {
                     let attachment = &attachments[ctx.current_frame];
-                    let aspect = if res_name.contains("Depth") { vk::ImageAspectFlags::DEPTH } else { vk::ImageAspectFlags::COLOR };
+                    let aspect = if res_name.contains("Depth") {
+                        vk::ImageAspectFlags::DEPTH
+                    } else {
+                        vk::ImageAspectFlags::COLOR
+                    };
 
-                    let new_layout = if dst_access.contains(vk::AccessFlags::COLOR_ATTACHMENT_WRITE) {
+                    let new_layout = if dst_access.contains(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                    {
                         vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
                     } else if dst_access.contains(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE) {
                         vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
-                    } else if dst_access.contains(vk::AccessFlags::SHADER_READ) && !dst_stage.contains(vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR) {
+                    } else if dst_access.contains(vk::AccessFlags::SHADER_READ)
+                        && !dst_stage.contains(vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR)
+                    {
                         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
                     } else if dst_access.contains(vk::AccessFlags::TRANSFER_READ) {
                         vk::ImageLayout::TRANSFER_SRC_OPTIMAL
                     } else if dst_access.contains(vk::AccessFlags::TRANSFER_WRITE) {
                         vk::ImageLayout::TRANSFER_DST_OPTIMAL
-                    } else if dst_stage.contains(vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR) || dst_stage.contains(vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR) {
-                        vk::ImageLayout::GENERAL
                     } else {
                         vk::ImageLayout::GENERAL
                     };
@@ -234,7 +309,12 @@ impl RenderGraph {
             }
 
             if !secondary_commands[idx].is_empty() {
-                unsafe { renderer.device.device.cmd_execute_commands(ctx.command_buffer, &secondary_commands[idx]); }
+                unsafe {
+                    renderer
+                        .device
+                        .device
+                        .cmd_execute_commands(ctx.command_buffer, &secondary_commands[idx]);
+                }
             }
 
             pass_node.pass.record_commands(ctx);

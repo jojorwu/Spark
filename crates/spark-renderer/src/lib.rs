@@ -1,26 +1,29 @@
 pub mod error;
-pub mod pipeline;
-pub mod passes;
-pub mod graph;
-pub mod resource;
 pub mod factory;
+pub mod graph;
+pub mod passes;
+pub mod pipeline;
+pub mod resource;
 pub mod ui;
 pub mod vertex;
 pub mod vulkan;
 
 use crate::error::RendererError;
 use crate::pipeline::Pipeline;
-pub use crate::resource::{Attachment, Buffer, RenderFrame, MAX_FRAMES_IN_FLIGHT, ObjectDataSSBO, MaterialDataSSBO, RenderSettings};
+pub use crate::resource::{
+    Attachment, Buffer, MaterialDataSSBO, ObjectDataSSBO, RenderFrame, RenderSettings,
+    MAX_FRAMES_IN_FLIGHT,
+};
 use crate::ui::EguiRenderer;
 use crate::vulkan::context::VulkanContext;
 use crate::vulkan::device::VulkanDevice;
 use crate::vulkan::gbuffer::GBuffer;
 use crate::vulkan::swapchain::VulkanSwapchain;
 use crate::vulkan::texture::Texture;
-use rayon::prelude::*;
-use spark_math::Vec4Swizzles;
 pub use ash;
 use ash::vk;
+use rayon::prelude::*;
+use spark_math::Vec4Swizzles;
 use winit::window::Window;
 
 /// The main renderer of the Spark Engine, responsible for managing the Vulkan context,
@@ -52,7 +55,8 @@ pub struct Renderer {
     pub common_sampler: vk::Sampler,
     pub common_shadow_view: vk::ImageView,
     pub hiz_view: vk::ImageView,
-    pub as_manager: std::sync::Arc<std::sync::Mutex<crate::vulkan::as_manager::AccelerationStructureManager>>,
+    pub as_manager:
+        std::sync::Arc<std::sync::Mutex<crate::vulkan::as_manager::AccelerationStructureManager>>,
     egui_renderer: Option<EguiRenderer>,
     pub bindless_descriptor_set_layout: vk::DescriptorSetLayout,
     pub bindless_descriptor_set: vk::DescriptorSet,
@@ -65,7 +69,8 @@ pub struct Renderer {
     pub last_object_count: u32,
     pub last_transparent_count: u32,
     pub current_image_index: u32,
-    pub pass_descriptor_versions: Vec<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
+    pub pass_descriptor_versions:
+        Vec<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
     pub dummy_buffer: Buffer,
     pub culling_finished_semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
     pub current_packet: Option<crate::resource::FramePacket>,
@@ -124,13 +129,17 @@ impl Renderer {
             )?
         };
 
-        let dummy_buffer = device.create_buffer(
-            64,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        ).map_err(|_| RendererError::NoSuitableDevice)?;
+        let dummy_buffer = device
+            .create_buffer(
+                64,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )
+            .map_err(|_| RendererError::NoSuitableDevice)?;
         let pipeline_cache = unsafe {
-            device.device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)?
+            device
+                .device
+                .create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)?
         };
 
         let global_descriptor_set_layout = unsafe {
@@ -189,9 +198,10 @@ impl Renderer {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(10000)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
-            let flags = [vk::DescriptorBindingFlags::PARTIALLY_BOUND | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND];
-            let mut binding_flags = vk::DescriptorSetLayoutBindingFlagsCreateInfo::default()
-                .binding_flags(&flags);
+            let flags = [vk::DescriptorBindingFlags::PARTIALLY_BOUND
+                | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND];
+            let mut binding_flags =
+                vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&flags);
             device.device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default()
                     .bindings(&bindings)
@@ -206,7 +216,7 @@ impl Renderer {
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(descriptor_pool)
                     .set_layouts(&[bindless_descriptor_set_layout]),
-            )? [0]
+            )?[0]
         };
 
         let global_layouts = vec![global_descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
@@ -243,9 +253,9 @@ impl Renderer {
                     draw_count_buffer: None,
                     transparent_indirect_buffer: None,
                     transparent_object_buffer: None,
-                secondary_command_buffers: Vec::new(),
-                light_view_projs: [spark_math::Mat4::IDENTITY; 4],
-                scratch_buffers: Vec::new(),
+                    secondary_command_buffers: Vec::new(),
+                    light_view_projs: [spark_math::Mat4::IDENTITY; 4],
+                    scratch_buffers: Vec::new(),
                 }
             })
             .collect::<Vec<_>>()
@@ -301,25 +311,52 @@ impl Renderer {
             last_object_count: 0,
             last_transparent_count: 0,
             current_image_index: 0,
-            pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).collect(),
+            pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT)
+                .map(|_| {
+                    std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))
+                })
+                .collect(),
             dummy_buffer,
             culling_finished_semaphores: [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT],
-            as_manager: std::sync::Arc::new(std::sync::Mutex::new(crate::vulkan::as_manager::AccelerationStructureManager::new())),
+            as_manager: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::vulkan::as_manager::AccelerationStructureManager::new(),
+            )),
             current_packet: None,
         };
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             renderer.culling_finished_semaphores[i] = unsafe {
-                renderer.device.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?
+                renderer
+                    .device
+                    .device
+                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?
             };
         }
 
-        renderer.render_graph.physical_attachments.insert("GBufferHDR".to_string(), gbuffer.hdr);
-        renderer.render_graph.physical_attachments.insert("GBufferAlbedo".to_string(), gbuffer.albedo);
-        renderer.render_graph.physical_attachments.insert("GBufferNormal".to_string(), gbuffer.normal);
-        renderer.render_graph.physical_attachments.insert("GBufferPBR".to_string(), gbuffer.pbr);
-        renderer.render_graph.physical_attachments.insert("GBufferVelocity".to_string(), gbuffer.velocity);
-        renderer.render_graph.physical_attachments.insert("GBufferDepth".to_string(), gbuffer.depth);
+        renderer
+            .render_graph
+            .physical_attachments
+            .insert("GBufferHDR".to_string(), gbuffer.hdr);
+        renderer
+            .render_graph
+            .physical_attachments
+            .insert("GBufferAlbedo".to_string(), gbuffer.albedo);
+        renderer
+            .render_graph
+            .physical_attachments
+            .insert("GBufferNormal".to_string(), gbuffer.normal);
+        renderer
+            .render_graph
+            .physical_attachments
+            .insert("GBufferPBR".to_string(), gbuffer.pbr);
+        renderer
+            .render_graph
+            .physical_attachments
+            .insert("GBufferVelocity".to_string(), gbuffer.velocity);
+        renderer
+            .render_graph
+            .physical_attachments
+            .insert("GBufferDepth".to_string(), gbuffer.depth);
 
         renderer.init_default_resources();
         renderer.common_shadow_view = renderer.default_texture.as_ref().unwrap().view;
@@ -397,7 +434,6 @@ impl Renderer {
         self.default_descriptor_set = ds;
     }
 
-
     pub fn update_all_descriptor_sets(&mut self) {
         for pass_node in &self.render_graph.passes {
             pass_node.pass.update_descriptor_sets(self);
@@ -415,11 +451,16 @@ impl Renderer {
 
         for idx in passes_to_update {
             let pass_name = self.render_graph.passes[idx].pass.name().to_string();
-            self.render_graph.passes[idx].pass.update_descriptor_sets(self);
+            self.render_graph.passes[idx]
+                .pass
+                .update_descriptor_sets(self);
 
             // Note: This logic assumes that if update_descriptor_sets is called,
             // the pass is now up-to-date with whatever resource it tracked in needs_descriptor_update.
-            self.pass_descriptor_versions[current_frame].lock().unwrap().insert(pass_name, 1);
+            self.pass_descriptor_versions[current_frame]
+                .lock()
+                .unwrap()
+                .insert(pass_name, 1);
         }
     }
 
@@ -446,13 +487,25 @@ impl Renderer {
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let frame = &self.frames[i];
-            if let (Some(global_buffer), Some(obj_buf), Some(ind_buf), Some(cnt_buf)) =
-                (frame.global_buffer.as_ref(), frame.object_data_buffer.as_ref(), frame.indirect_commands_buffer.as_ref(), frame.draw_count_buffer.as_ref()) {
+            if let (Some(global_buffer), Some(obj_buf), Some(ind_buf), Some(cnt_buf)) = (
+                frame.global_buffer.as_ref(),
+                frame.object_data_buffer.as_ref(),
+                frame.indirect_commands_buffer.as_ref(),
+                frame.draw_count_buffer.as_ref(),
+            ) {
                 let ds = frame.global_descriptor_set;
-                let buf_info = [vk::DescriptorBufferInfo::default().buffer(global_buffer.handle).range(global_buffer.size)];
-                let obj_info = [vk::DescriptorBufferInfo::default().buffer(obj_buf.handle).range(obj_buf.size)];
-                let ind_info = [vk::DescriptorBufferInfo::default().buffer(ind_buf.handle).range(ind_buf.size)];
-                let cnt_info = [vk::DescriptorBufferInfo::default().buffer(cnt_buf.handle).range(cnt_buf.size)];
+                let buf_info = [vk::DescriptorBufferInfo::default()
+                    .buffer(global_buffer.handle)
+                    .range(global_buffer.size)];
+                let obj_info = [vk::DescriptorBufferInfo::default()
+                    .buffer(obj_buf.handle)
+                    .range(obj_buf.size)];
+                let ind_info = [vk::DescriptorBufferInfo::default()
+                    .buffer(ind_buf.handle)
+                    .range(ind_buf.size)];
+                let cnt_info = [vk::DescriptorBufferInfo::default()
+                    .buffer(cnt_buf.handle)
+                    .range(cnt_buf.size)];
 
                 let hiz_info = [vk::DescriptorImageInfo::default()
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -460,29 +513,73 @@ impl Renderer {
                     .sampler(self.common_sampler)];
 
                 let mut writes = vec![
-                    vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(0).descriptor_type(vk::DescriptorType::UNIFORM_BUFFER).buffer_info(&buf_info),
-                    vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&obj_info),
-                    vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&ind_info),
-                    vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&cnt_info),
-                    vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(4).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&hiz_info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(ds)
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .buffer_info(&buf_info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(ds)
+                        .dst_binding(1)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(&obj_info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(ds)
+                        .dst_binding(2)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(&ind_info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(ds)
+                        .dst_binding(3)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(&cnt_info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(ds)
+                        .dst_binding(4)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(&hiz_info),
                 ];
 
                 let mat_info;
                 if let Some(ref mat_buf) = self.global_material_buffer {
-                    mat_info = [vk::DescriptorBufferInfo::default().buffer(mat_buf.handle).range(mat_buf.size)];
-                    writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(5).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&mat_info));
+                    mat_info = [vk::DescriptorBufferInfo::default()
+                        .buffer(mat_buf.handle)
+                        .range(mat_buf.size)];
+                    writes.push(
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(ds)
+                            .dst_binding(5)
+                            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                            .buffer_info(&mat_info),
+                    );
                 }
 
                 let grid_info;
                 if let Some(ref gb) = grid_buf {
-                    grid_info = [vk::DescriptorBufferInfo::default().buffer(gb.handle).range(gb.size)];
-                    writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(6).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&grid_info));
+                    grid_info = [vk::DescriptorBufferInfo::default()
+                        .buffer(gb.handle)
+                        .range(gb.size)];
+                    writes.push(
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(ds)
+                            .dst_binding(6)
+                            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                            .buffer_info(&grid_info),
+                    );
                 }
 
                 let idx_info;
                 if let Some(ref ib) = index_buf {
-                    idx_info = [vk::DescriptorBufferInfo::default().buffer(ib.handle).range(ib.size)];
-                    writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(7).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&idx_info));
+                    idx_info = [vk::DescriptorBufferInfo::default()
+                        .buffer(ib.handle)
+                        .range(ib.size)];
+                    writes.push(
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(ds)
+                            .dst_binding(7)
+                            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                            .buffer_info(&idx_info),
+                    );
                 }
 
                 unsafe {
@@ -546,7 +643,12 @@ impl Renderer {
             .iter()
             .map(|l| LD {
                 pos: [l.position.x, l.position.y, l.position.z, l.range],
-                dir: [l.direction.x, l.direction.y, l.direction.z, l.light_type as f32],
+                dir: [
+                    l.direction.x,
+                    l.direction.y,
+                    l.direction.z,
+                    l.light_type as f32,
+                ],
                 col: [l.color.x, l.color.y, l.color.z, l.intensity],
                 spot_angles: [l.spot_angles[0], l.spot_angles[1], 0.0, 0.0],
             })
@@ -580,7 +682,11 @@ impl Renderer {
             self.update_all_descriptor_sets();
         }
 
-        let lb = self.frames[self.current_frame].light_buffer.as_ref().cloned().unwrap();
+        let lb = self.frames[self.current_frame]
+            .light_buffer
+            .as_ref()
+            .cloned()
+            .unwrap();
         self.upload_to_buffer(&lb, &ld);
     }
 
@@ -677,7 +783,9 @@ impl Renderer {
         if self.frames[frame_idx].draw_count_buffer.is_none() {
             self.frames[frame_idx].draw_count_buffer = Some(self.create_buffer(
                 4,
-                vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+                vk::BufferUsageFlags::INDIRECT_BUFFER
+                    | vk::BufferUsageFlags::STORAGE_BUFFER
+                    | vk::BufferUsageFlags::TRANSFER_DST,
                 vk::MemoryPropertyFlags::DEVICE_LOCAL,
             ));
         }
@@ -697,11 +805,14 @@ impl Renderer {
             self.device.destroy_buffer(old);
         }
 
-        let new_buffer = self.device.create_buffer(
-            sz,
-            vk::BufferUsageFlags::VERTEX_BUFFER,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        ).expect("Failed to create instance buffer");
+        let new_buffer = self
+            .device
+            .create_buffer(
+                sz,
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            )
+            .expect("Failed to create instance buffer");
 
         let frame = &mut self.frames[frame_idx];
         if idx < frame.instance_pool.len() {
@@ -726,7 +837,12 @@ impl Renderer {
         // Let's modify prepare_frame to store them in the Renderer.
         let (image_available, in_flight, command_buffer, render_finished) = {
             let frame = &self.frames[self.current_frame];
-            (frame.image_available, frame.in_flight, frame.command_buffer, frame.render_finished)
+            (
+                frame.image_available,
+                frame.in_flight,
+                frame.command_buffer,
+                frame.render_finished,
+            )
         };
 
         unsafe {
@@ -744,7 +860,7 @@ impl Renderer {
                 Ok((index, _)) => {
                     self.current_image_index = index;
                     index
-                },
+                }
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                     let _ = self.recreate_swapchain(window);
                     return;
@@ -757,26 +873,28 @@ impl Renderer {
                 .expect("Failed to reset fence");
             self.device
                 .device
-                .reset_command_buffer(
-                    command_buffer,
-                    vk::CommandBufferResetFlags::empty(),
-                )
+                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
                 .expect("Failed to reset command buffer");
 
             // Clean up secondary command buffers for the current frame
             for pools in &self.device.thread_command_pools {
                 let pool = pools[self.current_frame];
-                self.device.device.reset_command_pool(pool, vk::CommandPoolResetFlags::empty()).unwrap();
+                self.device
+                    .device
+                    .reset_command_pool(pool, vk::CommandPoolResetFlags::empty())
+                    .unwrap();
             }
-            self.record_command_buffer(
-                image_index,
-                egui_output,
-                delta,
-            );
+            self.record_command_buffer(image_index, egui_output, delta);
             let s_finished = [render_finished];
             let c_buffers = [command_buffer];
-            let s_wait = [image_available, self.culling_finished_semaphores[self.current_frame]];
-            let w_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::DRAW_INDIRECT];
+            let s_wait = [
+                image_available,
+                self.culling_finished_semaphores[self.current_frame],
+            ];
+            let w_stages = [
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::DRAW_INDIRECT,
+            ];
 
             let submit_info = vk::SubmitInfo::default()
                 .wait_semaphores(&s_wait)
@@ -785,11 +903,7 @@ impl Renderer {
                 .signal_semaphores(&s_finished);
             self.device
                 .device
-                .queue_submit(
-                    self.device.graphics_queue,
-                    &[submit_info],
-                    in_flight,
-                )
+                .queue_submit(self.device.graphics_queue, &[submit_info], in_flight)
                 .unwrap();
             let result = self.swapchain.loader.queue_present(
                 self.device.graphics_queue,
@@ -849,9 +963,12 @@ impl Renderer {
             };
 
             // 1. Record secondary command buffers in parallel
-            let pass_secondary_commands: Vec<Vec<vk::CommandBuffer>> = self.render_graph.passes.par_iter().map(|pass_node| {
-                pass_node.pass.record_secondary_commands(&ctx)
-            }).collect();
+            let pass_secondary_commands: Vec<Vec<vk::CommandBuffer>> = self
+                .render_graph
+                .passes
+                .par_iter()
+                .map(|pass_node| pass_node.pass.record_secondary_commands(&ctx))
+                .collect();
 
             // 2. Execute RenderGraph
             self.render_graph.execute(&ctx, &pass_secondary_commands);
@@ -859,12 +976,21 @@ impl Renderer {
             if let Some((output, egui_ctx)) = egui_output {
                 let ext = self.swapchain.extent;
                 if let Some(mut egui) = self.egui_renderer.take() {
-                    egui.draw(self, command_buffer, output, [ext.width as f32, ext.height as f32], &egui_ctx);
+                    egui.draw(
+                        self,
+                        command_buffer,
+                        output,
+                        [ext.width as f32, ext.height as f32],
+                        &egui_ctx,
+                    );
                     self.egui_renderer = Some(egui);
                 }
             }
 
-            self.device.device.end_command_buffer(command_buffer).unwrap();
+            self.device
+                .device
+                .end_command_buffer(command_buffer)
+                .unwrap();
         }
     }
 
@@ -879,9 +1005,12 @@ impl Renderer {
             width,
             height,
             format,
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT
+                | vk::ImageUsageFlags::SAMPLED
+                | vk::ImageUsageFlags::TRANSFER_SRC,
             vk::SampleCountFlags::TYPE_1,
-        ).expect("Failed to create viewport attachment");
+        )
+        .expect("Failed to create viewport attachment");
 
         self.viewport_attachment = Some(attachment);
     }
@@ -901,12 +1030,82 @@ impl Renderer {
             )?;
             let extent = self.swapchain.extent;
             // Recreate G-Buffer attachments
-            if let Some(hdr) = self.render_graph.physical_attachments.get_mut("GBufferHDR") { for a in hdr { a.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16B16A16_SFLOAT)?; } }
-            if let Some(albedo) = self.render_graph.physical_attachments.get_mut("GBufferAlbedo") { for a in albedo { a.recreate(&self.device, extent.width, extent.height, vk::Format::R8G8B8A8_UNORM)?; } }
-            if let Some(normal) = self.render_graph.physical_attachments.get_mut("GBufferNormal") { for a in normal { a.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16B16A16_SFLOAT)?; } }
-            if let Some(pbr) = self.render_graph.physical_attachments.get_mut("GBufferPBR") { for a in pbr { a.recreate(&self.device, extent.width, extent.height, vk::Format::R8G8B8A8_UNORM)?; } }
-            if let Some(velocity) = self.render_graph.physical_attachments.get_mut("GBufferVelocity") { for a in velocity { a.recreate(&self.device, extent.width, extent.height, vk::Format::R16G16_SFLOAT)?; } }
-            if let Some(depth) = self.render_graph.physical_attachments.get_mut("GBufferDepth") { for a in depth { a.recreate(&self.device, extent.width, extent.height, self.device.depth_format)?; } }
+            if let Some(hdr) = self.render_graph.physical_attachments.get_mut("GBufferHDR") {
+                for a in hdr {
+                    a.recreate(
+                        &self.device,
+                        extent.width,
+                        extent.height,
+                        vk::Format::R16G16B16A16_SFLOAT,
+                    )?;
+                }
+            }
+            if let Some(albedo) = self
+                .render_graph
+                .physical_attachments
+                .get_mut("GBufferAlbedo")
+            {
+                for a in albedo {
+                    a.recreate(
+                        &self.device,
+                        extent.width,
+                        extent.height,
+                        vk::Format::R8G8B8A8_UNORM,
+                    )?;
+                }
+            }
+            if let Some(normal) = self
+                .render_graph
+                .physical_attachments
+                .get_mut("GBufferNormal")
+            {
+                for a in normal {
+                    a.recreate(
+                        &self.device,
+                        extent.width,
+                        extent.height,
+                        vk::Format::R16G16B16A16_SFLOAT,
+                    )?;
+                }
+            }
+            if let Some(pbr) = self.render_graph.physical_attachments.get_mut("GBufferPBR") {
+                for a in pbr {
+                    a.recreate(
+                        &self.device,
+                        extent.width,
+                        extent.height,
+                        vk::Format::R8G8B8A8_UNORM,
+                    )?;
+                }
+            }
+            if let Some(velocity) = self
+                .render_graph
+                .physical_attachments
+                .get_mut("GBufferVelocity")
+            {
+                for a in velocity {
+                    a.recreate(
+                        &self.device,
+                        extent.width,
+                        extent.height,
+                        vk::Format::R16G16_SFLOAT,
+                    )?;
+                }
+            }
+            if let Some(depth) = self
+                .render_graph
+                .physical_attachments
+                .get_mut("GBufferDepth")
+            {
+                for a in depth {
+                    a.recreate(
+                        &self.device,
+                        extent.width,
+                        extent.height,
+                        self.device.depth_format,
+                    )?;
+                }
+            }
 
             if self.viewport_attachment.is_some() {
                 self.create_viewport_attachment(extent.width, extent.height);
@@ -949,20 +1148,18 @@ impl Renderer {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
         self.upload_to_buffer(&st, pix);
-        let (i, m) = self.create_image_basic(
-            &crate::vulkan::device::ImageCreateParams {
-                width: w,
-                height: h,
-                mip_levels: mip,
-                format: vk::Format::R8G8B8A8_SRGB,
-                tiling: vk::ImageTiling::OPTIMAL,
-                usage: vk::ImageUsageFlags::TRANSFER_SRC
-                    | vk::ImageUsageFlags::TRANSFER_DST
-                    | vk::ImageUsageFlags::SAMPLED,
-                properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                samples: vk::SampleCountFlags::TYPE_1,
-            }
-        );
+        let (i, m) = self.create_image_basic(&crate::vulkan::device::ImageCreateParams {
+            width: w,
+            height: h,
+            mip_levels: mip,
+            format: vk::Format::R8G8B8A8_SRGB,
+            tiling: vk::ImageTiling::OPTIMAL,
+            usage: vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::SAMPLED,
+            properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            samples: vk::SampleCountFlags::TYPE_1,
+        });
         self.transition_image_layout_basic(
             i,
             vk::ImageLayout::UNDEFINED,
@@ -996,7 +1193,9 @@ impl Renderer {
         let s = self.create_texture_sampler(mip);
         self.destroy_buffer(st);
 
-        let bindless_index = self.next_bindless_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let bindless_index = self
+            .next_bindless_index
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if bindless_index >= 10000 {
             panic!("Exceeded maximum bindless texture count (10000)");
         }
@@ -1041,7 +1240,9 @@ impl Renderer {
         &self,
         params: &crate::vulkan::device::ImageCreateParams,
     ) -> (vk::Image, gpu_allocator::vulkan::Allocation) {
-        self.device.create_image(params).expect("Failed to create image")
+        self.device
+            .create_image(params)
+            .expect("Failed to create image")
     }
 
     pub fn create_texture_sampler(&self, mip: u32) -> vk::Sampler {
@@ -1187,12 +1388,13 @@ impl Renderer {
         self.end_single_time_commands(cb);
     }
 
-
     pub fn get_buffer(&self, id: u32) -> Option<&Buffer> {
         self.vertex_buffers.get(id as usize)
     }
     pub fn get_instance_buffer(&self, id: u32) -> Option<&Buffer> {
-        self.frames[self.current_frame].instance_pool.get(id as usize)
+        self.frames[self.current_frame]
+            .instance_pool
+            .get(id as usize)
     }
     /// Resets the instance buffer index for the current frame to allow reuse in the next cycle.
     pub fn clear_instance_buffers(&mut self) {
@@ -1207,7 +1409,12 @@ impl Renderer {
         self.device.msaa_samples
     }
 
-    pub fn get_pass_resource_view(&self, _pass_name: &str, resource_name: &str, frame_index: usize) -> Option<vk::ImageView> {
+    pub fn get_pass_resource_view(
+        &self,
+        _pass_name: &str,
+        resource_name: &str,
+        frame_index: usize,
+    ) -> Option<vk::ImageView> {
         // Check graph-managed physical attachments
         if let Some(attachments) = self.render_graph.physical_attachments.get(resource_name) {
             return Some(attachments[frame_index].view);
@@ -1240,8 +1447,15 @@ impl Renderer {
         self.swapchain.extent
     }
 
-    pub fn register_egui_texture(&mut self, view: vk::ImageView, sampler: vk::Sampler) -> egui::TextureId {
-        let mut egui_renderer = self.egui_renderer.take().expect("EguiRenderer not initialized");
+    pub fn register_egui_texture(
+        &mut self,
+        view: vk::ImageView,
+        sampler: vk::Sampler,
+    ) -> egui::TextureId {
+        let mut egui_renderer = self
+            .egui_renderer
+            .take()
+            .expect("EguiRenderer not initialized");
         let id = egui_renderer.register_native_texture(self, view, sampler);
         self.egui_renderer = Some(egui_renderer);
         id
@@ -1251,10 +1465,18 @@ impl Renderer {
     pub fn get_jitter(&self) -> [f32; 2] {
         let x = crate::vulkan::utils::halton((self.frame_index % 16) as u32 + 1, 2) - 0.5;
         let y = crate::vulkan::utils::halton((self.frame_index % 16) as u32 + 1, 3) - 0.5;
-        [x / self.swapchain.extent.width as f32, y / self.swapchain.extent.height as f32]
+        [
+            x / self.swapchain.extent.width as f32,
+            y / self.swapchain.extent.height as f32,
+        ]
     }
 
-    pub fn add_render_pass<P: crate::passes::RenderPass + 'static>(&mut self, pass: P, inputs: &[&str], outputs: &[&str]) {
+    pub fn add_render_pass<P: crate::passes::RenderPass + 'static>(
+        &mut self,
+        pass: P,
+        inputs: &[&str],
+        outputs: &[&str],
+    ) {
         self.render_graph.add_pass(pass, inputs, outputs);
     }
 
@@ -1289,35 +1511,37 @@ impl Renderer {
     ///
     /// # Returns
     /// * The total number of opaque objects to be rendered.
-    pub fn prepare_frame(
-        &mut self,
-        packet: crate::resource::FramePacket,
-    ) -> u32 {
+    pub fn prepare_frame(&mut self, packet: crate::resource::FramePacket) -> u32 {
         self.current_packet = Some(packet.clone());
         self.scene_view_matrix_for_pos = packet.view_matrix;
 
         // 1. Prepare GPU Indirect and Object buffers in parallel
-        let (object_ssbos, indirect_commands): (Vec<_>, Vec<_>) = packet.opaque_meshes.par_iter().enumerate().map(|(i, mesh)| {
-             let m = mesh.model.transpose();
-             let ssbo = ObjectDataSSBO {
-                model_row0: m.row(0),
-                model_row1: m.row(1),
-                model_row2: m.row(2),
-                sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
-                index_count: mesh.index_count,
-                first_index: mesh.first_index,
-                vertex_offset: mesh.vertex_offset,
-                material_index: mesh.material_index,
-            };
-            let cmd = vk::DrawIndexedIndirectCommand {
-                index_count: mesh.index_count,
-                instance_count: 1,
-                first_index: mesh.first_index,
-                vertex_offset: mesh.vertex_offset,
-                first_instance: i as u32,
-            };
-            (ssbo, cmd)
-        }).unzip();
+        let (object_ssbos, indirect_commands): (Vec<_>, Vec<_>) = packet
+            .opaque_meshes
+            .par_iter()
+            .enumerate()
+            .map(|(i, mesh)| {
+                let m = mesh.model.transpose();
+                let ssbo = ObjectDataSSBO {
+                    model_row0: m.row(0),
+                    model_row1: m.row(1),
+                    model_row2: m.row(2),
+                    sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
+                    index_count: mesh.index_count,
+                    first_index: mesh.first_index,
+                    vertex_offset: mesh.vertex_offset,
+                    material_index: mesh.material_index,
+                };
+                let cmd = vk::DrawIndexedIndirectCommand {
+                    index_count: mesh.index_count,
+                    instance_count: 1,
+                    first_index: mesh.first_index,
+                    vertex_offset: mesh.vertex_offset,
+                    first_instance: i as u32,
+                };
+                (ssbo, cmd)
+            })
+            .unzip();
 
         self.update_indirect_buffers(&indirect_commands, &object_ssbos);
         let total_objects = object_ssbos.len() as u32;
@@ -1328,30 +1552,36 @@ impl Renderer {
         transparent_meshes.par_sort_by(|a, b| {
             let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
             let dist_b = (b.model.w_axis.xyz() - view_pos).length_squared();
-            dist_b.partial_cmp(&dist_a).unwrap_or(std::cmp::Ordering::Equal)
+            dist_b
+                .partial_cmp(&dist_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let (trans_ssbos, trans_cmds): (Vec<_>, Vec<_>) = transparent_meshes.par_iter().enumerate().map(|(i, mesh)| {
-             let m = mesh.model.transpose();
-             let ssbo = ObjectDataSSBO {
-                model_row0: m.row(0),
-                model_row1: m.row(1),
-                model_row2: m.row(2),
-                sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
-                index_count: mesh.index_count,
-                first_index: mesh.first_index,
-                vertex_offset: mesh.vertex_offset,
-                material_index: mesh.material_index,
-            };
-            let cmd = vk::DrawIndexedIndirectCommand {
-                index_count: mesh.index_count,
-                instance_count: 1,
-                first_index: mesh.first_index,
-                vertex_offset: mesh.vertex_offset,
-                first_instance: i as u32,
-            };
-            (ssbo, cmd)
-        }).unzip();
+        let (trans_ssbos, trans_cmds): (Vec<_>, Vec<_>) = transparent_meshes
+            .par_iter()
+            .enumerate()
+            .map(|(i, mesh)| {
+                let m = mesh.model.transpose();
+                let ssbo = ObjectDataSSBO {
+                    model_row0: m.row(0),
+                    model_row1: m.row(1),
+                    model_row2: m.row(2),
+                    sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
+                    index_count: mesh.index_count,
+                    first_index: mesh.first_index,
+                    vertex_offset: mesh.vertex_offset,
+                    material_index: mesh.material_index,
+                };
+                let cmd = vk::DrawIndexedIndirectCommand {
+                    index_count: mesh.index_count,
+                    instance_count: 1,
+                    first_index: mesh.first_index,
+                    vertex_offset: mesh.vertex_offset,
+                    first_instance: i as u32,
+                };
+                (ssbo, cmd)
+            })
+            .unzip();
         self.update_transparent_buffers(&trans_cmds, &trans_ssbos);
         self.last_transparent_count = trans_ssbos.len() as u32;
 
@@ -1418,7 +1648,14 @@ impl Renderer {
             min_p = (min_p / world_units_per_texel).floor() * world_units_per_texel;
             max_p = (max_p / world_units_per_texel).floor() * world_units_per_texel;
 
-            let light_proj = spark_math::Mat4::orthographic_rh(min_p.x, max_p.x, min_p.y, max_p.y, -max_p.z - 50.0, -min_p.z);
+            let light_proj = spark_math::Mat4::orthographic_rh(
+                min_p.x,
+                max_p.x,
+                min_p.y,
+                max_p.y,
+                -max_p.z - 50.0,
+                -min_p.z,
+            );
             light_view_projs[i] = light_proj * light_view;
         }
 
@@ -1435,7 +1672,12 @@ impl Renderer {
             inv_vp: view_proj.inverse(),
             camera_pos,
             frustum,
-            cascade_splits: spark_math::Vec4::new(cascade_splits[0], cascade_splits[1], cascade_splits[2], cascade_splits[3]),
+            cascade_splits: spark_math::Vec4::new(
+                cascade_splits[0],
+                cascade_splits[1],
+                cascade_splits[2],
+                cascade_splits[3],
+            ),
         };
 
         if self.frames[0].global_buffer.is_none() {
@@ -1449,7 +1691,11 @@ impl Renderer {
             }
             self.ensure_global_descriptor_set();
         }
-        let gb = self.frames[self.current_frame].global_buffer.as_ref().cloned().unwrap();
+        let gb = self.frames[self.current_frame]
+            .global_buffer
+            .as_ref()
+            .cloned()
+            .unwrap();
         self.upload_to_buffer(&gb, &[ubo]);
 
         // 4. Prepare Passes
@@ -1470,13 +1716,15 @@ impl Renderer {
 
     pub fn get_thread_command_pool(&self) -> vk::CommandPool {
         let thread_idx = rayon::current_thread_index().unwrap_or(0);
-        let pools = &self.device.thread_command_pools[thread_idx % self.device.thread_command_pools.len()];
+        let pools =
+            &self.device.thread_command_pools[thread_idx % self.device.thread_command_pools.len()];
         pools[self.current_frame]
     }
 
     pub fn allocate_secondary_command_buffer(&self) -> vk::CommandBuffer {
         let pool = self.get_thread_command_pool();
-        self.device.create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY)
+        self.device
+            .create_command_buffer(pool, vk::CommandBufferLevel::SECONDARY)
     }
 
     /// Uploads data to a GPU buffer.
@@ -1493,7 +1741,9 @@ impl Renderer {
         usage: vk::BufferUsageFlags,
         properties: vk::MemoryPropertyFlags,
     ) -> Buffer {
-        self.device.create_buffer(sz, usage, properties).expect("Failed to create buffer")
+        self.device
+            .create_buffer(sz, usage, properties)
+            .expect("Failed to create buffer")
     }
     pub fn destroy_buffer(&self, buffer: Buffer) {
         self.device.destroy_buffer(buffer);
@@ -1595,46 +1845,6 @@ impl Renderer {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{Arc, Mutex};
-
-    #[test]
-    fn test_render_settings_default() {
-        let settings = RenderSettings::default();
-        assert!(settings.enable_shadows);
-        assert_eq!(settings.gamma, 2.2);
-    }
-
-    #[test]
-    fn test_buffer_struct() {
-        let buffer = Buffer {
-            handle: vk::Buffer::null(),
-            allocation: Arc::new(Mutex::new(None)),
-            size: 1024,
-            ptr: std::ptr::null_mut(),
-            address: 0,
-            version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        };
-        assert_eq!(buffer.size, 1024);
-        assert_eq!(buffer.handle, vk::Buffer::null());
-    }
-
-    #[test]
-    fn test_light_data_layout() {
-        #[repr(C)]
-        #[derive(Copy, Clone)]
-        struct LD {
-            pos: [f32; 4],
-            dir: [f32; 4],
-            col: [f32; 4],
-            spot_angles: [f32; 4],
-        }
-        assert_eq!(std::mem::size_of::<LD>(), 64);
-    }
-}
-
 impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
@@ -1665,8 +1875,12 @@ impl Drop for Renderer {
                 if let Some(dc) = frame.draw_count_buffer.take() {
                     self.device.destroy_buffer(dc);
                 }
-                self.device.device.destroy_semaphore(frame.image_available, None);
-                self.device.device.destroy_semaphore(frame.render_finished, None);
+                self.device
+                    .device
+                    .destroy_semaphore(frame.image_available, None);
+                self.device
+                    .device
+                    .destroy_semaphore(frame.render_finished, None);
                 self.device.device.destroy_fence(frame.in_flight, None);
             }
 
@@ -1712,21 +1926,67 @@ impl Drop for Renderer {
 
             self.as_manager.lock().unwrap().cleanup(&self.device);
 
-
             for sem in self.culling_finished_semaphores {
                 self.device.device.destroy_semaphore(sem, None);
             }
 
-            self.device.device.destroy_sampler(self.common_sampler, None);
-            self.device.device.destroy_descriptor_set_layout(self.bindless_descriptor_set_layout, None);
-            self.device.destroy_buffer(std::mem::replace(&mut self.dummy_buffer, Buffer {
-                handle: vk::Buffer::null(),
-                allocation: std::sync::Arc::new(std::sync::Mutex::new(None)),
-                size: 0,
-                ptr: std::ptr::null_mut(),
-                address: 0,
-                version: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            }));
+            self.device
+                .device
+                .destroy_sampler(self.common_sampler, None);
+            self.device
+                .device
+                .destroy_descriptor_set_layout(self.bindless_descriptor_set_layout, None);
+            self.device.destroy_buffer(std::mem::replace(
+                &mut self.dummy_buffer,
+                Buffer {
+                    handle: vk::Buffer::null(),
+                    allocation: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                    size: 0,
+                    ptr: std::ptr::null_mut(),
+                    address: 0,
+                    version: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                },
+            ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn test_render_settings_default() {
+        let settings = RenderSettings::default();
+        assert!(settings.enable_shadows);
+        assert_eq!(settings.gamma, 2.2);
+    }
+
+    #[test]
+    fn test_buffer_struct() {
+        let buffer = Buffer {
+            handle: vk::Buffer::null(),
+            allocation: Arc::new(Mutex::new(None)),
+            size: 1024,
+            ptr: std::ptr::null_mut(),
+            address: 0,
+            version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        };
+        assert_eq!(buffer.size, 1024);
+        assert_eq!(buffer.handle, vk::Buffer::null());
+    }
+
+    #[test]
+    fn test_light_data_layout() {
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct LD {
+            pos: [f32; 4],
+            dir: [f32; 4],
+            col: [f32; 4],
+            spot_angles: [f32; 4],
+        }
+        assert_eq!(std::mem::size_of::<LD>(), 64);
     }
 }

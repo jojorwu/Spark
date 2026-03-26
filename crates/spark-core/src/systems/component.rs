@@ -3,7 +3,9 @@ use crate::System;
 pub struct ComponentSystem;
 
 impl System for ComponentSystem {
-    fn name(&self) -> &str { "ComponentSystem" }
+    fn name(&self) -> &str {
+        "ComponentSystem"
+    }
     fn resource_access(&self) -> crate::ResourceAccess {
         crate::ResourceAccess {
             scene: crate::Access::Write,

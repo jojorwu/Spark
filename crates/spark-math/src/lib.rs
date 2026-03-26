@@ -1,6 +1,6 @@
-pub use glam::*;
 pub use glam::f32::Quat;
 pub use glam::Vec4Swizzles;
+pub use glam::*;
 
 pub struct Frustum {
     pub planes: [Vec4; 6],

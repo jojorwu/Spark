@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::marker::PhantomData;
 use image::DynamicImage;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Handle<T> {
@@ -11,13 +11,17 @@ pub struct Handle<T> {
 }
 
 impl<T> Clone for Handle<T> {
-    fn clone(&self) -> Self { *self }
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 impl<T> Copy for Handle<T> {}
 
 impl<T> PartialEq for Handle<T> {
-    fn eq(&self, other: &Self) -> bool { self.id == other.id }
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
 }
 
 impl<T> Eq for Handle<T> {}
@@ -30,9 +34,14 @@ impl<T> std::hash::Hash for Handle<T> {
 
 impl<T> Handle<T> {
     pub fn new(id: u32) -> Self {
-        Self { id, _marker: PhantomData }
+        Self {
+            id,
+            _marker: PhantomData,
+        }
     }
-    pub fn id(&self) -> u32 { self.id }
+    pub fn id(&self) -> u32 {
+        self.id
+    }
 }
 
 pub struct AssetStorage<T> {
@@ -40,7 +49,9 @@ pub struct AssetStorage<T> {
 }
 
 impl<T> AssetStorage<T> {
-    pub fn new() -> Self { Self { assets: Vec::new() } }
+    pub fn new() -> Self {
+        Self { assets: Vec::new() }
+    }
 }
 
 impl<T> Default for AssetStorage<T> {
@@ -124,10 +135,11 @@ impl Default for ResourceManager {
 }
 
 impl ResourceManager {
-
     pub fn upload_global_buffers(&mut self, renderer: &mut spark_renderer::Renderer) {
         use spark_renderer::ash::vk;
-        if self.all_vertices.is_empty() || !self.needs_upload { return; }
+        if self.all_vertices.is_empty() || !self.needs_upload {
+            return;
+        }
         self.needs_upload = false;
 
         if let Some(vb) = renderer.global_vertex_buffer.take() {
@@ -140,10 +152,14 @@ impl ResourceManager {
             renderer.destroy_buffer(mb);
         }
 
-        let v_sz = (self.all_vertices.len() * std::mem::size_of::<spark_renderer::vertex::Vertex>()) as u64;
+        let v_sz = (self.all_vertices.len() * std::mem::size_of::<spark_renderer::vertex::Vertex>())
+            as u64;
         let vb = renderer.create_buffer(
             v_sz,
-            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            vk::BufferUsageFlags::VERTEX_BUFFER
+                | vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
         let staging_v = renderer.create_buffer(
@@ -156,7 +172,10 @@ impl ResourceManager {
         let i_sz = (self.all_indices.len() * 4) as u64;
         let ib = renderer.create_buffer(
             i_sz,
-            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            vk::BufferUsageFlags::INDEX_BUFFER
+                | vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
         let staging_i = renderer.create_buffer(
@@ -166,7 +185,8 @@ impl ResourceManager {
         );
         renderer.upload_to_buffer(&staging_i, &self.all_indices);
 
-        let m_sz = (self.all_materials_ssbo.len() * std::mem::size_of::<spark_renderer::MaterialDataSSBO>()) as u64;
+        let m_sz = (self.all_materials_ssbo.len()
+            * std::mem::size_of::<spark_renderer::MaterialDataSSBO>()) as u64;
         let mb = renderer.create_buffer(
             m_sz,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
@@ -183,9 +203,36 @@ impl ResourceManager {
         let cb = renderer.begin_single_time_commands();
         unsafe {
             let device = renderer.get_device();
-            device.cmd_copy_buffer(cb, staging_v.handle, vb.handle, &[vk::BufferCopy { src_offset: 0, dst_offset: 0, size: staging_v.size }]);
-            device.cmd_copy_buffer(cb, staging_i.handle, ib.handle, &[vk::BufferCopy { src_offset: 0, dst_offset: 0, size: staging_i.size }]);
-            device.cmd_copy_buffer(cb, staging_m.handle, mb.handle, &[vk::BufferCopy { src_offset: 0, dst_offset: 0, size: staging_m.size }]);
+            device.cmd_copy_buffer(
+                cb,
+                staging_v.handle,
+                vb.handle,
+                &[vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: staging_v.size,
+                }],
+            );
+            device.cmd_copy_buffer(
+                cb,
+                staging_i.handle,
+                ib.handle,
+                &[vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: staging_i.size,
+                }],
+            );
+            device.cmd_copy_buffer(
+                cb,
+                staging_m.handle,
+                mb.handle,
+                &[vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: staging_m.size,
+                }],
+            );
         }
         renderer.end_single_time_commands(cb);
 
@@ -220,7 +267,11 @@ impl ResourceManager {
         log::info!("Loading and uploading texture: {:?}", path);
         let img = image::open(path).unwrap_or_else(|e| {
             log::warn!("Failed to load texture {:?}: {}. Using fallback.", path, e);
-            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 255, 255])))
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                1,
+                1,
+                image::Rgba([255, 0, 255, 255]),
+            ))
         });
         let texture = renderer.create_texture_from_image(&img);
         let handle = self.gpu_textures.add(texture);
@@ -244,11 +295,14 @@ impl GltfLoader {
         let parent_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
 
         // Pre-load images in parallel
-        let loaded_images: Vec<_> = images.par_iter().map(|data| {
-            image::load_from_memory(&data.pixels).unwrap_or_else(|_| {
-                image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, 1))
+        let loaded_images: Vec<_> = images
+            .par_iter()
+            .map(|data| {
+                image::load_from_memory(&data.pixels).unwrap_or_else(|_| {
+                    image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, 1))
+                })
             })
-        }).collect();
+            .collect();
 
         for img in loaded_images {
             rm.textures.add(img);
@@ -257,7 +311,15 @@ impl GltfLoader {
         let default_scene = doc.default_scene().or(doc.scenes().next());
         if let Some(scene) = default_scene {
             for node in scene.nodes() {
-                Self::process_node(rm, node, &buffers, scene_tree, scene_tree.root, renderer, &parent_dir);
+                Self::process_node(
+                    rm,
+                    node,
+                    &buffers,
+                    scene_tree,
+                    scene_tree.root,
+                    renderer,
+                    &parent_dir,
+                );
             }
         }
     }
@@ -271,8 +333,8 @@ impl GltfLoader {
         renderer: &spark_renderer::Renderer,
         parent_dir: &Path,
     ) {
-        use crate::scene::{Node, MeshComponent, Component};
-        use spark_math::{Mat4, Vec3, Quat, Vec4};
+        use crate::scene::{Component, MeshComponent, Node};
+        use spark_math::{Mat4, Quat, Vec3, Vec4};
 
         let (translation, rotation, scale) = node.transform().decomposed();
         let local_transform = Mat4::from_scale_rotation_translation(
@@ -297,12 +359,16 @@ impl GltfLoader {
                 let mut max_dist_sq = 0.0f32;
                 let normals = reader.read_normals().map(|n| n.collect::<Vec<_>>());
                 let tangents = reader.read_tangents().map(|t| t.collect::<Vec<_>>());
-                let tex_coords = reader.read_tex_coords(0).map(|t| t.into_f32().collect::<Vec<_>>());
+                let tex_coords = reader
+                    .read_tex_coords(0)
+                    .map(|t| t.into_f32().collect::<Vec<_>>());
 
                 for i in 0..positions.len() {
                     let p = positions[i];
-                    let dist_sq = p[0]*p[0] + p[1]*p[1] + p[2]*p[2];
-                    if dist_sq > max_dist_sq { max_dist_sq = dist_sq; }
+                    let dist_sq = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+                    if dist_sq > max_dist_sq {
+                        max_dist_sq = dist_sq;
+                    }
 
                     let n = if let Some(ref normals) = normals {
                         spark_math::Vec3::from_array(normals[i])
@@ -349,7 +415,7 @@ impl GltfLoader {
                         gltf_mat.emissive_factor()[0],
                         gltf_mat.emissive_factor()[1],
                         gltf_mat.emissive_factor()[2],
-                        1.0
+                        1.0,
                     ]),
                     metallic_factor: pbr.metallic_factor(),
                     roughness_factor: pbr.roughness_factor(),
@@ -410,7 +476,12 @@ impl GltfLoader {
                 rm.materials.add(Material {
                     name: gltf_mat.name().unwrap_or("Unnamed Material").to_string(),
                     albedo_factor: pbr.base_color_factor(),
-                    emissive_factor: [gltf_mat.emissive_factor()[0], gltf_mat.emissive_factor()[1], gltf_mat.emissive_factor()[2], 1.0],
+                    emissive_factor: [
+                        gltf_mat.emissive_factor()[0],
+                        gltf_mat.emissive_factor()[1],
+                        gltf_mat.emissive_factor()[2],
+                        1.0,
+                    ],
                     metallic_factor: pbr.metallic_factor(),
                     roughness_factor: pbr.roughness_factor(),
                     albedo_texture: None, // Simplified

@@ -1,7 +1,7 @@
-use ash::vk;
+use super::{RenderContext, RenderPass};
 use crate::resource::Buffer;
 use crate::Renderer;
-use super::{RenderPass, RenderContext};
+use ash::vk;
 
 #[repr(C)]
 pub struct Particle {
@@ -25,7 +25,9 @@ pub struct ParticlePass {
 }
 
 impl RenderPass for ParticlePass {
-    fn name(&self) -> &str { "ParticlePass" }
+    fn name(&self) -> &str {
+        "ParticlePass"
+    }
 
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
@@ -34,11 +36,28 @@ impl RenderPass for ParticlePass {
 
         unsafe {
             // 1. Simulation
-            device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::COMPUTE, self.compute_pipeline);
-            device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::COMPUTE, self.compute_layout, 0, &[self.descriptor_sets[cf]], &[]);
+            device.cmd_bind_pipeline(
+                ctx.command_buffer,
+                vk::PipelineBindPoint::COMPUTE,
+                self.compute_pipeline,
+            );
+            device.cmd_bind_descriptor_sets(
+                ctx.command_buffer,
+                vk::PipelineBindPoint::COMPUTE,
+                self.compute_layout,
+                0,
+                &[self.descriptor_sets[cf]],
+                &[],
+            );
 
             let pc = [ctx.delta, self.particle_count as f32];
-            device.cmd_push_constants(ctx.command_buffer, self.compute_layout, vk::ShaderStageFlags::COMPUTE, 0, bytemuck::cast_slice(&pc));
+            device.cmd_push_constants(
+                ctx.command_buffer,
+                self.compute_layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytemuck::cast_slice(&pc),
+            );
 
             device.cmd_dispatch(ctx.command_buffer, self.particle_count.div_ceil(256), 1, 1);
 
@@ -49,24 +68,57 @@ impl RenderPass for ParticlePass {
                 .dst_access_mask(vk::AccessFlags::SHADER_READ)
                 .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                 .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED);
-            device.cmd_pipeline_barrier(ctx.command_buffer, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::VERTEX_SHADER, vk::DependencyFlags::empty(), &[], &[barrier], &[]);
+            device.cmd_pipeline_barrier(
+                ctx.command_buffer,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::VERTEX_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[barrier],
+                &[],
+            );
 
             // 2. Rendering
             let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(renderer.get_pass_resource_view("", "GBufferHDR", cf).unwrap_or(renderer.common_shadow_view))
+                .image_view(
+                    renderer
+                        .get_pass_resource_view("", "GBufferHDR", cf)
+                        .unwrap_or(renderer.common_shadow_view),
+                )
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::LOAD)
                 .store_op(vk::AttachmentStoreOp::STORE);
 
             let rendering_info = vk::RenderingInfo::default()
-                .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent: renderer.get_extent() })
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: renderer.get_extent(),
+                })
                 .layer_count(1)
                 .color_attachments(std::slice::from_ref(&color_attachment));
 
             device.cmd_begin_rendering(ctx.command_buffer, &rendering_info);
-            device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.graphics_pipeline);
-            device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.graphics_layout, 0, &[self.descriptor_sets[cf]], &[]);
-            device.cmd_bind_descriptor_sets(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, self.graphics_layout, 1, &[renderer.frames[cf].global_descriptor_set], &[]);
+            device.cmd_bind_pipeline(
+                ctx.command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.graphics_pipeline,
+            );
+            device.cmd_bind_descriptor_sets(
+                ctx.command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.graphics_layout,
+                0,
+                &[self.descriptor_sets[cf]],
+                &[],
+            );
+            device.cmd_bind_descriptor_sets(
+                ctx.command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.graphics_layout,
+                1,
+                &[renderer.frames[cf].global_descriptor_set],
+                &[],
+            );
 
             device.cmd_draw(ctx.command_buffer, self.particle_count * 4, 1, 0, 0);
             device.cmd_end_rendering(ctx.command_buffer);
@@ -87,7 +139,12 @@ impl RenderPass for ParticlePass {
 }
 
 impl ParticlePass {
-    pub fn new(renderer: &Renderer, comp_spirv: &[u32], vert_spirv: &[u32], frag_spirv: &[u32]) -> Result<Self, crate::error::RendererError> {
+    pub fn new(
+        renderer: &Renderer,
+        comp_spirv: &[u32],
+        vert_spirv: &[u32],
+        frag_spirv: &[u32],
+    ) -> Result<Self, crate::error::RendererError> {
         let device = &renderer.device.device;
         let count = 10000;
 
@@ -102,41 +159,71 @@ impl ParticlePass {
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX);
-        let ds_layout = unsafe { device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&[binding]), None)? };
+        let ds_layout = unsafe {
+            device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[binding]),
+                None,
+            )?
+        };
 
         let ds = unsafe {
             device.allocate_descriptor_sets(
-                &vk::DescriptorSetAllocateInfo::default().descriptor_pool(renderer.descriptor_pool).set_layouts(&[ds_layout; crate::MAX_FRAMES_IN_FLIGHT])
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(renderer.descriptor_pool)
+                    .set_layouts(&[ds_layout; crate::MAX_FRAMES_IN_FLIGHT]),
             )?
         };
 
         for descriptor_set in ds.iter().take(crate::MAX_FRAMES_IN_FLIGHT) {
-            let info = [vk::DescriptorBufferInfo::default().buffer(particle_buffer.handle).range(particle_buffer.size)];
-            let write = [vk::WriteDescriptorSet::default().dst_set(*descriptor_set).dst_binding(0).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&info)];
-            unsafe { device.update_descriptor_sets(&write, &[]); }
+            let info = [vk::DescriptorBufferInfo::default()
+                .buffer(particle_buffer.handle)
+                .range(particle_buffer.size)];
+            let write = [vk::WriteDescriptorSet::default()
+                .dst_set(*descriptor_set)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&info)];
+            unsafe {
+                device.update_descriptor_sets(&write, &[]);
+            }
         }
 
         let comp_layout = unsafe {
             device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::default().set_layouts(&[ds_layout]).push_constant_ranges(&[vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::COMPUTE).offset(0).size(8)]),
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(&[ds_layout])
+                    .push_constant_ranges(&[vk::PushConstantRange::default()
+                        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                        .offset(0)
+                        .size(8)]),
                 None,
             )?
         };
 
         let graph_layout = unsafe {
             device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::default().set_layouts(&[ds_layout, renderer.global_descriptor_set_layout]),
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(&[ds_layout, renderer.global_descriptor_set_layout]),
                 None,
             )?
         };
 
         let comp_module = crate::pipeline::Pipeline::create_shader_module(device, comp_spirv);
         let compute_pipeline = unsafe {
-            device.create_compute_pipelines(
-                vk::PipelineCache::null(),
-                &[vk::ComputePipelineCreateInfo::default().stage(vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::COMPUTE).module(comp_module).name(c"main")).layout(comp_layout)],
-                None,
-            ).map_err(|e| e.1)?[0]
+            device
+                .create_compute_pipelines(
+                    vk::PipelineCache::null(),
+                    &[vk::ComputePipelineCreateInfo::default()
+                        .stage(
+                            vk::PipelineShaderStageCreateInfo::default()
+                                .stage(vk::ShaderStageFlags::COMPUTE)
+                                .module(comp_module)
+                                .name(c"main"),
+                        )
+                        .layout(comp_layout)],
+                    None,
+                )
+                .map_err(|e| e.1)?[0]
         };
 
         let vert_module = crate::pipeline::Pipeline::create_shader_module(device, vert_spirv);
@@ -144,8 +231,14 @@ impl ParticlePass {
         let entry_point = std::ffi::CString::new("main").unwrap();
 
         let stages = [
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::VERTEX).module(vert_module).name(&entry_point),
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(frag_module).name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_module)
+                .name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag_module)
+                .name(&entry_point),
         ];
 
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
@@ -155,14 +248,25 @@ impl ParticlePass {
             .dst_color_blend_factor(vk::BlendFactor::ONE)
             .color_blend_op(vk::BlendOp::ADD);
 
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(renderer.get_msaa_samples());
-        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default().depth_test_enable(true).depth_write_enable(false).depth_compare_op(vk::CompareOp::LESS);
-        let mut rendering_info = vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&[vk::Format::R16G16B16A16_SFLOAT]).depth_attachment_format(vk::Format::D32_SFLOAT);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(renderer.get_msaa_samples());
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(false)
+            .depth_compare_op(vk::CompareOp::LESS);
+        let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
+            .color_attachment_formats(&[vk::Format::R16G16B16A16_SFLOAT])
+            .depth_attachment_format(vk::Format::D32_SFLOAT);
 
         let vi_info = vk::PipelineVertexInputStateCreateInfo::default();
-        let ia_info = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_STRIP);
-        let vs_info = vk::PipelineViewportStateCreateInfo::default().viewport_count(1).scissor_count(1);
-        let rs_info = vk::PipelineRasterizationStateCreateInfo::default().cull_mode(vk::CullModeFlags::NONE).line_width(1.0);
+        let ia_info = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_STRIP);
+        let vs_info = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let rs_info = vk::PipelineRasterizationStateCreateInfo::default()
+            .cull_mode(vk::CullModeFlags::NONE)
+            .line_width(1.0);
         let attachments = [color_blend_attachment];
         let cb_info = vk::PipelineColorBlendStateCreateInfo::default().attachments(&attachments);
         let dynamics = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
@@ -181,7 +285,11 @@ impl ParticlePass {
             .layout(graph_layout)
             .push_next(&mut rendering_info);
 
-        let graphics_pipeline = unsafe { device.create_graphics_pipelines(renderer.pipeline_cache, &[info], None).unwrap()[0] };
+        let graphics_pipeline = unsafe {
+            device
+                .create_graphics_pipelines(renderer.pipeline_cache, &[info], None)
+                .unwrap()[0]
+        };
 
         unsafe {
             device.destroy_shader_module(comp_module, None);

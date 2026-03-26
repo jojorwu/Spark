@@ -1,7 +1,7 @@
-use ash::vk;
+use super::{RenderContext, RenderPass};
 use crate::resource::Buffer;
 use crate::{Renderer, MAX_FRAMES_IN_FLIGHT};
-use super::{RenderPass, RenderContext};
+use ash::vk;
 
 pub struct LightingDescriptorParams<'a> {
     pub light_buffers: &'a [Buffer],
@@ -148,7 +148,7 @@ impl LightingPass {
                 pipeline_cache: params.pipeline_cache,
                 global_ds_layout: params.global_ds_layout,
                 bindless_ds_layout: params.bindless_ds_layout,
-            }
+            },
         );
         self.pipeline = Some(deferred_pipeline.graphics_pipeline);
     }
@@ -172,16 +172,32 @@ impl LightingPass {
 
         let alb_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(renderer.get_pass_resource_view("", "GBufferAlbedo", i).unwrap_or(renderer.common_shadow_view))];
+            .image_view(
+                renderer
+                    .get_pass_resource_view("", "GBufferAlbedo", i)
+                    .unwrap_or(renderer.common_shadow_view),
+            )];
         let norm_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(renderer.get_pass_resource_view("", "GBufferNormal", i).unwrap_or(renderer.common_shadow_view))];
+            .image_view(
+                renderer
+                    .get_pass_resource_view("", "GBufferNormal", i)
+                    .unwrap_or(renderer.common_shadow_view),
+            )];
         let pbr_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(renderer.get_pass_resource_view("", "GBufferPBR", i).unwrap_or(renderer.common_shadow_view))];
+            .image_view(
+                renderer
+                    .get_pass_resource_view("", "GBufferPBR", i)
+                    .unwrap_or(renderer.common_shadow_view),
+            )];
         let depth_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(renderer.get_pass_resource_view("", "GBufferDepth", i).unwrap_or(renderer.common_shadow_view))];
+            .image_view(
+                renderer
+                    .get_pass_resource_view("", "GBufferDepth", i)
+                    .unwrap_or(renderer.common_shadow_view),
+            )];
         let shadow_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .image_view(shadow_view)
@@ -304,20 +320,48 @@ impl LightingPass {
 }
 
 impl RenderPass for LightingPass {
-    fn name(&self) -> &str { "LightingPass" }
-    fn dependencies(&self) -> Vec<&'static str> { vec!["GBufferPass", "SSAOPass", "ShadowPass", "ClusteredPass"] }
+    fn name(&self) -> &str {
+        "LightingPass"
+    }
+    fn dependencies(&self) -> Vec<&'static str> {
+        vec!["GBufferPass", "SSAOPass", "ShadowPass", "ClusteredPass"]
+    }
 
     fn update_descriptor_sets(&self, renderer: &Renderer) {
-        let light_buffers: Vec<Buffer> = renderer.frames.iter().filter_map(|f| f.light_buffer.clone()).collect();
-        let object_buffers: Vec<Option<Buffer>> = renderer.frames.iter().map(|f| f.object_data_buffer.clone()).collect();
+        let light_buffers: Vec<Buffer> = renderer
+            .frames
+            .iter()
+            .filter_map(|f| f.light_buffer.clone())
+            .collect();
+        let object_buffers: Vec<Option<Buffer>> = renderer
+            .frames
+            .iter()
+            .map(|f| f.object_data_buffer.clone())
+            .collect();
 
-        let irr_view = renderer.ibl_maps.as_ref().map(|m| m.irradiance_view).unwrap_or(renderer.common_shadow_view);
-        let spec_view = renderer.ibl_maps.as_ref().map(|m| m.prefilter_view).unwrap_or(renderer.common_shadow_view);
-        let brdf_view = renderer.ibl_maps.as_ref().map(|m| m.brdf_lut_view).unwrap_or(renderer.common_shadow_view);
+        let irr_view = renderer
+            .ibl_maps
+            .as_ref()
+            .map(|m| m.irradiance_view)
+            .unwrap_or(renderer.common_shadow_view);
+        let spec_view = renderer
+            .ibl_maps
+            .as_ref()
+            .map(|m| m.prefilter_view)
+            .unwrap_or(renderer.common_shadow_view);
+        let brdf_view = renderer
+            .ibl_maps
+            .as_ref()
+            .map(|m| m.brdf_lut_view)
+            .unwrap_or(renderer.common_shadow_view);
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let ssao_view = renderer.get_pass_resource_view("SSAOPass", "ssao", i).unwrap_or(renderer.common_shadow_view);
-            let ssgi_view = renderer.get_pass_resource_view("SSGIPass", "output", i).unwrap_or(renderer.common_shadow_view);
+            let ssao_view = renderer
+                .get_pass_resource_view("SSAOPass", "ssao", i)
+                .unwrap_or(renderer.common_shadow_view);
+            let ssgi_view = renderer
+                .get_pass_resource_view("SSGIPass", "output", i)
+                .unwrap_or(renderer.common_shadow_view);
 
             let device = &renderer.device.device;
             let ssgi_info = [vk::DescriptorImageInfo::default()
@@ -329,7 +373,9 @@ impl RenderPass for LightingPass {
                 .dst_binding(11)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(&ssgi_info)];
-            unsafe { device.update_descriptor_sets(&write, &[]); }
+            unsafe {
+                device.update_descriptor_sets(&write, &[]);
+            }
 
             let params = LightingDescriptorParams {
                 light_buffers: &light_buffers,
@@ -339,11 +385,7 @@ impl RenderPass for LightingPass {
                 specular_view: spec_view,
                 brdf_lut_view: brdf_view,
             };
-            self.update_descriptor_set_for_frame(
-                renderer,
-                i,
-                &params,
-            );
+            self.update_descriptor_set_for_frame(renderer, i, &params);
         }
     }
 
@@ -372,32 +414,51 @@ impl RenderPass for LightingPass {
             roughness: 0.5,
             width: extent.width as f32,
             height: extent.height as f32,
-            ssgi_intensity: if renderer.settings.enable_ssgi { renderer.settings.ssgi_intensity } else { 0.0 },
+            ssgi_intensity: if renderer.settings.enable_ssgi {
+                renderer.settings.ssgi_intensity
+            } else {
+                0.0
+            },
             shadow_pcf: renderer.settings.shadow_pcf_samples,
-            object_buffer_address: renderer.frames[current_frame].object_data_buffer.as_ref().map_or(0, |b| b.address),
+            object_buffer_address: renderer.frames[current_frame]
+                .object_data_buffer
+                .as_ref()
+                .map_or(0, |b| b.address),
             prev_view_proj: renderer.prev_view_proj,
         };
-        let pc_bytes = unsafe { std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>()) };
+        let pc_bytes = unsafe {
+            std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>())
+        };
 
         let device = &renderer.device.device;
 
         unsafe {
             if let Some(pipeline) = self.pipeline {
                 let color_attachment = vk::RenderingAttachmentInfo::default()
-                    .image_view(renderer.get_pass_resource_view("", "GBufferHDR", current_frame).unwrap_or(renderer.common_shadow_view))
+                    .image_view(
+                        renderer
+                            .get_pass_resource_view("", "GBufferHDR", current_frame)
+                            .unwrap_or(renderer.common_shadow_view),
+                    )
                     .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
                     .store_op(vk::AttachmentStoreOp::STORE)
-                    .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.1, 0.1, 0.1, 1.0] } });
+                    .clear_value(vk::ClearValue {
+                        color: vk::ClearColorValue {
+                            float32: [0.1, 0.1, 0.1, 1.0],
+                        },
+                    });
 
                 let rendering_info = vk::RenderingInfo::default()
-                    .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent,
+                    })
                     .layer_count(1)
                     .color_attachments(std::slice::from_ref(&color_attachment));
 
                 device.cmd_begin_rendering(command_buffer, &rendering_info);
                 device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
-
 
                 device.cmd_bind_descriptor_sets(
                     command_buffer,

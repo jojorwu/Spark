@@ -1,9 +1,9 @@
-use ash::vk;
 use crate::resource::{Attachment, Buffer};
 use crate::Renderer;
 use crate::MAX_FRAMES_IN_FLIGHT;
-use spark_math::{Vec3, Vec4, Mat4};
+use ash::vk;
 use rand::Rng;
+use spark_math::{Mat4, Vec3, Vec4};
 
 pub struct SSAORecordParams<'a> {
     pub renderer: &'a Renderer,
@@ -43,12 +43,18 @@ pub struct SSAOPass {
     pub ssao_blur_images: Vec<Attachment>,
 }
 
-use super::{RenderPass, RenderContext};
+use super::{RenderContext, RenderPass};
 
 impl RenderPass for SSAOPass {
-    fn name(&self) -> &str { "SSAOPass" }
-    fn dependencies(&self) -> Vec<&'static str> { vec!["GBufferPass"] }
-    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.settings.enable_ssao }
+    fn name(&self) -> &str {
+        "SSAOPass"
+    }
+    fn dependencies(&self) -> Vec<&'static str> {
+        vec!["GBufferPass"]
+    }
+    fn is_enabled(&self, renderer: &Renderer) -> bool {
+        renderer.settings.enable_ssao
+    }
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
         let extent = renderer.get_extent();
         let view = renderer.scene_view_matrix_for_pos;
@@ -68,22 +74,63 @@ impl RenderPass for SSAOPass {
     }
 
     fn update_descriptor_sets(&self, renderer: &Renderer) {
-        let normal_views = (0..crate::MAX_FRAMES_IN_FLIGHT).map(|i| renderer.get_pass_resource_view("", "GBufferNormal", i).unwrap()).collect::<Vec<_>>();
-        let depth_views = (0..crate::MAX_FRAMES_IN_FLIGHT).map(|i| renderer.get_pass_resource_view("", "GBufferDepth", i).unwrap()).collect::<Vec<_>>();
+        let normal_views = (0..crate::MAX_FRAMES_IN_FLIGHT)
+            .map(|i| {
+                renderer
+                    .get_pass_resource_view("", "GBufferNormal", i)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let depth_views = (0..crate::MAX_FRAMES_IN_FLIGHT)
+            .map(|i| {
+                renderer
+                    .get_pass_resource_view("", "GBufferDepth", i)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
 
         for i in 0..crate::MAX_FRAMES_IN_FLIGHT {
-            let norm_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(normal_views[i]).sampler(renderer.common_sampler)];
-            let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(depth_views[i]).sampler(renderer.common_sampler)];
-            let noise_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(self.noise_texture.view).sampler(self.noise_texture.sampler)];
-            let out_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::GENERAL).image_view(self.ssao_images[i].view)];
+            let norm_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(normal_views[i])
+                .sampler(renderer.common_sampler)];
+            let depth_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(depth_views[i])
+                .sampler(renderer.common_sampler)];
+            let noise_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(self.noise_texture.view)
+                .sampler(self.noise_texture.sampler)];
+            let out_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::GENERAL)
+                .image_view(self.ssao_images[i].view)];
 
             let writes = [
-                vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[i]).dst_binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&norm_info),
-                vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[i]).dst_binding(1).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&depth_info),
-                vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[i]).dst_binding(2).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&noise_info),
-                vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[i]).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&out_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&norm_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(1)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&depth_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(2)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&noise_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(3)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .image_info(&out_info),
             ];
-            unsafe { renderer.device.device.update_descriptor_sets(&writes, &[]); }
+            unsafe {
+                renderer.device.device.update_descriptor_sets(&writes, &[]);
+            }
         }
     }
 
@@ -135,18 +182,28 @@ impl RenderPass for SSAOPass {
         }
 
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            self.ssao_images.push(Attachment::create_image_resource(
-                device, new_extent.width, new_extent.height,
-                vk::Format::R8_UNORM,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-                vk::SampleCountFlags::TYPE_1,
-            ).unwrap());
-            self.ssao_blur_images.push(Attachment::create_image_resource(
-                device, new_extent.width, new_extent.height,
-                vk::Format::R8_UNORM,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-                vk::SampleCountFlags::TYPE_1,
-            ).unwrap());
+            self.ssao_images.push(
+                Attachment::create_image_resource(
+                    device,
+                    new_extent.width,
+                    new_extent.height,
+                    vk::Format::R8_UNORM,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                    vk::SampleCountFlags::TYPE_1,
+                )
+                .unwrap(),
+            );
+            self.ssao_blur_images.push(
+                Attachment::create_image_resource(
+                    device,
+                    new_extent.width,
+                    new_extent.height,
+                    vk::Format::R8_UNORM,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                    vk::SampleCountFlags::TYPE_1,
+                )
+                .unwrap(),
+            );
         }
     }
 
@@ -168,7 +225,10 @@ impl RenderPass for SSAOPass {
             for img in self.ssao_blur_images.drain(..) {
                 img.destroy(device, &renderer.device.allocator);
             }
-            let texture = std::mem::replace(&mut self.noise_texture, renderer.default_texture.as_ref().unwrap().clone());
+            let texture = std::mem::replace(
+                &mut self.noise_texture,
+                renderer.default_texture.as_ref().unwrap().clone(),
+            );
             renderer.destroy_texture(texture);
         }
     }
@@ -189,7 +249,8 @@ impl SSAOPass {
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(0.0..1.0),
-            ).normalize();
+            )
+            .normalize();
             sample *= rng.gen_range(0.0..1.0);
 
             let mut scale = i as f32 / 64.0;
@@ -207,7 +268,8 @@ impl SSAOPass {
         }
 
         let noise_img = image::DynamicImage::ImageRgba32F(
-            image::Rgba32FImage::from_raw(4, 4, bytemuck::cast_slice(&ssao_noise).to_vec()).unwrap()
+            image::Rgba32FImage::from_raw(4, 4, bytemuck::cast_slice(&ssao_noise).to_vec())
+                .unwrap(),
         );
         let noise_texture = renderer.create_texture_from_image(&noise_img);
 
@@ -224,22 +286,66 @@ impl SSAOPass {
 
         // 4. Descriptor Set Layouts
         let bindings = [
-            vk::DescriptorSetLayoutBinding::default().binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default().binding(1).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default().binding(2).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default().binding(3).descriptor_type(vk::DescriptorType::UNIFORM_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
-        let ds_layout = unsafe { device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings), None)? };
+        let ds_layout = unsafe {
+            device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+                None,
+            )?
+        };
 
         let blur_bindings = [
-            vk::DescriptorSetLayoutBinding::default().binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default().binding(1).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
-        let blur_ds_layout = unsafe { device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&blur_bindings), None)? };
+        let blur_ds_layout = unsafe {
+            device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&blur_bindings),
+                None,
+            )?
+        };
 
         // 5. Pipelines
-        let layout = unsafe { device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&[ds_layout]), None)? };
-        let blur_layout = unsafe { device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&[blur_ds_layout]), None)? };
+        let layout = unsafe {
+            device.create_pipeline_layout(
+                &vk::PipelineLayoutCreateInfo::default().set_layouts(&[ds_layout]),
+                None,
+            )?
+        };
+        let blur_layout = unsafe {
+            device.create_pipeline_layout(
+                &vk::PipelineLayoutCreateInfo::default().set_layouts(&[blur_ds_layout]),
+                None,
+            )?
+        };
 
         let descriptor_sets = unsafe {
             device.allocate_descriptor_sets(
@@ -261,14 +367,18 @@ impl SSAOPass {
         let mut ssao_blur_images = Vec::new();
         let extent = renderer.get_extent();
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
-             ssao_images.push(Attachment::create_image_resource(
-                &renderer.device, extent.width, extent.height,
+            ssao_images.push(Attachment::create_image_resource(
+                &renderer.device,
+                extent.width,
+                extent.height,
                 vk::Format::R8_UNORM,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
                 vk::SampleCountFlags::TYPE_1,
             )?);
             ssao_blur_images.push(Attachment::create_image_resource(
-                &renderer.device, extent.width, extent.height,
+                &renderer.device,
+                extent.width,
+                extent.height,
                 vk::Format::R8_UNORM,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
                 vk::SampleCountFlags::TYPE_1,
@@ -292,38 +402,58 @@ impl SSAOPass {
         })
     }
 
-    pub fn create_pipelines(
-        &mut self,
-        params: SSAOPipelineParams,
-    ) {
+    pub fn create_pipelines(&mut self, params: SSAOPipelineParams) {
         let device = params.device;
         let extent = params.extent;
         let pipeline_cache = params.pipeline_cache;
 
-        let vert_module = crate::pipeline::Pipeline::create_shader_module(device, params.vert_shader);
-        let ssao_module = crate::pipeline::Pipeline::create_shader_module(device, params.ssao_shader);
-        let blur_module = crate::pipeline::Pipeline::create_shader_module(device, params.blur_shader);
+        let vert_module =
+            crate::pipeline::Pipeline::create_shader_module(device, params.vert_shader);
+        let ssao_module =
+            crate::pipeline::Pipeline::create_shader_module(device, params.ssao_shader);
+        let blur_module =
+            crate::pipeline::Pipeline::create_shader_module(device, params.blur_shader);
 
         let entry_point = std::ffi::CString::new("main").unwrap();
 
         // SSAO Pipeline
         let ssao_stages = [
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::VERTEX).module(vert_module).name(&entry_point),
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(ssao_module).name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_module)
+                .name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(ssao_module)
+                .name(&entry_point),
         ];
 
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let viewport = vk::Viewport::default().width(extent.width as f32).height(extent.height as f32).max_depth(1.0);
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport = vk::Viewport::default()
+            .width(extent.width as f32)
+            .height(extent.height as f32)
+            .max_depth(1.0);
         let scissor = vk::Rect2D::default().extent(extent);
-        let viewport_state = vk::PipelineViewportStateCreateInfo::default().viewports(std::slice::from_ref(&viewport)).scissors(std::slice::from_ref(&scissor));
-        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default().cull_mode(vk::CullModeFlags::BACK).front_face(vk::FrontFace::CLOCKWISE).line_width(1.0);
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default().color_write_mask(vk::ColorComponentFlags::RGBA).blend_enable(false);
-        let color_blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(std::slice::from_ref(&color_blend_attachment));
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewports(std::slice::from_ref(&viewport))
+            .scissors(std::slice::from_ref(&scissor));
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(false);
+        let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
+            .attachments(std::slice::from_ref(&color_blend_attachment));
 
         let color_formats = [vk::Format::R8_UNORM];
-        let mut rendering_info = vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
+        let mut rendering_info =
+            vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
 
         let ssao_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&ssao_stages)
@@ -336,12 +466,22 @@ impl SSAOPass {
             .layout(self.layout)
             .push_next(&mut rendering_info);
 
-        self.ssao_pipeline = unsafe { device.create_graphics_pipelines(pipeline_cache, &[ssao_info], None).unwrap()[0] };
+        self.ssao_pipeline = unsafe {
+            device
+                .create_graphics_pipelines(pipeline_cache, &[ssao_info], None)
+                .unwrap()[0]
+        };
 
         // Blur Pipeline
         let blur_stages = [
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::VERTEX).module(vert_module).name(&entry_point),
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(blur_module).name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_module)
+                .name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(blur_module)
+                .name(&entry_point),
         ];
 
         let blur_info = vk::GraphicsPipelineCreateInfo::default()
@@ -355,7 +495,11 @@ impl SSAOPass {
             .layout(self.blur_layout)
             .push_next(&mut rendering_info);
 
-        self.blur_pipeline = unsafe { device.create_graphics_pipelines(pipeline_cache, &[blur_info], None).unwrap()[0] };
+        self.blur_pipeline = unsafe {
+            device
+                .create_graphics_pipelines(pipeline_cache, &[blur_info], None)
+                .unwrap()[0]
+        };
 
         unsafe {
             device.destroy_shader_module(vert_module, None);
@@ -364,10 +508,7 @@ impl SSAOPass {
         }
     }
 
-    pub fn record_commands_impl(
-        &self,
-        params: &SSAORecordParams,
-    ) {
+    pub fn record_commands_impl(&self, params: &SSAORecordParams) {
         let renderer = params.renderer;
         let command_buffer = params.command_buffer;
         let extent = params.extent;
@@ -383,24 +524,56 @@ impl SSAOPass {
                 .old_layout(vk::ImageLayout::UNDEFINED)
                 .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .image(ssao_target_image)
-                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::DependencyFlags::empty(), &[], &[], &[ssao_barrier]);
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+            device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[ssao_barrier],
+            );
 
             let color_attachment = vk::RenderingAttachmentInfo::default()
                 .image_view(ssao_target_view)
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [1.0, 1.0, 1.0, 1.0] } });
+                .clear_value(vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: [1.0, 1.0, 1.0, 1.0],
+                    },
+                });
 
             let rendering_info = vk::RenderingInfo::default()
-                .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent,
+                })
                 .layer_count(1)
                 .color_attachments(std::slice::from_ref(&color_attachment));
 
             device.cmd_begin_rendering(command_buffer, &rendering_info);
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.ssao_pipeline);
-            device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.descriptor_sets[current_frame]], &[]);
+            device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.ssao_pipeline,
+            );
+            device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.layout,
+                0,
+                &[self.descriptor_sets[current_frame]],
+                &[],
+            );
             device.cmd_draw(command_buffer, 3, 1, 0, 0);
             device.cmd_end_rendering(command_buffer);
 
@@ -409,29 +582,68 @@ impl SSAOPass {
                 .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image(ssao_target_image)
-                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
             let blur_init_barrier = vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::UNDEFINED)
                 .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .image(blur_target_image)
-                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::DependencyFlags::empty(), &[], &[], &[ssao_to_shader_barrier, blur_init_barrier]);
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+            device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::FRAGMENT_SHADER
+                    | vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[ssao_to_shader_barrier, blur_init_barrier],
+            );
 
             let blur_attachment = vk::RenderingAttachmentInfo::default()
                 .image_view(blur_target_view)
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [1.0, 1.0, 1.0, 1.0] } });
+                .clear_value(vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: [1.0, 1.0, 1.0, 1.0],
+                    },
+                });
 
             let blur_rendering_info = vk::RenderingInfo::default()
-                .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent,
+                })
                 .layer_count(1)
                 .color_attachments(std::slice::from_ref(&blur_attachment));
 
             device.cmd_begin_rendering(command_buffer, &blur_rendering_info);
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.blur_pipeline);
-            device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.blur_layout, 0, &[self.blur_descriptor_sets[current_frame]], &[]);
+            device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.blur_pipeline,
+            );
+            device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.blur_layout,
+                0,
+                &[self.blur_descriptor_sets[current_frame]],
+                &[],
+            );
             device.cmd_draw(command_buffer, 3, 1, 0, 0);
             device.cmd_end_rendering(command_buffer);
 
@@ -439,8 +651,22 @@ impl SSAOPass {
                 .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image(blur_target_image)
-                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
-            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], &[blur_to_shader_barrier]);
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+            device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[blur_to_shader_barrier],
+            );
         }
     }
 
@@ -470,12 +696,30 @@ impl SSAOPass {
                 .range(self.ssao_params_buffer[i].size)];
 
             let writes = [
-                vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[i]).dst_binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&norm_info),
-                vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[i]).dst_binding(1).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&depth_info),
-                vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[i]).dst_binding(2).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&noise_info),
-                vk::WriteDescriptorSet::default().dst_set(self.descriptor_sets[i]).dst_binding(3).descriptor_type(vk::DescriptorType::UNIFORM_BUFFER).buffer_info(&param_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&norm_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(1)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&depth_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(2)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&noise_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i])
+                    .dst_binding(3)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(&param_info),
             ];
-            unsafe { device.update_descriptor_sets(&writes, &[]); }
+            unsafe {
+                device.update_descriptor_sets(&writes, &[]);
+            }
 
             let ssao_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -486,13 +730,22 @@ impl SSAOPass {
                 .image_view(depth_attachments[i].view)
                 .sampler(sampler)];
             let blur_writes = [
-                vk::WriteDescriptorSet::default().dst_set(self.blur_descriptor_sets[i]).dst_binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&ssao_info),
-                vk::WriteDescriptorSet::default().dst_set(self.blur_descriptor_sets[i]).dst_binding(1).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&depth_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.blur_descriptor_sets[i])
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&ssao_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.blur_descriptor_sets[i])
+                    .dst_binding(1)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&depth_info),
             ];
-            unsafe { device.update_descriptor_sets(&blur_writes, &[]); }
+            unsafe {
+                device.update_descriptor_sets(&blur_writes, &[]);
+            }
         }
     }
-
 }
 
 #[repr(C)]

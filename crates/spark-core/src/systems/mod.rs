@@ -1,10 +1,10 @@
-pub mod component;
 pub mod camera;
+pub mod component;
 pub mod physics;
 pub mod time;
 
-use crate::{System, FrameContext, InitContext};
-use std::collections::{HashSet, HashMap};
+use crate::{FrameContext, InitContext, System};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CoreStage {
@@ -30,11 +30,18 @@ impl SystemRegistry {
         systems.insert(CoreStage::PostUpdate, Vec::new());
         systems.insert(CoreStage::Last, Vec::new());
 
-        Self { systems, sorted_indices: HashMap::new(), active_state: None }
+        Self {
+            systems,
+            sorted_indices: HashMap::new(),
+            active_state: None,
+        }
     }
 
     pub fn add_system<S: System + 'static>(&mut self, system: S) {
-        self.systems.get_mut(&CoreStage::Update).unwrap().push(Box::new(system));
+        self.systems
+            .get_mut(&CoreStage::Update)
+            .unwrap()
+            .push(Box::new(system));
     }
 
     pub fn add_system_to_stage<S: System + 'static>(&mut self, stage: CoreStage, system: S) {
@@ -42,18 +49,29 @@ impl SystemRegistry {
     }
 
     pub fn add_boxed_system(&mut self, system: Box<dyn System>) {
-        self.systems.get_mut(&CoreStage::Update).unwrap().push(system);
+        self.systems
+            .get_mut(&CoreStage::Update)
+            .unwrap()
+            .push(system);
     }
 
     pub fn sort_systems(&mut self) {
-        let stages = [CoreStage::First, CoreStage::PreUpdate, CoreStage::Update, CoreStage::PostUpdate, CoreStage::Last];
+        let stages = [
+            CoreStage::First,
+            CoreStage::PreUpdate,
+            CoreStage::Update,
+            CoreStage::PostUpdate,
+            CoreStage::Last,
+        ];
 
         for stage in stages {
             let mut visited = HashSet::new();
             let mut temp_visited = HashSet::new();
             let stage_systems = self.systems.get_mut(&stage).unwrap();
 
-            let name_to_idx: HashMap<String, usize> = stage_systems.iter().enumerate()
+            let name_to_idx: HashMap<String, usize> = stage_systems
+                .iter()
+                .enumerate()
                 .map(|(i, s)| (s.name().to_string(), i))
                 .collect();
 
@@ -72,7 +90,14 @@ impl SystemRegistry {
                     temp_visited.insert(idx);
                     for dep in systems[idx].dependencies() {
                         if let Some(&dep_idx) = name_to_idx.get(dep) {
-                            visit(dep_idx, systems, name_to_idx, ordered, visited, temp_visited);
+                            visit(
+                                dep_idx,
+                                systems,
+                                name_to_idx,
+                                ordered,
+                                visited,
+                                temp_visited,
+                            );
                         }
                     }
                     temp_visited.remove(&idx);
@@ -83,11 +108,19 @@ impl SystemRegistry {
 
             let mut indices = Vec::new();
             for i in 0..stage_systems.len() {
-                visit(i, stage_systems, &name_to_idx, &mut indices, &mut visited, &mut temp_visited);
+                visit(
+                    i,
+                    stage_systems,
+                    &name_to_idx,
+                    &mut indices,
+                    &mut visited,
+                    &mut temp_visited,
+                );
             }
 
             // Reorder systems within the stage
-            let mut old_systems: Vec<Option<Box<dyn System>>> = stage_systems.drain(..).map(Some).collect();
+            let mut old_systems: Vec<Option<Box<dyn System>>> =
+                stage_systems.drain(..).map(Some).collect();
             for idx in indices {
                 stage_systems.push(old_systems[idx].take().unwrap());
             }
@@ -99,7 +132,9 @@ impl SystemRegistry {
 
     fn build_stage_batches(&mut self, stage: CoreStage) {
         let stage_systems = self.systems.get(&stage).unwrap();
-        let name_to_idx: HashMap<String, usize> = stage_systems.iter().enumerate()
+        let name_to_idx: HashMap<String, usize> = stage_systems
+            .iter()
+            .enumerate()
             .map(|(i, s)| (s.name().to_string(), i))
             .collect();
 
@@ -122,7 +157,10 @@ impl SystemRegistry {
                 conflict = false;
                 for (j, &batch_j) in system_batches.iter().enumerate().take(i) {
                     if batch_j == batch
-                        && system.resource_access().conflicts_with(&stage_systems[j].resource_access()) {
+                        && system
+                            .resource_access()
+                            .conflicts_with(&stage_systems[j].resource_access())
+                    {
                         batch += 1;
                         conflict = true;
                         break;
@@ -141,7 +179,6 @@ impl SystemRegistry {
         self.sorted_indices.insert(stage, sorted_batches);
     }
 }
-
 
 impl Default for SystemRegistry {
     fn default() -> Self {
@@ -172,7 +209,9 @@ impl Scheduler {
         for systems in registry.systems.values_mut() {
             for system in systems {
                 let allowed = system.run_in_states();
-                if allowed.is_empty() { continue; }
+                if allowed.is_empty() {
+                    continue;
+                }
 
                 if let Some(ref old) = old_state {
                     if allowed.contains(old) && !allowed.contains(&state.to_string()) {
@@ -180,7 +219,9 @@ impl Scheduler {
                     }
                 }
 
-                if allowed.contains(&state.to_string()) && (old_state.is_none() || !allowed.contains(old_state.as_ref().unwrap())) {
+                if allowed.contains(&state.to_string())
+                    && (old_state.is_none() || !allowed.contains(old_state.as_ref().unwrap()))
+                {
                     system.on_enter(ctx);
                 }
             }
@@ -188,34 +229,44 @@ impl Scheduler {
     }
 
     pub fn run(registry: &mut SystemRegistry, ctx: &mut FrameContext) {
-        let stages = [CoreStage::First, CoreStage::PreUpdate, CoreStage::Update, CoreStage::PostUpdate, CoreStage::Last];
+        let stages = [
+            CoreStage::First,
+            CoreStage::PreUpdate,
+            CoreStage::Update,
+            CoreStage::PostUpdate,
+            CoreStage::Last,
+        ];
         for stage in stages {
             if let Some(batches) = registry.sorted_indices.get(&stage) {
                 let systems = registry.systems.get_mut(&stage).unwrap();
                 for batch in batches {
                     use rayon::prelude::*;
                     if batch.len() > 1 {
-                        batch.par_iter().for_each(|&idx| {
-                            unsafe {
-                                let systems_ptr = systems.as_ptr() as *mut Box<dyn crate::System>;
-                                let system = &*systems_ptr.add(idx);
-                                if let Some(active) = &registry.active_state {
-                                    let allowed = system.run_in_states();
-                                    if !allowed.is_empty() && !allowed.contains(active) { return; }
+                        batch.par_iter().for_each(|&idx| unsafe {
+                            let systems_ptr = systems.as_ptr() as *mut Box<dyn crate::System>;
+                            let system = &*systems_ptr.add(idx);
+                            if let Some(active) = &registry.active_state {
+                                let allowed = system.run_in_states();
+                                if !allowed.is_empty() && !allowed.contains(active) {
+                                    return;
                                 }
-
-                                let ctx_ptr = ctx as *const FrameContext as *mut FrameContext;
-                                (*systems_ptr.add(idx)).update(&*ctx_ptr);
                             }
+
+                            let ctx_ptr = ctx as *const FrameContext as *mut FrameContext;
+                            (*systems_ptr.add(idx)).update(&*ctx_ptr);
                         });
                     } else if let Some(&idx) = batch.first() {
                         let system = &systems[idx];
                         let mut should_run = true;
                         if let Some(active) = &registry.active_state {
-                             let allowed = system.run_in_states();
-                             if !allowed.is_empty() && !allowed.contains(active) { should_run = false; }
+                            let allowed = system.run_in_states();
+                            if !allowed.is_empty() && !allowed.contains(active) {
+                                should_run = false;
+                            }
                         }
-                        if should_run { systems[idx].update(ctx); }
+                        if should_run {
+                            systems[idx].update(ctx);
+                        }
                     }
                 }
             }
@@ -234,8 +285,12 @@ impl Scheduler {
 pub struct HierarchySystem;
 
 impl System for HierarchySystem {
-    fn name(&self) -> &str { "HierarchySystem" }
-    fn dependencies(&self) -> Vec<&'static str> { vec!["ComponentSystem"] }
+    fn name(&self) -> &str {
+        "HierarchySystem"
+    }
+    fn dependencies(&self) -> Vec<&'static str> {
+        vec!["ComponentSystem"]
+    }
     fn resource_access(&self) -> crate::ResourceAccess {
         crate::ResourceAccess {
             scene: crate::Access::Write,
@@ -244,14 +299,18 @@ impl System for HierarchySystem {
         }
     }
     fn update(&mut self, ctx: &FrameContext) {
-        unsafe { ctx.scene_mut().update_all_transforms(); }
+        unsafe {
+            ctx.scene_mut().update_all_transforms();
+        }
     }
 }
 
 pub struct ResourceSystem;
 
 impl System for ResourceSystem {
-    fn name(&self) -> &str { "ResourceSystem" }
+    fn name(&self) -> &str {
+        "ResourceSystem"
+    }
     fn resource_access(&self) -> crate::ResourceAccess {
         crate::ResourceAccess {
             scene: crate::Access::Read,

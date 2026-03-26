@@ -6,10 +6,11 @@ pub trait Event: Any + Send + Sync {}
 impl Event for crate::event::EngineEvent {}
 
 type EventHandler = Box<dyn Fn(&dyn Any) + Send + Sync>;
+type EventMap = HashMap<TypeId, Vec<Box<dyn Any + Send + Sync>>>;
 
 pub struct EventBus {
     handlers: Arc<Mutex<HashMap<TypeId, Vec<EventHandler>>>>,
-    events: Arc<Mutex<HashMap<TypeId, Vec<Box<dyn Any + Send + Sync>>>>>,
+    events: Arc<Mutex<EventMap>>,
 }
 
 impl EventBus {
@@ -44,14 +45,19 @@ impl EventBus {
 
         // Buffered events
         let mut events = self.events.lock().unwrap();
-        events.entry(TypeId::of::<E>()).or_default().push(Box::new(event));
+        events
+            .entry(TypeId::of::<E>())
+            .or_default()
+            .push(Box::new(event));
     }
 
-    pub fn read_events<E: 'static>(&self) -> Vec<E>
-    where E: Clone + Send + Sync {
+    pub fn read_events<E: Clone + Send + Sync + 'static>(&self) -> Vec<E> {
         let events = self.events.lock().unwrap();
         if let Some(event_list) = events.get(&TypeId::of::<E>()) {
-            event_list.iter().filter_map(|e| e.downcast_ref::<E>().cloned()).collect()
+            event_list
+                .iter()
+                .filter_map(|e| e.downcast_ref::<E>().cloned())
+                .collect()
         } else {
             Vec::new()
         }

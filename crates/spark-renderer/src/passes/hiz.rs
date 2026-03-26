@@ -1,6 +1,6 @@
+use crate::vulkan::device::VulkanDevice;
 use ash::vk;
 use std::sync::{Arc, Mutex};
-use crate::vulkan::device::VulkanDevice;
 
 pub struct HiZPass {
     pub pipeline: vk::Pipeline,
@@ -16,17 +16,31 @@ pub struct HiZPass {
     pub mip_levels: u32,
 }
 
-use super::{RenderPass, RenderContext};
+use super::{RenderContext, RenderPass};
 use crate::Renderer;
 
 impl RenderPass for HiZPass {
-    fn name(&self) -> &str { "HiZPass" }
+    fn name(&self) -> &str {
+        "HiZPass"
+    }
 
     fn needs_descriptor_update(&self, renderer: &Renderer, frame_index: usize) -> bool {
-        let prev_frame = (frame_index + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT;
-        let depth_version = renderer.render_graph.physical_attachments.get("GBufferDepth").map(|a| a[prev_frame].version.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(0);
+        let prev_frame =
+            (frame_index + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT;
+        let depth_version = renderer
+            .render_graph
+            .physical_attachments
+            .get("GBufferDepth")
+            .map(|a| {
+                a[prev_frame]
+                    .version
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            })
+            .unwrap_or(0);
 
-        let pass_versions = renderer.pass_descriptor_versions[frame_index].lock().unwrap();
+        let pass_versions = renderer.pass_descriptor_versions[frame_index]
+            .lock()
+            .unwrap();
         if let Some(&v) = pass_versions.get(self.name()) {
             return v != depth_version;
         }
@@ -47,11 +61,14 @@ impl RenderPass for HiZPass {
         let command_buffer = ctx.command_buffer;
         let current_frame = ctx.current_frame;
 
-        let prev_frame = (current_frame + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT;
+        let prev_frame =
+            (current_frame + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT;
         self.record_commands_impl(
             renderer,
             command_buffer,
-            renderer.get_pass_resource_view("", "GBufferDepth", prev_frame).unwrap_or(renderer.common_shadow_view),
+            renderer
+                .get_pass_resource_view("", "GBufferDepth", prev_frame)
+                .unwrap_or(renderer.common_shadow_view),
             renderer.common_sampler,
             current_frame,
         );
@@ -84,22 +101,25 @@ impl RenderPass for HiZPass {
         self.height = new_extent.height;
         self.mip_levels = (self.width.max(self.height) as f32).log2().floor() as u32 + 1;
 
-        let (image, allocation) = device.create_image(
-            &crate::vulkan::device::ImageCreateParams {
+        let (image, allocation) = device
+            .create_image(&crate::vulkan::device::ImageCreateParams {
                 width: self.width,
                 height: self.height,
                 mip_levels: self.mip_levels,
                 format: vk::Format::R32_SFLOAT,
                 tiling: vk::ImageTiling::OPTIMAL,
-                usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
+                usage: vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::STORAGE
+                    | vk::ImageUsageFlags::TRANSFER_DST,
                 properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
                 samples: vk::SampleCountFlags::TYPE_1,
-            }
-        ).unwrap();
+            })
+            .unwrap();
 
         self.pyramid_image = image;
         *self.pyramid_allocation.lock().unwrap() = Some(allocation);
-        self.pyramid_view = device.create_image_view(image, vk::Format::R32_SFLOAT, self.mip_levels);
+        self.pyramid_view =
+            device.create_image_view(image, vk::Format::R32_SFLOAT, self.mip_levels);
 
         self.mip_views.clear();
         for i in 0..self.mip_levels {
@@ -114,7 +134,8 @@ impl RenderPass for HiZPass {
                     base_array_layer: 0,
                     layer_count: 1,
                 });
-            self.mip_views.push(unsafe { device.device.create_image_view(&view_info, None).unwrap() });
+            self.mip_views
+                .push(unsafe { device.device.create_image_view(&view_info, None).unwrap() });
         }
     }
 
@@ -127,7 +148,13 @@ impl RenderPass for HiZPass {
             device.destroy_image_view(self.pyramid_view, None);
             device.destroy_image(self.pyramid_image, None);
             if let Some(alloc) = self.pyramid_allocation.lock().unwrap().take() {
-                renderer.device.allocator.lock().unwrap().free(alloc).unwrap();
+                renderer
+                    .device
+                    .allocator
+                    .lock()
+                    .unwrap()
+                    .free(alloc)
+                    .unwrap();
             }
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.layout, None);
@@ -146,18 +173,19 @@ impl HiZPass {
     ) -> Result<Self, crate::error::RendererError> {
         let mip_levels = (width.max(height) as f32).log2().floor() as u32 + 1;
 
-        let (image, allocation) = device.create_image(
-            &crate::vulkan::device::ImageCreateParams {
+        let (image, allocation) =
+            device.create_image(&crate::vulkan::device::ImageCreateParams {
                 width,
                 height,
                 mip_levels,
                 format: vk::Format::R32_SFLOAT,
                 tiling: vk::ImageTiling::OPTIMAL,
-                usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
+                usage: vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::STORAGE
+                    | vk::ImageUsageFlags::TRANSFER_DST,
                 properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
                 samples: vk::SampleCountFlags::TYPE_1,
-            }
-        )?;
+            })?;
 
         let pyramid_view = device.create_image_view(image, vk::Format::R32_SFLOAT, mip_levels);
 
@@ -218,19 +246,26 @@ impl HiZPass {
         };
 
         let pipeline = unsafe {
-            device.device.create_compute_pipelines(
-                vk::PipelineCache::null(),
-                &[vk::ComputePipelineCreateInfo::default()
-                    .stage(vk::PipelineShaderStageCreateInfo::default()
-                        .stage(vk::ShaderStageFlags::COMPUTE)
-                        .module(shader_module)
-                        .name(c"main"))
-                    .layout(layout)],
-                None,
-            ).map_err(|e| e.1)?[0]
+            device
+                .device
+                .create_compute_pipelines(
+                    vk::PipelineCache::null(),
+                    &[vk::ComputePipelineCreateInfo::default()
+                        .stage(
+                            vk::PipelineShaderStageCreateInfo::default()
+                                .stage(vk::ShaderStageFlags::COMPUTE)
+                                .module(shader_module)
+                                .name(c"main"),
+                        )
+                        .layout(layout)],
+                    None,
+                )
+                .map_err(|e| e.1)?[0]
         };
 
-        unsafe { device.device.destroy_shader_module(shader_module, None); }
+        unsafe {
+            device.device.destroy_shader_module(shader_module, None);
+        }
 
         let mut descriptor_sets = Vec::new();
         if mip_levels > 1 {
@@ -273,7 +308,11 @@ impl HiZPass {
     ) {
         let device = &renderer.device.device;
         unsafe {
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline,
+            );
 
             let mut w = self.width;
             let mut h = self.height;
@@ -282,7 +321,11 @@ impl HiZPass {
                 w = (w >> 1).max(1);
                 h = (h >> 1).max(1);
 
-                let src_view = if i == 0 { depth_view } else { self.mip_views[i as usize] };
+                let src_view = if i == 0 {
+                    depth_view
+                } else {
+                    self.mip_views[i as usize]
+                };
                 let dst_view = self.mip_views[(i + 1) as usize];
 
                 let img_info = [vk::DescriptorImageInfo::default()
@@ -310,9 +353,22 @@ impl HiZPass {
                 device.update_descriptor_sets(&writes, &[]);
 
                 // Track depth version
-                let prev_idx = (frame_index + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT;
-                let depth_version = renderer.render_graph.physical_attachments.get("GBufferDepth").map(|a| a[prev_idx].version.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(0);
-                renderer.pass_descriptor_versions[frame_index].lock().unwrap().insert(self.name().to_string(), depth_version);
+                let prev_idx =
+                    (frame_index + crate::MAX_FRAMES_IN_FLIGHT - 1) % crate::MAX_FRAMES_IN_FLIGHT;
+                let depth_version = renderer
+                    .render_graph
+                    .physical_attachments
+                    .get("GBufferDepth")
+                    .map(|a| {
+                        a[prev_idx]
+                            .version
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                    })
+                    .unwrap_or(0);
+                renderer.pass_descriptor_versions[frame_index]
+                    .lock()
+                    .unwrap()
+                    .insert(self.name().to_string(), depth_version);
 
                 device.cmd_bind_descriptor_sets(
                     command_buffer,
@@ -325,7 +381,13 @@ impl HiZPass {
 
                 let pc = [w as f32, h as f32];
                 let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 8);
-                device.cmd_push_constants(command_buffer, self.layout, vk::ShaderStageFlags::COMPUTE, 0, pc_bytes);
+                device.cmd_push_constants(
+                    command_buffer,
+                    self.layout,
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    pc_bytes,
+                );
 
                 device.cmd_dispatch(command_buffer, w.div_ceil(16), h.div_ceil(16), 1);
 
@@ -347,10 +409,11 @@ impl HiZPass {
                     vk::PipelineStageFlags::COMPUTE_SHADER,
                     vk::PipelineStageFlags::COMPUTE_SHADER,
                     vk::DependencyFlags::empty(),
-                    &[], &[], &[barrier],
+                    &[],
+                    &[],
+                    &[barrier],
                 );
             }
         }
     }
-
 }

@@ -1,6 +1,6 @@
-use crate::scene::{Node, NodeKey, Component};
 use crate::resource::ResourceManager;
 use crate::scene::Scene;
+use crate::scene::{Component, Node, NodeKey};
 
 pub trait Command: Send + Sync {
     fn apply(&mut self, scene: &mut Scene, resource_manager: &mut ResourceManager);
@@ -29,7 +29,7 @@ impl Command for TransformCommand {
     fn apply(&mut self, scene: &mut Scene, _rm: &mut ResourceManager) {
         if let Some(node) = scene.nodes.get_mut(self.node) {
             if self.relative {
-                node.local_transform = node.local_transform * self.transform;
+                node.local_transform *= self.transform;
             } else {
                 node.local_transform = self.transform;
             }
@@ -71,7 +71,9 @@ pub struct CommandQueue {
 
 impl CommandQueue {
     pub fn new() -> Self {
-        Self { commands: Mutex::new(Vec::new()) }
+        Self {
+            commands: Mutex::new(Vec::new()),
+        }
     }
 
     pub fn push<C: Command + 'static>(&self, command: C) {

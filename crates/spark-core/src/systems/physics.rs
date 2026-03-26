@@ -1,5 +1,5 @@
 use crate::scene::{Component, NodeKey};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use spark_math::Vec3;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -11,9 +11,15 @@ pub struct RigidBody {
 
 #[typetag::serde]
 impl Component for RigidBody {
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
-    fn clone_box(&self) -> Box<dyn Component> { Box::new(self.clone()) }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn Component> {
+        Box::new(self.clone())
+    }
     fn on_update(&mut self, node_key: NodeKey, ctx: &crate::FrameContext) {
         if self.use_gravity {
             let gravity = ctx.project.physics_settings.gravity;
@@ -21,9 +27,9 @@ impl Component for RigidBody {
         }
 
         ctx.command_queue.push(crate::command::TransformCommand {
-             node: node_key,
-             transform: spark_math::Mat4::from_translation(self.velocity * ctx.delta),
-             relative: true,
+            node: node_key,
+            transform: spark_math::Mat4::from_translation(self.velocity * ctx.delta),
+            relative: true,
         });
     }
 }
@@ -41,16 +47,26 @@ pub struct SphereCollider {
 
 #[typetag::serde]
 impl Component for SphereCollider {
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
-    fn clone_box(&self) -> Box<dyn Component> { Box::new(self.clone()) }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn Component> {
+        Box::new(self.clone())
+    }
 }
 
 pub struct PhysicsSystem;
 
 impl crate::System for PhysicsSystem {
-    fn name(&self) -> &str { "PhysicsSystem" }
-    fn dependencies(&self) -> Vec<&'static str> { vec!["TimeSystem"] }
+    fn name(&self) -> &str {
+        "PhysicsSystem"
+    }
+    fn dependencies(&self) -> Vec<&'static str> {
+        vec!["TimeSystem"]
+    }
     fn resource_access(&self) -> crate::ResourceAccess {
         crate::ResourceAccess {
             scene: crate::Access::Write,

@@ -1,5 +1,5 @@
-use ash::vk;
 use crate::Renderer;
+use ash::vk;
 
 pub struct ReflectionProbe {
     pub image: vk::Image,
@@ -24,10 +24,7 @@ pub struct IBLMaps {
 }
 
 impl IBLMaps {
-    pub fn new(
-        _renderer: &Renderer,
-        _env_view: vk::ImageView,
-    ) -> Self {
+    pub fn new(_renderer: &Renderer, _env_view: vk::ImageView) -> Self {
         Self {
             irradiance_image: vk::Image::null(),
             irradiance_view: vk::ImageView::null(),
