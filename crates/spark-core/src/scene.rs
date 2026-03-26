@@ -427,6 +427,7 @@ impl Scene {
                             vertex_offset: r.4,
                             material_index: mat_idx,
                             bounding_radius: r.7,
+                            mesh_id: r.3, // Using first_index as mesh_id
                         })
                     } else {
                         None
@@ -446,6 +447,7 @@ impl Scene {
                             vertex_offset: r.4,
                             material_index: mat_idx,
                             bounding_radius: r.7,
+                    mesh_id: r.3, // Using first_index as mesh_id
                         })
                     } else {
                         None
@@ -469,6 +471,7 @@ impl Scene {
                     vertex_offset: *vo,
                     material_index: midx,
                     bounding_radius: br,
+                    mesh_id: *fi,
                 };
                 (draw, is_transparent)
             }).collect()

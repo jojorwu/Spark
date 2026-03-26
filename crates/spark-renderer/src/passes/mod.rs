@@ -17,6 +17,8 @@ pub mod point_shadow;
 pub mod ssgi;
 pub mod luminance;
 pub mod dof;
+pub mod rt;
+pub mod as_build;
 
 use ash::vk;
 use crate::Renderer;
@@ -30,12 +32,23 @@ pub struct RenderContext<'a> {
 }
 
 /// A trait representing a modular rendering pass.
+pub enum ResourceBinding {
+    StorageImage(String),
+    SampledImage(String),
+    StorageBuffer(String),
+    UniformBuffer(String),
+    AccelerationStructure(String),
+}
+
 pub trait RenderPass: Send + Sync {
     /// Returns the unique name of the rendering pass.
     fn name(&self) -> &str;
 
     /// Declarative GPU resource requirements for the pass.
     fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> { Vec::new() }
+
+    /// Returns the list of resource bindings required by this pass.
+    fn bindings(&self) -> Vec<ResourceBinding> { Vec::new() }
 
     /// Returns true if the pass is currently enabled and should be executed.
     fn is_enabled(&self, _renderer: &Renderer) -> bool {
@@ -45,11 +58,16 @@ pub trait RenderPass: Send + Sync {
     /// Per-frame resource updates (e.g., uploading UBOs, updating dynamic descriptor sets).
     fn prepare(&self, _renderer: &Renderer, _current_frame: usize) {}
 
+    fn set_tlas(&self, _tlas: crate::vulkan::as_manager::AccelerationStructure, _frame_index: usize, _renderer: &Renderer) {}
+
     /// Performs initial or global descriptor set updates for the pass.
     fn update_descriptor_sets(&self, _renderer: &Renderer) {}
 
     /// Checks if descriptors need updating based on resource versions.
     fn needs_descriptor_update(&self, _renderer: &Renderer, _frame_index: usize) -> bool { true }
+
+    fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout { vk::DescriptorSetLayout::null() }
+    fn set_descriptor_sets(&mut self, _sets: Vec<vk::DescriptorSet>) {}
 
     /// Records Vulkan commands for this pass into the provided command buffer.
     fn record_commands(&self, ctx: &RenderContext);

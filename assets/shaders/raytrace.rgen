@@ -1,0 +1,172 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_scalar_block_layout : enable
+
+#include "raytrace_common.glsl"
+
+layout(binding = 0, set = 1) uniform accelerationStructureEXT topLevelAS;
+layout(binding = 1, set = 1, rgba16f) uniform image2D image;
+layout(binding = 6, set = 1, scalar) buffer Lights { Light l[]; } lights;
+layout(binding = 7, set = 1) uniform sampler2D gBufferDepth;
+layout(binding = 8, set = 1) uniform sampler2D gBufferNormal;
+layout(binding = 9, set = 1) uniform sampler2D gBufferAlbedo;
+layout(binding = 10, set = 1) uniform sampler2D gBufferPBR;
+
+layout(location = 0) rayPayloadEXT RayPayload payload;
+
+layout(set = 0, binding = 0) uniform GlobalUBO {
+    mat4 vp;
+    mat4 lvp[4];
+    mat4 inv_vp;
+    vec4 camera_pos;
+    vec4 frustum[6];
+    vec4 cascade_splits;
+} ubo;
+
+layout(push_constant) uniform PushConstants {
+    float reflections_enabled;
+    float shadows_enabled;
+    float ao_enabled;
+    float gi_enabled;
+} pc;
+
+uint seed;
+
+float random() {
+    seed = (seed ^ 61) ^ (seed >> 16);
+    seed *= 9;
+    seed = seed ^ (seed >> 4);
+    seed *= 0x27d4eb2d;
+    seed = seed ^ (seed >> 15);
+    return float(seed) / 4294967296.0;
+}
+
+vec3 randomHemispherePoint(vec3 n) {
+    float u1 = random();
+    float u2 = random();
+    float r = sqrt(u1);
+    float phi = 2.0 * PI * u2;
+    vec3 p = vec3(r * cos(phi), r * sin(phi), sqrt(1.0 - u1));
+
+    vec3 up = abs(n.z) < 0.999 ? vec3(0, 0, 1) : vec3(1, 0, 0);
+    vec3 tangent = normalize(cross(up, n));
+    vec3 bitangent = cross(n, tangent);
+
+    return p.x * tangent + p.y * bitangent + p.z * n;
+}
+
+vec3 calculateLighting(vec3 hitPos, vec3 normal, vec3 albedo, vec3 viewDir, float roughness, float metallic, vec3 emissive) {
+    vec3 color = emissive;
+
+    for (int i = 0; i < 16; i++) {
+        Light light = lights.l[i];
+        if (light.col_intensity.w <= 0.0) break;
+
+        vec3 L;
+        float dist;
+        float attenuation = 1.0;
+
+        if (light.dir_type.w == 0.0) {
+            L = normalize(-light.dir_type.xyz);
+            dist = 1000.0;
+        } else {
+            vec3 lightVec = light.pos_range.xyz - hitPos;
+            dist = length(lightVec);
+            L = lightVec / dist;
+            attenuation = max(1.0 - (dist / light.pos_range.w), 0.0);
+
+            if (light.dir_type.w == 2.0) {
+                float theta = dot(L, normalize(-light.dir_type.xyz));
+                float epsilon = light.spot_angles.x - light.spot_angles.y;
+                attenuation *= clamp((theta - light.spot_angles.y) / epsilon, 0.0, 1.0);
+            }
+        }
+
+        float dotNL = max(dot(normal, L), 0.0);
+        if (dotNL <= 0.0) continue;
+
+        vec3 lightContrib = brdf(L, viewDir, normal, albedo, metallic, roughness) * light.col_intensity.rgb * light.col_intensity.w * attenuation;
+
+        if (pc.shadows_enabled > 0.5) {
+            uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+
+            payload.hit = 1; // Assume hit for shadow ray logic
+            traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, L, dist, 0);
+            if (payload.hit == 1) lightContrib *= 0.05;
+        }
+        color += lightContrib;
+    }
+    return color;
+}
+
+void main()
+{
+    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+    const vec2 inUV = pixelCenter/vec2(gl_LaunchSizeEXT.xy);
+
+    float depth = texture(gBufferDepth, inUV).r;
+    if (depth == 1.0) {
+        imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(0.01, 0.01, 0.05, 1.0));
+        return;
+    }
+
+    vec3 normal = texture(gBufferNormal, inUV).xyz * 2.0 - 1.0;
+    vec3 albedo = texture(gBufferAlbedo, inUV).rgb;
+    vec4 pbr = texture(gBufferPBR, inUV);
+
+    vec4 clipPos = vec4(inUV * 2.0 - 1.0, depth, 1.0);
+    vec4 worldPos = ubo.inv_vp * clipPos;
+    worldPos /= worldPos.w;
+    vec3 hitPos = worldPos.xyz;
+
+    seed = uint(gl_LaunchIDEXT.y * gl_LaunchSizeEXT.x + gl_LaunchIDEXT.x);
+    vec3 viewDir = normalize(ubo.camera_pos.xyz - hitPos);
+
+    float roughness = pbr.g;
+    float metallic = pbr.r;
+    vec3 emissive = vec3(0.0);
+
+    vec3 finalColor = calculateLighting(hitPos, normal, albedo, viewDir, roughness, metallic, emissive);
+
+    if (pc.ao_enabled > 0.5) {
+        float ao = 0.0;
+        const int aoSamples = 4;
+        for (int i = 0; i < aoSamples; i++) {
+            vec3 aoDir = randomHemispherePoint(normal);
+            uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+
+            payload.hit = 1;
+            traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, aoDir, 2.0, 0);
+            if (payload.hit == 0) ao += 1.0;
+        }
+        ao /= float(aoSamples);
+        finalColor *= (0.3 + 0.7 * ao);
+    }
+
+    if (pc.reflections_enabled > 0.5) {
+        vec3 reflectDir = reflect(-viewDir, normal);
+        payload.hit = 0;
+        traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, reflectDir, 1000.0, 0);
+        if (payload.hit == 1) {
+            vec3 rHitPos = hitPos + reflectDir * payload.dist;
+            vec3 reflectColor = calculateLighting(rHitPos, payload.normal, payload.color, -reflectDir, payload.roughness, payload.metallic, payload.emissive);
+
+            vec3 F = fresnelSchlick(max(dot(normal, viewDir), 0.0), mix(vec3(0.04), albedo, metallic));
+            finalColor = mix(finalColor, reflectColor, F);
+        }
+    }
+
+    if (pc.gi_enabled > 0.5) {
+        vec3 giDir = randomHemispherePoint(normal);
+        payload.hit = 0;
+        traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, giDir, 1000.0, 0);
+        if (payload.hit == 1) {
+            vec3 giHitPos = hitPos + giDir * payload.dist;
+            vec3 giColor = calculateLighting(giHitPos, payload.normal, payload.color, -giDir, payload.roughness, payload.metallic, payload.emissive);
+            finalColor += giColor * albedo * 0.5;
+        }
+    }
+
+    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(finalColor, 1.0));
+}

@@ -52,6 +52,7 @@ pub struct Renderer {
     pub common_sampler: vk::Sampler,
     pub common_shadow_view: vk::ImageView,
     pub hiz_view: vk::ImageView,
+    pub as_manager: std::sync::Arc<std::sync::Mutex<crate::vulkan::as_manager::AccelerationStructureManager>>,
     egui_renderer: Option<EguiRenderer>,
     pub bindless_descriptor_set_layout: vk::DescriptorSetLayout,
     pub bindless_descriptor_set: vk::DescriptorSet,
@@ -67,6 +68,7 @@ pub struct Renderer {
     pub pass_descriptor_versions: Vec<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
     pub dummy_buffer: Buffer,
     pub culling_finished_semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
+    pub current_packet: Option<crate::resource::FramePacket>,
 }
 
 #[repr(C)]
@@ -243,6 +245,7 @@ impl Renderer {
                     transparent_object_buffer: None,
                 secondary_command_buffers: Vec::new(),
                 light_view_projs: [spark_math::Mat4::IDENTITY; 4],
+                scratch_buffers: Vec::new(),
                 }
             })
             .collect::<Vec<_>>()
@@ -301,6 +304,8 @@ impl Renderer {
             pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).collect(),
             dummy_buffer,
             culling_finished_semaphores: [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT],
+            as_manager: std::sync::Arc::new(std::sync::Mutex::new(crate::vulkan::as_manager::AccelerationStructureManager::new())),
+            current_packet: None,
         };
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
@@ -1202,17 +1207,20 @@ impl Renderer {
         self.device.msaa_samples
     }
 
-    pub fn get_pass_resource_view(&self, pass_name: &str, resource_name: &str, frame_index: usize) -> Option<vk::ImageView> {
-        for pass_node in &self.render_graph.passes {
-            if pass_node.pass.name() == pass_name {
-                if let Some(view) = pass_node.pass.get_resource_view(resource_name, frame_index) {
-                    return Some(view);
-                }
-            }
-        }
+    pub fn get_pass_resource_view(&self, _pass_name: &str, resource_name: &str, frame_index: usize) -> Option<vk::ImageView> {
         // Check graph-managed physical attachments
         if let Some(attachments) = self.render_graph.physical_attachments.get(resource_name) {
             return Some(attachments[frame_index].view);
+        }
+        // Check graph-managed transient attachments
+        if let Some(attachments) = self.render_graph.transient_attachments.get(resource_name) {
+            return Some(attachments[frame_index].view);
+        }
+
+        for pass_node in &self.render_graph.passes {
+            if let Some(view) = pass_node.pass.get_resource_view(resource_name, frame_index) {
+                return Some(view);
+            }
         }
         None
     }
@@ -1251,7 +1259,9 @@ impl Renderer {
     }
 
     pub fn compile_render_graph(&mut self) {
-        self.render_graph.compile();
+        let mut graph = std::mem::take(&mut self.render_graph);
+        graph.compile(self);
+        self.render_graph = graph;
     }
 
     /// Calculates the six frustum planes from a view-projection matrix.
@@ -1283,6 +1293,7 @@ impl Renderer {
         &mut self,
         packet: crate::resource::FramePacket,
     ) -> u32 {
+        self.current_packet = Some(packet.clone());
         self.scene_view_matrix_for_pos = packet.view_matrix;
 
         // 1. Prepare GPU Indirect and Object buffers in parallel
@@ -1312,7 +1323,7 @@ impl Renderer {
         let total_objects = object_ssbos.len() as u32;
 
         // 1.1 Prepare Transparent buffers (with simple back-to-front sorting)
-        let mut transparent_meshes = packet.transparent_meshes;
+        let mut transparent_meshes = packet.transparent_meshes.clone();
         let view_pos = packet.view_matrix.inverse().w_axis.xyz();
         transparent_meshes.par_sort_by(|a, b| {
             let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
@@ -1698,6 +1709,9 @@ impl Drop for Renderer {
             if let Some(mb) = self.global_material_buffer.take() {
                 self.device.destroy_buffer(mb);
             }
+
+            self.as_manager.lock().unwrap().cleanup(&self.device);
+
 
             for sem in self.culling_finished_semaphores {
                 self.device.device.destroy_semaphore(sem, None);
