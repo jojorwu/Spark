@@ -82,7 +82,7 @@ void main() {
     vec3 color = hdrColor + fogColor;
 
     // Integrate RT results
-    bool rt_any = (params.rt_reflections_enabled > 0.5 || params.rt_shadows_enabled > 0.5 || params.rt_ao_enabled > 0.5);
+    bool rt_any = (params.rt_reflections_enabled > 0.5 || params.rt_shadows_enabled > 0.5 || params.rt_ao_enabled > 0.5 || params.rt_gi_enabled > 0.5);
     if (rt_any) {
         // In this implementation, the RT pass calculates the full lit scene if any RT features are on.
         // We mix it with the rasterized result.

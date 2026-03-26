@@ -75,29 +75,17 @@ impl RenderPass for RayTracingPass {
     }
     fn outputs(&self) -> Vec<&'static str> { vec!["RTOutput"] }
 
-    fn needs_descriptor_update(&self, renderer: &Renderer, frame_index: usize) -> bool {
-        if self.pipeline == vk::Pipeline::null() { return false; }
-
-        let mut version = 0u64;
-        if let Some(ref vb) = renderer.global_vertex_buffer { version += vb.version.load(Ordering::Relaxed); }
-        if let Some(ref ib) = renderer.global_index_buffer { version += ib.version.load(Ordering::Relaxed); }
-        if let Some(ref mat) = renderer.global_material_buffer { version += mat.version.load(Ordering::Relaxed); }
-        {
-            let as_manager = renderer.as_manager.lock().unwrap();
-            if let Some(ref tlas) = as_manager.current_tlas[frame_index] { version += tlas.buffer.version.load(Ordering::Relaxed); }
-        }
-
-        version != self.descriptor_versions[frame_index].load(Ordering::Relaxed)
+    fn needs_descriptor_update(&self, _renderer: &Renderer, _frame_index: usize) -> bool {
+        // Force update every frame to ensure TLAS handle is fresh
+        true
     }
 
-    fn update_descriptor_sets(&self, renderer: &Renderer) {
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
-             self.prepare_internal(renderer, i);
-        }
+    fn update_descriptor_sets(&self, _renderer: &Renderer) {
+        // Now handled per-frame in prepare
     }
 
-    fn prepare(&self, _renderer: &Renderer, _current_frame: usize) {
-        // Handled by RenderGraph if we use versioning correctly
+    fn prepare(&self, renderer: &Renderer, current_frame: usize) {
+        self.prepare_internal(renderer, current_frame);
     }
 
     fn record_commands(&self, ctx: &RenderContext) {
@@ -122,7 +110,11 @@ impl RayTracingPass {
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
                 self.layout,
                 0,
-                &[renderer.frames[ctx.current_frame].global_descriptor_set, self.descriptor_sets[ctx.current_frame]],
+                &[
+                    renderer.frames[ctx.current_frame].global_descriptor_set,
+                    self.descriptor_sets[ctx.current_frame],
+                    renderer.bindless_descriptor_set,
+                ],
                 &[],
             );
 
@@ -344,7 +336,7 @@ impl RayTracingPass {
         unsafe {
             Ok(device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(&[renderer.global_descriptor_set_layout, ds_layout])
+                    .set_layouts(&[renderer.global_descriptor_set_layout, ds_layout, renderer.bindless_descriptor_set_layout])
                     .push_constant_ranges(&[pc_range]),
                 None,
             )?)

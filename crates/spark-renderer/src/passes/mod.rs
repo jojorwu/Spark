@@ -66,6 +66,9 @@ pub trait RenderPass: Send + Sync {
     /// Checks if descriptors need updating based on resource versions.
     fn needs_descriptor_update(&self, _renderer: &Renderer, _frame_index: usize) -> bool { true }
 
+    fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout { vk::DescriptorSetLayout::null() }
+    fn set_descriptor_sets(&mut self, _sets: Vec<vk::DescriptorSet>) {}
+
     /// Records Vulkan commands for this pass into the provided command buffer.
     fn record_commands(&self, ctx: &RenderContext);
 

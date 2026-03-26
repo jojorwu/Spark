@@ -27,6 +27,7 @@ pub struct RenderGraphPassNode {
     pub pass: Box<dyn RenderPass>,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
+    pub descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
 pub struct RenderGraph {
@@ -35,6 +36,7 @@ pub struct RenderGraph {
     pub sorted_passes: Vec<usize>,
     pub physical_attachments: HashMap<String, Vec<crate::resource::Attachment>>,
     pub transient_attachments: HashMap<String, Vec<crate::resource::Attachment>>,
+    pub descriptor_pool: vk::DescriptorPool,
 }
 
 impl RenderGraph {
@@ -45,6 +47,7 @@ impl RenderGraph {
             sorted_passes: Vec::new(),
             physical_attachments: HashMap::new(),
             transient_attachments: HashMap::new(),
+            descriptor_pool: vk::DescriptorPool::null(),
         }
     }
 
@@ -53,10 +56,27 @@ impl RenderGraph {
             pass: Box::new(pass),
             inputs: inputs.iter().map(|&s| s.to_string()).collect(),
             outputs: outputs.iter().map(|&s| s.to_string()).collect(),
+            descriptor_sets: Vec::new(),
         });
     }
 
     pub fn compile(&mut self, renderer: &mut crate::Renderer) {
+        if self.descriptor_pool == vk::DescriptorPool::null() {
+            let sizes = [
+                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_IMAGE).descriptor_count(100),
+                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(100),
+                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(100),
+                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::UNIFORM_BUFFER).descriptor_count(100),
+                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(100),
+            ];
+            self.descriptor_pool = unsafe {
+                renderer.device.device.create_descriptor_pool(
+                    &vk::DescriptorPoolCreateInfo::default().pool_sizes(&sizes).max_sets(100),
+                    None,
+                ).unwrap()
+            };
+        }
+
         let mut visited = HashSet::new();
         let mut temp_visited = HashSet::new();
         let mut order = Vec::new();
@@ -116,12 +136,34 @@ impl RenderGraph {
 
         self.sorted_passes = order;
 
+        // Ensure descriptor set layout is available if needed and allocate descriptor sets
+        for pass_node in &mut self.passes {
+            let layout = pass_node.pass.descriptor_set_layout();
+            if layout == vk::DescriptorSetLayout::null() { continue; }
+
+            let layouts = [layout; crate::MAX_FRAMES_IN_FLIGHT];
+            let ds = unsafe {
+                renderer.device.device.allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(self.descriptor_pool)
+                        .set_layouts(&layouts),
+                ).unwrap()
+            };
+            pass_node.descriptor_sets = ds.clone();
+            pass_node.pass.set_descriptor_sets(ds);
+        }
+
         // Automatically create transient resources for outputs that are not physical
+        // Improved version with simple aliasing (reusing attachments with same name across compatible passes if logic allows)
+        // For now, it just ensures unique transient resources for each unique output name
         let extent = renderer.get_extent();
         for pass in &self.passes {
             for output in &pass.outputs {
                 if !self.physical_attachments.contains_key(output) && !self.transient_attachments.contains_key(output) {
-                    let format = if output.contains("Depth") { renderer.device.depth_format } else { vk::Format::R16G16B16A16_SFLOAT };
+                    let format = if output.contains("Depth") { renderer.device.depth_format }
+                                 else if output.contains("Normal") || output.contains("HDR") || output.contains("RTOutput") { vk::Format::R16G16B16A16_SFLOAT }
+                                 else { vk::Format::R8G8B8A8_UNORM };
+
                     let usage = if output.contains("Depth") {
                         vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED
                     } else {
@@ -146,6 +188,8 @@ impl RenderGraph {
 
     pub fn execute(&self, ctx: &RenderContext, secondary_commands: &[Vec<vk::CommandBuffer>]) {
         let renderer = ctx.renderer;
+
+
         // 2. Execution
         for &idx in &self.sorted_passes {
             let pass_node = &self.passes[idx];

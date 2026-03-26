@@ -157,5 +157,16 @@ void main()
         }
     }
 
+    if (pc.gi_enabled > 0.5) {
+        vec3 giDir = randomHemispherePoint(normal);
+        payload.hit = 0;
+        traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, giDir, 1000.0, 0);
+        if (payload.hit == 1) {
+            vec3 giHitPos = hitPos + giDir * payload.dist;
+            vec3 giColor = calculateLighting(giHitPos, payload.normal, payload.color, -giDir, payload.roughness, payload.metallic, payload.emissive);
+            finalColor += giColor * albedo * 0.5;
+        }
+    }
+
     imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(finalColor, 1.0));
 }
