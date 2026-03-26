@@ -1,4 +1,5 @@
 use ash::vk;
+use std::sync::atomic::{AtomicU64, Ordering};
 use crate::resource::{Attachment, MAX_FRAMES_IN_FLIGHT};
 use crate::Renderer;
 use super::{RenderPass, RenderContext};
@@ -12,6 +13,7 @@ const BINDING_MATERIALS: u32 = 5;
 const BINDING_LIGHTS: u32 = 6;
 const BINDING_GBUFFER_DEPTH: u32 = 7;
 const BINDING_GBUFFER_NORMAL: u32 = 8;
+const BINDING_GBUFFER_ALBEDO: u32 = 9;
 
 /// A rendering pass that performs hardware-accelerated ray tracing.
 pub struct RayTracingPass {
@@ -24,12 +26,12 @@ pub struct RayTracingPass {
     pub rt_loader: ash::khr::ray_tracing_pipeline::Device,
     pub sbt_buffer: Option<crate::resource::Buffer>,
     pub sbt_regions: [vk::StridedDeviceAddressRegionKHR; 4],
-    pub descriptor_versions: Vec<u64>,
+    pub descriptor_versions: Vec<AtomicU64>,
 }
 
 impl RenderPass for RayTracingPass {
     fn name(&self) -> &str { "RayTracingPass" }
-    fn inputs(&self) -> Vec<&'static str> { vec!["GBufferDepth", "GBufferNormal", "GBufferPBR", "HiZ"] }
+    fn inputs(&self) -> Vec<&'static str> { vec!["GBufferDepth", "GBufferNormal", "GBufferAlbedo", "GBufferPBR", "HiZ"] }
     fn on_resize(&mut self, renderer: &mut Renderer, new_extent: vk::Extent2D) {
         for img in self.output_images.drain(..) {
             img.destroy(&renderer.device.device, &renderer.device.allocator);
@@ -64,6 +66,7 @@ impl RenderPass for RayTracingPass {
         vec![
             ("GBufferDepth".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
             ("GBufferNormal".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
+            ("GBufferAlbedo".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
             ("GBufferPBR".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
             ("RTOutput".to_string(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
         ]
@@ -74,12 +77,12 @@ impl RenderPass for RayTracingPass {
         if self.pipeline == vk::Pipeline::null() { return false; }
 
         let mut version = 0u64;
-        if let Some(ref vb) = renderer.global_vertex_buffer { version += vb.version.load(std::sync::atomic::Ordering::Relaxed); }
-        if let Some(ref ib) = renderer.global_index_buffer { version += ib.version.load(std::sync::atomic::Ordering::Relaxed); }
-        if let Some(ref mat) = renderer.global_material_buffer { version += mat.version.load(std::sync::atomic::Ordering::Relaxed); }
-        if let Some(ref tlas) = renderer.as_manager.current_tlas[frame_index] { version += tlas.buffer.version.load(std::sync::atomic::Ordering::Relaxed); }
+        if let Some(ref vb) = renderer.global_vertex_buffer { version += vb.version.load(Ordering::Relaxed); }
+        if let Some(ref ib) = renderer.global_index_buffer { version += ib.version.load(Ordering::Relaxed); }
+        if let Some(ref mat) = renderer.global_material_buffer { version += mat.version.load(Ordering::Relaxed); }
+        if let Some(ref tlas) = renderer.as_manager.current_tlas[frame_index] { version += tlas.buffer.version.load(Ordering::Relaxed); }
 
-        version != self.descriptor_versions[frame_index]
+        version != self.descriptor_versions[frame_index].load(Ordering::Relaxed)
     }
 
     fn update_descriptor_sets(&self, renderer: &Renderer) {
@@ -215,12 +218,15 @@ impl RayTracingPass {
 
         let depth_view = renderer.get_pass_resource_view("", "GBufferDepth", current_frame).unwrap_or(renderer.common_shadow_view);
         let normal_view = renderer.get_pass_resource_view("", "GBufferNormal", current_frame).unwrap_or(renderer.common_shadow_view);
+        let albedo_view = renderer.get_pass_resource_view("", "GBufferAlbedo", current_frame).unwrap_or(renderer.common_shadow_view);
 
         let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(depth_view).sampler(renderer.common_sampler)];
         let normal_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(normal_view).sampler(renderer.common_sampler)];
+        let albedo_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(albedo_view).sampler(renderer.common_sampler)];
 
         writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(BINDING_GBUFFER_DEPTH).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&depth_info));
         writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(BINDING_GBUFFER_NORMAL).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&normal_info));
+        writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(BINDING_GBUFFER_ALBEDO).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&albedo_info));
 
         let mut as_info;
         if let Some(ref tlas) = renderer.as_manager.current_tlas[current_frame] {
@@ -242,16 +248,12 @@ impl RayTracingPass {
         }
 
         let mut version = 0u64;
-        if let Some(ref vb) = renderer.global_vertex_buffer { version += vb.version.load(std::sync::atomic::Ordering::Relaxed); }
-        if let Some(ref ib) = renderer.global_index_buffer { version += ib.version.load(std::sync::atomic::Ordering::Relaxed); }
-        if let Some(ref mat) = renderer.global_material_buffer { version += mat.version.load(std::sync::atomic::Ordering::Relaxed); }
-        if let Some(ref tlas) = renderer.as_manager.current_tlas[current_frame] { version += tlas.buffer.version.load(std::sync::atomic::Ordering::Relaxed); }
+        if let Some(ref vb) = renderer.global_vertex_buffer { version += vb.version.load(Ordering::Relaxed); }
+        if let Some(ref ib) = renderer.global_index_buffer { version += ib.version.load(Ordering::Relaxed); }
+        if let Some(ref mat) = renderer.global_material_buffer { version += mat.version.load(Ordering::Relaxed); }
+        if let Some(ref tlas) = renderer.as_manager.current_tlas[current_frame] { version += tlas.buffer.version.load(Ordering::Relaxed); }
 
-        // This is a bit of a hack since we're using interior mutability via &self
-        let ptr = self.descriptor_versions.as_ptr() as *mut u64;
-        unsafe {
-            *ptr.add(current_frame) = version;
-        }
+        self.descriptor_versions[current_frame].store(version, Ordering::Relaxed);
     }
 
 
@@ -297,7 +299,7 @@ impl RayTracingPass {
             rt_loader,
             sbt_buffer: Some(sbt_buffer),
             sbt_regions,
-            descriptor_versions: vec![0; MAX_FRAMES_IN_FLIGHT],
+            descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| AtomicU64::new(0)).collect(),
         })
     }
 
@@ -312,7 +314,7 @@ impl RayTracingPass {
             rt_loader,
             sbt_buffer: None,
             sbt_regions: [vk::StridedDeviceAddressRegionKHR::default(); 4],
-            descriptor_versions: vec![0; MAX_FRAMES_IN_FLIGHT],
+            descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| AtomicU64::new(0)).collect(),
         }
     }
 
@@ -327,6 +329,7 @@ impl RayTracingPass {
             vk::DescriptorSetLayoutBinding::default().binding(BINDING_LIGHTS).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
             vk::DescriptorSetLayoutBinding::default().binding(BINDING_GBUFFER_DEPTH).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
             vk::DescriptorSetLayoutBinding::default().binding(BINDING_GBUFFER_NORMAL).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+            vk::DescriptorSetLayoutBinding::default().binding(BINDING_GBUFFER_ALBEDO).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
         ];
 
         unsafe {

@@ -124,7 +124,7 @@ impl RenderGraph {
                         vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
                     } else if dst_access.contains(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE) {
                         vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
-                    } else if dst_access.contains(vk::AccessFlags::SHADER_READ) {
+                    } else if dst_access.contains(vk::AccessFlags::SHADER_READ) && !dst_stage.contains(vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR) {
                         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
                     } else if dst_access.contains(vk::AccessFlags::TRANSFER_READ) {
                         vk::ImageLayout::TRANSFER_SRC_OPTIMAL
