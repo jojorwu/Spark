@@ -48,7 +48,7 @@ impl RenderPass for AccelerationStructurePass {
                     };
                     let _ = as_manager.build_scene_tlas(params);
 
-                    if renderer.frame_manager.frame_index % 100 == 0 {
+                    if renderer.frame_manager.frame_index.is_multiple_of(100) {
                         as_manager.evict_unused_blas(
                             &renderer.device,
                             renderer.frame_manager.frame_index,

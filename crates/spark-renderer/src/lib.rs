@@ -190,8 +190,8 @@ impl Renderer {
             )?
         };
 
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
-            frame_manager.frames[i].global_descriptor_set = global_descriptor_sets[i];
+        for (i, frame) in frame_manager.frames.iter_mut().enumerate() {
+            frame.global_descriptor_set = global_descriptor_sets[i];
         }
 
         let egui_renderer = ui_shaders.map(|(v, f)| {
@@ -1375,6 +1375,10 @@ impl Renderer {
         resource_name: &str,
         frame_index: usize,
     ) -> Option<vk::ImageView> {
+        let resource_name = self.render_graph.aliased_resources.get(resource_name)
+            .map(|s| s.as_str())
+            .unwrap_or(resource_name);
+
         // Check graph-managed physical attachments
         if let Some(attachments) = self.render_graph.physical_attachments.get(resource_name) {
             return Some(attachments[frame_index].view);

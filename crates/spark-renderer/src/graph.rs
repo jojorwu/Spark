@@ -36,6 +36,7 @@ pub struct RenderGraph {
     pub sorted_passes: Vec<usize>,
     pub physical_attachments: HashMap<String, Vec<crate::resource::Attachment>>,
     pub transient_attachments: HashMap<String, Vec<crate::resource::Attachment>>,
+    pub aliased_resources: HashMap<String, String>, // resource name -> backing resource name
     pub descriptor_pool: vk::DescriptorPool,
 }
 
@@ -47,6 +48,7 @@ impl RenderGraph {
             sorted_passes: Vec::new(),
             physical_attachments: HashMap::new(),
             transient_attachments: HashMap::new(),
+            aliased_resources: HashMap::new(),
             descriptor_pool: vk::DescriptorPool::null(),
         }
     }
@@ -207,50 +209,90 @@ impl RenderGraph {
             pass_node.pass.set_descriptor_sets(ds);
         }
 
-        // Automatically create transient resources for outputs that are not physical
-        // Improved version with simple aliasing (reusing attachments with same name across compatible passes if logic allows)
-        // For now, it just ensures unique transient resources for each unique output name
+        // Improved resource management: Resource Aliasing
         let extent = renderer.get_extent();
-        for pass in &self.passes {
+        let mut resource_lifetimes: HashMap<String, (usize, usize)> = HashMap::new();
+
+        for (order_idx, &pass_idx) in self.sorted_passes.iter().enumerate() {
+            let pass = &self.passes[pass_idx];
+            for input in &pass.inputs {
+                resource_lifetimes
+                    .entry(input.clone())
+                    .and_modify(|lt| lt.1 = order_idx)
+                    .or_insert((order_idx, order_idx));
+            }
             for output in &pass.outputs {
-                if !self.physical_attachments.contains_key(output)
-                    && !self.transient_attachments.contains_key(output)
-                {
-                    let format = if output.contains("Depth") {
-                        renderer.device.depth_format
-                    } else if output.contains("Normal")
-                        || output.contains("HDR")
-                        || output.contains("RTOutput")
-                    {
-                        vk::Format::R16G16B16A16_SFLOAT
-                    } else {
-                        vk::Format::R8G8B8A8_UNORM
-                    };
+                resource_lifetimes
+                    .entry(output.clone())
+                    .and_modify(|lt| lt.1 = order_idx)
+                    .or_insert((order_idx, order_idx));
+            }
+        }
 
-                    let usage = if output.contains("Depth") {
-                        vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED
-                    } else {
-                        vk::ImageUsageFlags::COLOR_ATTACHMENT
-                            | vk::ImageUsageFlags::SAMPLED
-                            | vk::ImageUsageFlags::STORAGE
-                    };
+        self.aliased_resources.clear();
+        let mut transient_pool: Vec<(String, vk::Format, vk::ImageUsageFlags, usize)> = Vec::new();
 
-                    let attachments = (0..crate::MAX_FRAMES_IN_FLIGHT)
-                        .map(|_| {
-                            crate::resource::Attachment::create_image_resource(
-                                &renderer.device,
-                                extent.width,
-                                extent.height,
-                                format,
-                                usage,
-                                vk::SampleCountFlags::TYPE_1,
-                            )
-                            .unwrap()
-                        })
-                        .collect();
-                    self.transient_attachments
-                        .insert(output.clone(), attachments);
+        let sorted_resource_names: Vec<String> = {
+            let mut names: Vec<_> = resource_lifetimes.keys().cloned().collect();
+            names.sort_by_key(|n| resource_lifetimes[n].0);
+            names
+        };
+
+        for res_name in sorted_resource_names {
+            if self.physical_attachments.contains_key(&res_name) {
+                continue;
+            }
+
+            let (start, end) = resource_lifetimes[&res_name];
+
+            let format = if res_name.contains("Depth") {
+                renderer.device.depth_format
+            } else if res_name.contains("Normal")
+                || res_name.contains("HDR")
+                || res_name.contains("RTOutput")
+            {
+                vk::Format::R16G16B16A16_SFLOAT
+            } else {
+                vk::Format::R8G8B8A8_UNORM
+            };
+
+            let usage = if res_name.contains("Depth") {
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED
+            } else {
+                vk::ImageUsageFlags::COLOR_ATTACHMENT
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::STORAGE
+            };
+
+            // Try to find an existing transient resource that can be reused
+            let mut found_alias = None;
+            for (pool_res_name, pool_format, pool_usage, pool_end) in &mut transient_pool {
+                if *pool_format == format && *pool_usage == usage && *pool_end < start {
+                    found_alias = Some(pool_res_name.clone());
+                    *pool_end = end;
+                    break;
                 }
+            }
+
+            if let Some(alias) = found_alias {
+                self.aliased_resources.insert(res_name.clone(), alias);
+            } else {
+                let attachments = (0..crate::MAX_FRAMES_IN_FLIGHT)
+                    .map(|_| {
+                        crate::resource::Attachment::create_image_resource(
+                            &renderer.device,
+                            extent.width,
+                            extent.height,
+                            format,
+                            usage,
+                            vk::SampleCountFlags::TYPE_1,
+                        )
+                        .unwrap()
+                    })
+                    .collect();
+                self.transient_attachments
+                    .insert(res_name.clone(), attachments);
+                transient_pool.push((res_name.clone(), format, usage, end));
             }
         }
     }
@@ -263,7 +305,11 @@ impl RenderGraph {
             let pass_node = &self.passes[idx];
 
             // Automated Barrier Injection
-            for (res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_access() {
+            for (mut res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_access() {
+                if let Some(alias) = self.aliased_resources.get(&res_name) {
+                    res_name = alias.clone();
+                }
+
                 let attachments = self
                     .physical_attachments
                     .get(&res_name)

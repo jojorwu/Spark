@@ -122,9 +122,9 @@ pub struct InitContext<'a> {
 
 /// Context passed to systems during the update phase.
 pub struct FrameContext<'a> {
-    pub scene: *mut Scene,
-    pub renderer: *mut Renderer,
-    pub resource_manager: *mut ResourceManager,
+    scene: *mut Scene,
+    renderer: *mut Renderer,
+    resource_manager: *mut ResourceManager,
     pub project: &'a Project,
     pub resources: &'a crate::resource_container::Resources,
     pub task_system: &'a TaskSystem,
@@ -139,6 +139,35 @@ unsafe impl<'a> Send for FrameContext<'a> {}
 unsafe impl<'a> Sync for FrameContext<'a> {}
 
 impl<'a> FrameContext<'a> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        scene: &mut Scene,
+        renderer: &mut Renderer,
+        resource_manager: &mut ResourceManager,
+        project: &'a Project,
+        resources: &'a crate::resource_container::Resources,
+        task_system: &'a TaskSystem,
+        delta: f32,
+        event_proxy: crate::systems_events::events::EventProxy<'a>,
+        input: &'a crate::input::InputManager,
+        command_queue: &'a crate::command::CommandQueue,
+        event_bus: &'a crate::event_bus::EventBus,
+    ) -> Self {
+        Self {
+            scene: scene as *mut Scene,
+            renderer: renderer as *mut Renderer,
+            resource_manager: resource_manager as *mut ResourceManager,
+            project,
+            resources,
+            task_system,
+            delta,
+            event_proxy,
+            input,
+            command_queue,
+            event_bus,
+        }
+    }
+
     pub fn scene(&self) -> &Scene {
         unsafe { &*self.scene }
     }
@@ -220,6 +249,12 @@ pub trait System: Send + Sync {
         Vec::new()
     }
     fn dependencies(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+    fn run_before(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+    fn run_after(&self) -> Vec<&'static str> {
         Vec::new()
     }
     fn resource_access(&self) -> ResourceAccess {
@@ -513,22 +548,22 @@ impl Engine {
         self.system_events.lock().unwrap().clear(); // Reset for this frame
 
         {
-            let mut ctx = FrameContext {
-                scene: &mut self.scene as *mut Scene,
-                renderer: &mut self.renderer as *mut Renderer,
-                resource_manager: &mut self.resource_manager as *mut ResourceManager,
-                project: &self.project,
-                resources: &self.resources,
-                task_system: &self.task_system,
+            let mut ctx = FrameContext::new(
+                &mut self.scene,
+                &mut self.renderer,
+                &mut self.resource_manager,
+                &self.project,
+                &self.resources,
+                &self.task_system,
                 delta,
-                event_proxy: crate::systems_events::events::EventProxy {
+                crate::systems_events::events::EventProxy {
                     events: &events,
                     outgoing: &self.system_events,
                 },
-                input: &self.input_manager,
-                command_queue: &self.command_queue,
-                event_bus: &self.event_bus,
-            };
+                &self.input_manager,
+                &self.command_queue,
+                &self.event_bus,
+            );
 
             crate::systems::Scheduler::run(&mut self.system_registry, &mut ctx);
         }

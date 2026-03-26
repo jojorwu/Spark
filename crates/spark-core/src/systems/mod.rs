@@ -75,6 +75,13 @@ impl SystemRegistry {
                 .map(|(i, s)| (s.name().to_string(), i))
                 .collect();
 
+            let mut reverse_before: HashMap<String, Vec<usize>> = HashMap::new();
+            for (i, system) in stage_systems.iter().enumerate() {
+                for before in system.run_before() {
+                    reverse_before.entry(before.to_string()).or_default().push(i);
+                }
+            }
+
             fn visit(
                 idx: usize,
                 systems: &Vec<Box<dyn System>>,
@@ -82,24 +89,42 @@ impl SystemRegistry {
                 ordered: &mut Vec<usize>,
                 visited: &mut HashSet<usize>,
                 temp_visited: &mut HashSet<usize>,
+                reverse_before: &HashMap<String, Vec<usize>>,
             ) {
                 if temp_visited.contains(&idx) {
                     panic!("Circular dependency detected in systems!");
                 }
                 if !visited.contains(&idx) {
                     temp_visited.insert(idx);
+
+                    // 1. Explicit dependencies
                     for dep in systems[idx].dependencies() {
                         if let Some(&dep_idx) = name_to_idx.get(dep) {
-                            visit(
-                                dep_idx,
-                                systems,
-                                name_to_idx,
-                                ordered,
-                                visited,
-                                temp_visited,
-                            );
+                            visit(dep_idx, systems, name_to_idx, ordered, visited, temp_visited, reverse_before);
                         }
                     }
+
+                    // 2. run_after labels
+                    for after in systems[idx].run_after() {
+                        if let Some(&after_idx) = name_to_idx.get(after) {
+                            visit(after_idx, systems, name_to_idx, ordered, visited, temp_visited, reverse_before);
+                        }
+                    }
+
+                    // 3. run_before labels (others wanting to run after this one)
+                    if let Some(others) = reverse_before.get(systems[idx].name()) {
+                        // This logic is slightly different: if B runs before A, then A depends on B.
+                        // So if we are visiting A, we need to visit B first.
+                        // reverse_before maps A -> [B]
+                        for &before_idx in others {
+                             // This is actually wrong in my head. If B runs before A, A depends on B.
+                             // Wait, no. If B says "run_before A", then A should be visited *after* B.
+                             // So A depends on B.
+                             // Correct.
+                             visit(before_idx, systems, name_to_idx, ordered, visited, temp_visited, reverse_before);
+                        }
+                    }
+
                     temp_visited.remove(&idx);
                     visited.insert(idx);
                     ordered.push(idx);
@@ -115,6 +140,7 @@ impl SystemRegistry {
                     &mut indices,
                     &mut visited,
                     &mut temp_visited,
+                    &reverse_before,
                 );
             }
 
