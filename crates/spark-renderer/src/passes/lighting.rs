@@ -329,11 +329,13 @@ impl RenderPass for LightingPass {
 
     fn update_descriptor_sets(&self, renderer: &Renderer) {
         let light_buffers: Vec<Buffer> = renderer
+            .frame_manager
             .frames
             .iter()
             .filter_map(|f| f.light_buffer.clone())
             .collect();
         let object_buffers: Vec<Option<Buffer>> = renderer
+            .frame_manager
             .frames
             .iter()
             .map(|f| f.object_data_buffer.clone())
@@ -394,7 +396,7 @@ impl RenderPass for LightingPass {
         let command_buffer = ctx.command_buffer;
         let current_frame = ctx.current_frame;
         let extent = renderer.get_extent();
-        let global_ds = renderer.frames[current_frame].global_descriptor_set;
+        let global_ds = renderer.frame_manager.frames[current_frame].global_descriptor_set;
 
         #[repr(C)]
         struct PC {
@@ -420,7 +422,7 @@ impl RenderPass for LightingPass {
                 0.0
             },
             shadow_pcf: renderer.settings.shadow_pcf_samples,
-            object_buffer_address: renderer.frames[current_frame]
+            object_buffer_address: renderer.frame_manager.frames[current_frame]
                 .object_data_buffer
                 .as_ref()
                 .map_or(0, |b| b.address),

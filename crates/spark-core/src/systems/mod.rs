@@ -242,18 +242,24 @@ impl Scheduler {
                 for batch in batches {
                     use rayon::prelude::*;
                     if batch.len() > 1 {
+                        let systems_ptr = systems.as_ptr() as usize;
+                        let ctx_ptr = ctx as *const FrameContext as usize;
+                        let active_state = registry.active_state.clone();
+
                         batch.par_iter().for_each(|&idx| unsafe {
-                            let systems_ptr = systems.as_ptr() as *mut Box<dyn crate::System>;
+                            let systems_ptr = systems_ptr as *const Box<dyn crate::System>;
                             let system = &*systems_ptr.add(idx);
-                            if let Some(active) = &registry.active_state {
+                            if let Some(active) = &active_state {
                                 let allowed = system.run_in_states();
                                 if !allowed.is_empty() && !allowed.contains(active) {
                                     return;
                                 }
                             }
 
-                            let ctx_ptr = ctx as *const FrameContext as *mut FrameContext;
-                            (*systems_ptr.add(idx)).update(&*ctx_ptr);
+                            let ctx = &*(ctx_ptr as *const FrameContext);
+                            let system_mut =
+                                &mut *(systems_ptr.add(idx) as *mut Box<dyn crate::System>);
+                            system_mut.update(ctx);
                         });
                     } else if let Some(&idx) = batch.first() {
                         let system = &systems[idx];
@@ -292,11 +298,7 @@ impl System for HierarchySystem {
         vec!["ComponentSystem"]
     }
     fn resource_access(&self) -> crate::ResourceAccess {
-        crate::ResourceAccess {
-            scene: crate::Access::Write,
-            renderer: crate::Access::None,
-            resource_manager: crate::Access::None,
-        }
+        crate::ResourceAccess::new().with_scene(crate::Access::Write)
     }
     fn update(&mut self, ctx: &FrameContext) {
         unsafe {
@@ -312,11 +314,10 @@ impl System for ResourceSystem {
         "ResourceSystem"
     }
     fn resource_access(&self) -> crate::ResourceAccess {
-        crate::ResourceAccess {
-            scene: crate::Access::Read,
-            renderer: crate::Access::Write,
-            resource_manager: crate::Access::Write,
-        }
+        crate::ResourceAccess::new()
+            .with_scene(crate::Access::Read)
+            .with_renderer(crate::Access::Write)
+            .with_resource_manager(crate::Access::Write)
     }
     fn update(&mut self, ctx: &FrameContext) {
         unsafe {

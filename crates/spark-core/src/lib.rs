@@ -12,6 +12,9 @@ pub mod systems;
 pub mod systems_events;
 pub mod task;
 
+use std::any::TypeId;
+use std::collections::HashMap;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Access {
     None,
@@ -19,30 +22,55 @@ pub enum Access {
     Write,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResourceAccess {
-    pub scene: Access,
-    pub renderer: Access,
-    pub resource_manager: Access,
+    pub accesses: HashMap<TypeId, Access>,
 }
 
 impl ResourceAccess {
-    pub const NONE: Self = Self {
-        scene: Access::None,
-        renderer: Access::None,
-        resource_manager: Access::None,
-    };
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with<T: 'static>(mut self, access: Access) -> Self {
+        self.accesses.insert(TypeId::of::<T>(), access);
+        self
+    }
+
+    pub fn with_scene(self, access: Access) -> Self {
+        self.with::<crate::scene::Scene>(access)
+    }
+
+    pub fn with_renderer(self, access: Access) -> Self {
+        self.with::<spark_renderer::Renderer>(access)
+    }
+
+    pub fn with_resource_manager(self, access: Access) -> Self {
+        self.with::<crate::resource::ResourceManager>(access)
+    }
+
+    pub fn get<T: 'static>(&self) -> Access {
+        self.accesses
+            .get(&TypeId::of::<T>())
+            .copied()
+            .unwrap_or(Access::None)
+    }
 
     pub fn conflicts_with(&self, other: &Self) -> bool {
-        let scene_conflict = (self.scene == Access::Write && other.scene != Access::None)
-            || (other.scene == Access::Write && self.scene != Access::None);
-        let renderer_conflict = (self.renderer == Access::Write && other.renderer != Access::None)
-            || (other.renderer == Access::Write && self.renderer != Access::None);
-        let resource_manager_conflict = (self.resource_manager == Access::Write
-            && other.resource_manager != Access::None)
-            || (other.resource_manager == Access::Write && self.resource_manager != Access::None);
+        for (type_id, access) in &self.accesses {
+            if *access == Access::None {
+                continue;
+            }
+            let other_access = other.accesses.get(type_id).copied().unwrap_or(Access::None);
+            if other_access == Access::None {
+                continue;
+            }
 
-        scene_conflict || renderer_conflict || resource_manager_conflict
+            if *access == Access::Write || other_access == Access::Write {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -195,11 +223,10 @@ pub trait System: Send + Sync {
         Vec::new()
     }
     fn resource_access(&self) -> ResourceAccess {
-        ResourceAccess {
-            scene: Access::Write,
-            renderer: Access::Write,
-            resource_manager: Access::Write,
-        }
+        ResourceAccess::new()
+            .with_scene(Access::Write)
+            .with_renderer(Access::Write)
+            .with_resource_manager(Access::Write)
     }
 }
 

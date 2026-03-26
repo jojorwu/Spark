@@ -31,7 +31,7 @@ impl RenderPass for ShadowPass {
     fn record_secondary_commands(&self, ctx: &RenderContext) -> Vec<vk::CommandBuffer> {
         let renderer = ctx.renderer;
         let device = &renderer.device.device;
-        let lvps = renderer.frames[ctx.current_frame].light_view_projs;
+        let lvps = renderer.frame_manager.frames[ctx.current_frame].light_view_projs;
 
         let mut buffers = Vec::new();
         for (cascade_idx, &lvp) in lvps.iter().enumerate().take(SHADOW_CASCADE_COUNT) {
@@ -366,11 +366,12 @@ impl ShadowPass {
                 address: u64,
                 vertex_address: u64,
             }
-            let frame = &renderer.frames[renderer.current_frame];
+            let frame = &renderer.frame_manager.frames[renderer.frame_manager.current_frame];
             let pc = PC {
                 lvp,
                 address: frame.object_data_buffer.as_ref().map_or(0, |b| b.address),
                 vertex_address: renderer
+                    .gpu_resource_manager
                     .global_vertex_buffer
                     .as_ref()
                     .map_or(0, |b| b.address),
@@ -387,7 +388,7 @@ impl ShadowPass {
             );
 
             if let Some(ref indirect_buffer) = frame.indirect_commands_buffer {
-                if let Some(ib) = renderer.global_index_buffer.as_ref() {
+                if let Some(ib) = renderer.gpu_resource_manager.global_index_buffer.as_ref() {
                     device.cmd_bind_index_buffer(
                         command_buffer,
                         ib.handle,

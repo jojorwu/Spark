@@ -227,7 +227,12 @@ impl RenderPass for SSAOPass {
             }
             let texture = std::mem::replace(
                 &mut self.noise_texture,
-                renderer.default_texture.as_ref().unwrap().clone(),
+                renderer
+                    .gpu_resource_manager
+                    .default_texture
+                    .as_ref()
+                    .unwrap()
+                    .clone(),
             );
             renderer.destroy_texture(texture);
         }

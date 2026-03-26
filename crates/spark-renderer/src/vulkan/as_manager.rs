@@ -70,7 +70,6 @@ impl Default for AccelerationStructureManager {
 }
 
 impl AccelerationStructureManager {
-
     /// Builds a Top-Level Acceleration Structure (TLAS) for the entire scene and builds/caches BLAS as needed.
     pub fn build_scene_tlas(
         &mut self,
@@ -165,7 +164,10 @@ impl AccelerationStructureManager {
         let as_barrier = vk::DependencyInfo::default().memory_barriers(&barrier_data);
 
         unsafe {
-            params.device.device.cmd_pipeline_barrier2(params.cb, &as_barrier);
+            params
+                .device
+                .device
+                .cmd_pipeline_barrier2(params.cb, &as_barrier);
         }
 
         let (tlas, t_scratch, t_inst) =
@@ -276,7 +278,11 @@ impl AccelerationStructure {
             .size(size_info.acceleration_structure_size)
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
 
-        let handle = unsafe { params.as_loader.create_acceleration_structure(&create_info, None)? };
+        let handle = unsafe {
+            params
+                .as_loader
+                .create_acceleration_structure(&create_info, None)?
+        };
         let address = unsafe {
             params.as_loader.get_acceleration_structure_device_address(
                 &vk::AccelerationStructureDeviceAddressInfoKHR::default()
@@ -297,9 +303,11 @@ impl AccelerationStructure {
         };
 
         unsafe {
-            params
-                .as_loader
-                .cmd_build_acceleration_structures(params.cb, &[build_info], &[&[build_range]]);
+            params.as_loader.cmd_build_acceleration_structures(
+                params.cb,
+                &[build_info],
+                &[&[build_range]],
+            );
         }
 
         Ok((

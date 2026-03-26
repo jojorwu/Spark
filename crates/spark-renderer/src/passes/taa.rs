@@ -176,7 +176,7 @@ impl TAAPass {
         let descriptor_sets = unsafe {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
-                    .descriptor_pool(renderer.descriptor_pool)
+                    .descriptor_pool(renderer.gpu_resource_manager.descriptor_pool)
                     .set_layouts(&[ds_layout; MAX_FRAMES_IN_FLIGHT]),
             )?
         };

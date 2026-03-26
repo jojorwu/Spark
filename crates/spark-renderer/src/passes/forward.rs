@@ -106,12 +106,13 @@ impl RenderPass for ForwardPass {
                 width: extent.width as f32,
                 height: extent.height as f32,
                 padding: 0,
-                object_buffer_address: renderer.frames[cf]
+                object_buffer_address: renderer.frame_manager.frames[cf]
                     .transparent_object_buffer
                     .as_ref()
                     .map_or(0, |b| b.address),
                 prev_view_proj: renderer.prev_view_proj,
                 vertex_buffer_address: renderer
+                    .gpu_resource_manager
                     .global_vertex_buffer
                     .as_ref()
                     .map_or(0, |b| b.address),
@@ -133,13 +134,13 @@ impl RenderPass for ForwardPass {
                 self.layout,
                 0,
                 &[
-                    renderer.frames[cf].global_descriptor_set,
-                    renderer.bindless_descriptor_set,
+                    renderer.frame_manager.frames[cf].global_descriptor_set,
+                    renderer.gpu_resource_manager.bindless_descriptor_set,
                 ],
                 &[],
             );
 
-            if let Some(ref ib) = renderer.global_index_buffer {
+            if let Some(ref ib) = renderer.gpu_resource_manager.global_index_buffer {
                 renderer.device.device.cmd_bind_index_buffer(
                     ctx.command_buffer,
                     ib.handle,
@@ -148,7 +149,9 @@ impl RenderPass for ForwardPass {
                 );
             }
 
-            if let Some(ref indirect_buffer) = renderer.frames[cf].transparent_indirect_buffer {
+            if let Some(ref indirect_buffer) =
+                renderer.frame_manager.frames[cf].transparent_indirect_buffer
+            {
                 renderer.device.device.cmd_draw_indexed_indirect(
                     ctx.command_buffer,
                     indirect_buffer.handle,
@@ -191,7 +194,7 @@ impl ForwardPass {
 
         let set_layouts = [
             renderer.global_descriptor_set_layout,
-            renderer.bindless_descriptor_set_layout,
+            renderer.gpu_resource_manager.bindless_descriptor_set_layout,
         ];
 
         let layout = unsafe {

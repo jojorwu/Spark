@@ -31,8 +31,8 @@ impl RenderPass for AccelerationStructurePass {
         if let Some(packet) = &renderer.current_packet {
             if !packet.opaque_meshes.is_empty() {
                 if let (Some(vb), Some(ib)) = (
-                    renderer.global_vertex_buffer.as_ref(),
-                    renderer.global_index_buffer.as_ref(),
+                    renderer.gpu_resource_manager.global_vertex_buffer.as_ref(),
+                    renderer.gpu_resource_manager.global_index_buffer.as_ref(),
                 ) {
                     let mut as_manager = renderer.as_manager.lock().unwrap();
 
@@ -44,12 +44,15 @@ impl RenderPass for AccelerationStructurePass {
                         global_ib: ib,
                         vertex_stride: self.vertex_stride,
                         frame_index: ctx.current_frame,
-                        frame_id: renderer.frame_index,
+                        frame_id: renderer.frame_manager.frame_index,
                     };
                     let _ = as_manager.build_scene_tlas(params);
 
-                    if renderer.frame_index.is_multiple_of(100) {
-                        as_manager.evict_unused_blas(&renderer.device, renderer.frame_index);
+                    if renderer.frame_manager.frame_index % 100 == 0 {
+                        as_manager.evict_unused_blas(
+                            &renderer.device,
+                            renderer.frame_manager.frame_index,
+                        );
                     }
                 }
             }

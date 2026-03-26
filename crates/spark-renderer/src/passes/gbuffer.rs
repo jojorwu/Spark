@@ -44,12 +44,13 @@ impl GBufferPass {
             width: renderer.swapchain.extent.width as f32,
             height: renderer.swapchain.extent.height as f32,
             padding: 0,
-            object_buffer_address: renderer.frames[current_frame]
+            object_buffer_address: renderer.frame_manager.frames[current_frame]
                 .object_data_buffer
                 .as_ref()
                 .map_or(0, |b| b.address),
             prev_view_proj: renderer.prev_view_proj,
             vertex_buffer_address: renderer
+                .gpu_resource_manager
                 .global_vertex_buffer
                 .as_ref()
                 .map_or(0, |b| b.address),
@@ -59,7 +60,7 @@ impl GBufferPass {
         };
 
         let extent = renderer.get_extent();
-        let global_ds = renderer.frames[current_frame].global_descriptor_set;
+        let global_ds = renderer.frame_manager.frames[current_frame].global_descriptor_set;
 
         unsafe {
             if let Some(pipeline) = &renderer.pipeline {
@@ -174,18 +175,21 @@ impl GBufferPass {
                 device.cmd_begin_rendering(command_buffer, &rendering_info);
 
                 if let Some(ref indirect_buffer) =
-                    renderer.frames[current_frame].indirect_commands_buffer
+                    renderer.frame_manager.frames[current_frame].indirect_commands_buffer
                 {
                     device.cmd_bind_descriptor_sets(
                         command_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
                         pipeline.layout,
                         0,
-                        &[global_ds, renderer.bindless_descriptor_set],
+                        &[
+                            global_ds,
+                            renderer.gpu_resource_manager.bindless_descriptor_set,
+                        ],
                         &[],
                     );
 
-                    if let Some(ib) = renderer.global_index_buffer.as_ref() {
+                    if let Some(ib) = renderer.gpu_resource_manager.global_index_buffer.as_ref() {
                         device.cmd_bind_index_buffer(
                             command_buffer,
                             ib.handle,
@@ -194,7 +198,8 @@ impl GBufferPass {
                         );
                     }
 
-                    if let Some(ref count_buffer) = renderer.frames[current_frame].draw_count_buffer
+                    if let Some(ref count_buffer) =
+                        renderer.frame_manager.frames[current_frame].draw_count_buffer
                     {
                         device.cmd_draw_indexed_indirect_count(
                             command_buffer,

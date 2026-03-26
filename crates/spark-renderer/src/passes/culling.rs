@@ -15,13 +15,17 @@ impl RenderPass for CullingPass {
         let renderer = ctx.renderer;
         let current_frame = ctx.current_frame;
 
-        let global_ds = renderer.frames[current_frame].global_descriptor_set;
+        let global_ds = renderer.frame_manager.frames[current_frame].global_descriptor_set;
         if let (Some(_), Some(ind_buf), Some(cnt_buf)) = (
-            renderer.frames[current_frame].object_data_buffer.as_ref(),
-            renderer.frames[current_frame]
+            renderer.frame_manager.frames[current_frame]
+                .object_data_buffer
+                .as_ref(),
+            renderer.frame_manager.frames[current_frame]
                 .indirect_commands_buffer
                 .as_ref(),
-            renderer.frames[current_frame].draw_count_buffer.as_ref(),
+            renderer.frame_manager.frames[current_frame]
+                .draw_count_buffer
+                .as_ref(),
         ) {
             let compute_cb = renderer.device.create_command_buffer(
                 renderer.device.compute_command_pool,
@@ -58,7 +62,7 @@ impl RenderPass for CullingPass {
                 renderer.device.compute_queue,
                 compute_cb,
                 &[],
-                &[renderer.culling_finished_semaphores[current_frame]],
+                &[renderer.frame_manager.culling_finished_semaphores[current_frame]],
                 vk::Fence::null(),
             );
         }
@@ -200,8 +204,10 @@ impl CullingPass {
                 prev_view_proj: spark_math::Mat4,
                 vertex_buffer_address: u64,
             }
-            let frame = &params.renderer_ref_for_pc_extract.frames
-                [params.renderer_ref_for_pc_extract.current_frame];
+            let frame = &params.renderer_ref_for_pc_extract.frame_manager.frames[params
+                .renderer_ref_for_pc_extract
+                .frame_manager
+                .current_frame];
             let pc = PC {
                 light_count: params.renderer_ref_for_pc_extract.light_count,
                 metallic: 0.0,
@@ -213,6 +219,7 @@ impl CullingPass {
                 prev_view_proj: params.renderer_ref_for_pc_extract.prev_view_proj,
                 vertex_buffer_address: params
                     .renderer_ref_for_pc_extract
+                    .gpu_resource_manager
                     .global_vertex_buffer
                     .as_ref()
                     .map_or(0, |b| b.address),

@@ -453,7 +453,7 @@ impl RenderPass for PostProcessPass {
                 self.layout,
                 0,
                 &[
-                    renderer.bindless_descriptor_set,
+                    renderer.gpu_resource_manager.bindless_descriptor_set,
                     self.descriptor_sets[ctx.current_frame],
                 ],
                 &[],
@@ -510,7 +510,7 @@ impl RenderPass for PostProcessPass {
                 } else {
                     -1.0
                 },
-                time: (renderer.frame_index as f32) * 0.016,
+                time: (renderer.frame_manager.frame_index as f32) * 0.016,
                 rt_reflections: if renderer.settings.enable_rt_reflections {
                     1.0
                 } else {
@@ -668,7 +668,10 @@ impl PostProcessPass {
         let layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(&[renderer.bindless_descriptor_set_layout, ds_layout])
+                    .set_layouts(&[
+                        renderer.gpu_resource_manager.bindless_descriptor_set_layout,
+                        ds_layout,
+                    ])
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,

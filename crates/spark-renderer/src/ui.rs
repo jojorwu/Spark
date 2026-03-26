@@ -127,7 +127,7 @@ impl EguiRenderer {
                                     .get_pass_resource_view(
                                         "",
                                         "GBufferHDR",
-                                        renderer.current_frame,
+                                        renderer.frame_manager.current_frame,
                                     )
                                     .unwrap(),
                             )

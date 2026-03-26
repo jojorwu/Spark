@@ -48,10 +48,10 @@ impl Renderer {
     pub fn setup_default_passes(&mut self, shaders: PassShaders) -> Result<(), RendererError> {
         let extent = self.get_extent();
         let cache = self.pipeline_cache;
-        let pool = self.descriptor_pool;
+        let pool = self.gpu_resource_manager.descriptor_pool;
         let layout = self.global_descriptor_set_layout;
         let msaa = self.get_msaa_samples();
-        let bindless_layout = self.bindless_descriptor_set_layout;
+        let bindless_layout = self.gpu_resource_manager.bindless_descriptor_set_layout;
 
         let hiz_pass = crate::passes::hiz::HiZPass::new(
             &self.device,

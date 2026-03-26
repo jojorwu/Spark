@@ -10,7 +10,9 @@ impl RenderPass for ClusteredPass {
         "ClusteredPass"
     }
     fn prepare(&self, renderer: &Renderer, _current_frame: usize) {
-        if let Some(ref lb) = renderer.frames[renderer.current_frame].light_buffer {
+        if let Some(ref lb) =
+            renderer.frame_manager.frames[renderer.frame_manager.current_frame].light_buffer
+        {
             self.update_descriptor_sets(&renderer.device.device, lb);
         }
     }
@@ -167,7 +169,7 @@ impl ClusteredPass {
         let descriptor_set = unsafe {
             renderer.device.device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
-                    .descriptor_pool(renderer.descriptor_pool)
+                    .descriptor_pool(renderer.gpu_resource_manager.descriptor_pool)
                     .set_layouts(&[ds_layout]),
             )?[0]
         };

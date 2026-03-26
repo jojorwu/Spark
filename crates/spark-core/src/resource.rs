@@ -142,13 +142,13 @@ impl ResourceManager {
         }
         self.needs_upload = false;
 
-        if let Some(vb) = renderer.global_vertex_buffer.take() {
+        if let Some(vb) = renderer.gpu_resource_manager.global_vertex_buffer.take() {
             renderer.destroy_buffer(vb);
         }
-        if let Some(ib) = renderer.global_index_buffer.take() {
+        if let Some(ib) = renderer.gpu_resource_manager.global_index_buffer.take() {
             renderer.destroy_buffer(ib);
         }
-        if let Some(mb) = renderer.global_material_buffer.take() {
+        if let Some(mb) = renderer.gpu_resource_manager.global_material_buffer.take() {
             renderer.destroy_buffer(mb);
         }
 

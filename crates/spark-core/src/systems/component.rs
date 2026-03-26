@@ -7,11 +7,7 @@ impl System for ComponentSystem {
         "ComponentSystem"
     }
     fn resource_access(&self) -> crate::ResourceAccess {
-        crate::ResourceAccess {
-            scene: crate::Access::Write,
-            renderer: crate::Access::None,
-            resource_manager: crate::Access::None,
-        }
+        crate::ResourceAccess::new().with_scene(crate::Access::Write)
     }
     fn update(&mut self, ctx: &crate::FrameContext) {
         use rayon::prelude::*;

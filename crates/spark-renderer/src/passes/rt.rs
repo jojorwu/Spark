@@ -150,9 +150,9 @@ impl RayTracingPass {
                 self.layout,
                 0,
                 &[
-                    renderer.frames[ctx.current_frame].global_descriptor_set,
+                    renderer.frame_manager.frames[ctx.current_frame].global_descriptor_set,
                     self.descriptor_sets[ctx.current_frame],
-                    renderer.bindless_descriptor_set,
+                    renderer.gpu_resource_manager.bindless_descriptor_set,
                 ],
                 &[],
             );
@@ -234,7 +234,7 @@ impl RayTracingPass {
         let as_manager = renderer.as_manager.lock().unwrap();
 
         let vb_info;
-        if let Some(ref vb) = renderer.global_vertex_buffer {
+        if let Some(ref vb) = renderer.gpu_resource_manager.global_vertex_buffer {
             vb_info = [vk::DescriptorBufferInfo::default()
                 .buffer(vb.handle)
                 .range(vb.size)];
@@ -248,7 +248,7 @@ impl RayTracingPass {
         }
 
         let ib_info;
-        if let Some(ref ib) = renderer.global_index_buffer {
+        if let Some(ref ib) = renderer.gpu_resource_manager.global_index_buffer {
             ib_info = [vk::DescriptorBufferInfo::default()
                 .buffer(ib.handle)
                 .range(ib.size)];
@@ -261,7 +261,7 @@ impl RayTracingPass {
             );
         }
 
-        let md_buf = renderer.frames[current_frame]
+        let md_buf = renderer.frame_manager.frames[current_frame]
             .object_data_buffer
             .as_ref()
             .unwrap_or(&renderer.dummy_buffer);
@@ -277,7 +277,7 @@ impl RayTracingPass {
         );
 
         let mat_info;
-        if let Some(ref mat_buf) = renderer.global_material_buffer {
+        if let Some(ref mat_buf) = renderer.gpu_resource_manager.global_material_buffer {
             mat_info = [vk::DescriptorBufferInfo::default()
                 .buffer(mat_buf.handle)
                 .range(mat_buf.size)];
@@ -291,7 +291,7 @@ impl RayTracingPass {
         }
 
         let light_info;
-        if let Some(ref light_buf) = renderer.frames[current_frame].light_buffer {
+        if let Some(ref light_buf) = renderer.frame_manager.frames[current_frame].light_buffer {
             light_info = [vk::DescriptorBufferInfo::default()
                 .buffer(light_buf.handle)
                 .range(light_buf.size)];
@@ -383,13 +383,13 @@ impl RayTracingPass {
         }
 
         let mut version = 0u64;
-        if let Some(ref vb) = renderer.global_vertex_buffer {
+        if let Some(ref vb) = renderer.gpu_resource_manager.global_vertex_buffer {
             version += vb.version.load(Ordering::Relaxed);
         }
-        if let Some(ref ib) = renderer.global_index_buffer {
+        if let Some(ref ib) = renderer.gpu_resource_manager.global_index_buffer {
             version += ib.version.load(Ordering::Relaxed);
         }
-        if let Some(ref mat) = renderer.global_material_buffer {
+        if let Some(ref mat) = renderer.gpu_resource_manager.global_material_buffer {
             version += mat.version.load(Ordering::Relaxed);
         }
         if let Some(ref tlas) = as_manager.current_tlas[current_frame] {
@@ -560,7 +560,7 @@ impl RayTracingPass {
                     .set_layouts(&[
                         renderer.global_descriptor_set_layout,
                         ds_layout,
-                        renderer.bindless_descriptor_set_layout,
+                        renderer.gpu_resource_manager.bindless_descriptor_set_layout,
                     ])
                     .push_constant_ranges(&[pc_range]),
                 None,
@@ -577,7 +577,7 @@ impl RayTracingPass {
         unsafe {
             Ok(device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
-                    .descriptor_pool(renderer.descriptor_pool)
+                    .descriptor_pool(renderer.gpu_resource_manager.descriptor_pool)
                     .set_layouts(&layouts),
             )?)
         }

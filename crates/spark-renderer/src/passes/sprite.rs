@@ -142,7 +142,10 @@ impl RenderPass for SpritePass {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.layout,
                 0,
-                &[self.descriptor_sets[cf], renderer.bindless_descriptor_set],
+                &[
+                    self.descriptor_sets[cf],
+                    renderer.gpu_resource_manager.bindless_descriptor_set,
+                ],
                 &[],
             );
 
@@ -210,7 +213,10 @@ impl SpritePass {
         let layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(&[ds_layout, renderer.bindless_descriptor_set_layout])
+                    .set_layouts(&[
+                        ds_layout,
+                        renderer.gpu_resource_manager.bindless_descriptor_set_layout,
+                    ])
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,
@@ -232,7 +238,7 @@ impl SpritePass {
         let descriptor_sets = unsafe {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
-                    .descriptor_pool(renderer.descriptor_pool)
+                    .descriptor_pool(renderer.gpu_resource_manager.descriptor_pool)
                     .set_layouts(&[ds_layout; crate::MAX_FRAMES_IN_FLIGHT]),
             )?
         };

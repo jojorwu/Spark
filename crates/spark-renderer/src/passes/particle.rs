@@ -116,7 +116,7 @@ impl RenderPass for ParticlePass {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.graphics_layout,
                 1,
-                &[renderer.frames[cf].global_descriptor_set],
+                &[renderer.frame_manager.frames[cf].global_descriptor_set],
                 &[],
             );
 
@@ -169,7 +169,7 @@ impl ParticlePass {
         let ds = unsafe {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
-                    .descriptor_pool(renderer.descriptor_pool)
+                    .descriptor_pool(renderer.gpu_resource_manager.descriptor_pool)
                     .set_layouts(&[ds_layout; crate::MAX_FRAMES_IN_FLIGHT]),
             )?
         };

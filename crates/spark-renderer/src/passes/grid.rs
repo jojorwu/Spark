@@ -16,7 +16,7 @@ impl RenderPass for GridPass {
         let command_buffer = ctx.command_buffer;
         let current_frame = ctx.current_frame;
 
-        let global_ds = renderer.frames[current_frame].global_descriptor_set;
+        let global_ds = renderer.frame_manager.frames[current_frame].global_descriptor_set;
         self.record_commands_impl(
             &renderer.device.device,
             command_buffer,

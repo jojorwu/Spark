@@ -67,7 +67,7 @@ impl RenderPass for VolumetricPass {
         let command_buffer = ctx.command_buffer;
         let current_frame = ctx.current_frame;
 
-        let global_ds = renderer.frames[current_frame].global_descriptor_set;
+        let global_ds = renderer.frame_manager.frames[current_frame].global_descriptor_set;
         self.record_commands_impl(
             renderer,
             command_buffer,
@@ -188,7 +188,7 @@ impl VolumetricPass {
         let descriptor_sets = unsafe {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
-                    .descriptor_pool(renderer.descriptor_pool)
+                    .descriptor_pool(renderer.gpu_resource_manager.descriptor_pool)
                     .set_layouts(&layouts),
             )?
         };
