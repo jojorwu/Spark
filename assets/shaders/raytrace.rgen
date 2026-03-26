@@ -11,6 +11,7 @@ layout(binding = 6, set = 1, scalar) buffer Lights { Light l[]; } lights;
 layout(binding = 7, set = 1) uniform sampler2D gBufferDepth;
 layout(binding = 8, set = 1) uniform sampler2D gBufferNormal;
 layout(binding = 9, set = 1) uniform sampler2D gBufferAlbedo;
+layout(binding = 10, set = 1) uniform sampler2D gBufferPBR;
 
 layout(location = 0) rayPayloadEXT RayPayload payload;
 
@@ -90,10 +91,9 @@ vec3 calculateLighting(vec3 hitPos, vec3 normal, vec3 albedo, vec3 viewDir, floa
         if (pc.shadows_enabled > 0.5) {
             uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
 
-            uint oldHit = payload.hit;
+            payload.hit = 1; // Assume hit for shadow ray logic
             traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, L, dist, 0);
             if (payload.hit == 1) lightContrib *= 0.05;
-            payload.hit = oldHit;
         }
         color += lightContrib;
     }
@@ -113,6 +113,7 @@ void main()
 
     vec3 normal = texture(gBufferNormal, inUV).xyz * 2.0 - 1.0;
     vec3 albedo = texture(gBufferAlbedo, inUV).rgb;
+    vec4 pbr = texture(gBufferPBR, inUV);
 
     vec4 clipPos = vec4(inUV * 2.0 - 1.0, depth, 1.0);
     vec4 worldPos = ubo.inv_vp * clipPos;
@@ -122,8 +123,8 @@ void main()
     seed = uint(gl_LaunchIDEXT.y * gl_LaunchSizeEXT.x + gl_LaunchIDEXT.x);
     vec3 viewDir = normalize(ubo.camera_pos.xyz - hitPos);
 
-    float roughness = 0.5;
-    float metallic = 0.0;
+    float roughness = pbr.g;
+    float metallic = pbr.r;
     vec3 emissive = vec3(0.0);
 
     vec3 finalColor = calculateLighting(hitPos, normal, albedo, viewDir, roughness, metallic, emissive);
@@ -135,10 +136,9 @@ void main()
             vec3 aoDir = randomHemispherePoint(normal);
             uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
 
-            uint oldHit = payload.hit;
+            payload.hit = 1;
             traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, aoDir, 2.0, 0);
             if (payload.hit == 0) ao += 1.0;
-            payload.hit = oldHit;
         }
         ao /= float(aoSamples);
         finalColor *= (0.3 + 0.7 * ao);
@@ -146,6 +146,7 @@ void main()
 
     if (pc.reflections_enabled > 0.5) {
         vec3 reflectDir = reflect(-viewDir, normal);
+        payload.hit = 0;
         traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, reflectDir, 1000.0, 0);
         if (payload.hit == 1) {
             vec3 rHitPos = hitPos + reflectDir * payload.dist;

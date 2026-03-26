@@ -2,17 +2,24 @@ use ash::vk;
 use std::collections::{HashMap, HashSet};
 use crate::passes::{RenderPass, RenderContext};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceType {
     Image,
     Buffer,
     AccelerationStructure,
 }
 
-pub struct RenderGraphResource {
+#[derive(Debug, Clone)]
+pub struct ResourceDescription {
     pub name: String,
     pub ty: ResourceType,
     pub format: vk::Format,
-    pub usage: vk::ImageUsageFlags,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub struct RenderGraphResource {
+    pub desc: ResourceDescription,
     pub current_layout: vk::ImageLayout,
 }
 
@@ -27,6 +34,7 @@ pub struct RenderGraph {
     pub resources: HashMap<String, RenderGraphResource>,
     pub sorted_passes: Vec<usize>,
     pub physical_attachments: HashMap<String, Vec<crate::resource::Attachment>>,
+    pub transient_attachments: HashMap<String, Vec<crate::resource::Attachment>>,
 }
 
 impl RenderGraph {
@@ -36,6 +44,7 @@ impl RenderGraph {
             resources: HashMap::new(),
             sorted_passes: Vec::new(),
             physical_attachments: HashMap::new(),
+            transient_attachments: HashMap::new(),
         }
     }
 
@@ -47,7 +56,7 @@ impl RenderGraph {
         });
     }
 
-    pub fn compile(&mut self) {
+    pub fn compile(&mut self, renderer: &mut crate::Renderer) {
         let mut visited = HashSet::new();
         let mut temp_visited = HashSet::new();
         let mut order = Vec::new();
@@ -106,6 +115,33 @@ impl RenderGraph {
         }
 
         self.sorted_passes = order;
+
+        // Automatically create transient resources for outputs that are not physical
+        let extent = renderer.get_extent();
+        for pass in &self.passes {
+            for output in &pass.outputs {
+                if !self.physical_attachments.contains_key(output) && !self.transient_attachments.contains_key(output) {
+                    let format = if output.contains("Depth") { renderer.device.depth_format } else { vk::Format::R16G16B16A16_SFLOAT };
+                    let usage = if output.contains("Depth") {
+                        vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED
+                    } else {
+                        vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE
+                    };
+
+                    let attachments = (0..crate::MAX_FRAMES_IN_FLIGHT).map(|_| {
+                        crate::resource::Attachment::create_image_resource(
+                            &renderer.device,
+                            extent.width,
+                            extent.height,
+                            format,
+                            usage,
+                            vk::SampleCountFlags::TYPE_1,
+                        ).unwrap()
+                    }).collect();
+                    self.transient_attachments.insert(output.clone(), attachments);
+                }
+            }
+        }
     }
 
     pub fn execute(&self, ctx: &RenderContext, secondary_commands: &[Vec<vk::CommandBuffer>]) {
@@ -116,7 +152,10 @@ impl RenderGraph {
 
             // Automated Barrier Injection
             for (res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_access() {
-                if let Some(attachments) = self.physical_attachments.get(&res_name) {
+                let attachments = self.physical_attachments.get(&res_name)
+                    .or_else(|| self.transient_attachments.get(&res_name));
+
+                if let Some(attachments) = attachments {
                     let attachment = &attachments[ctx.current_frame];
                     let aspect = if res_name.contains("Depth") { vk::ImageAspectFlags::DEPTH } else { vk::ImageAspectFlags::COLOR };
 
@@ -141,7 +180,7 @@ impl RenderGraph {
                         &renderer.device.device,
                         attachment.image,
                         new_layout,
-                        vk::AccessFlags::empty(),
+                        vk::AccessFlags::MEMORY_WRITE | vk::AccessFlags::MEMORY_READ,
                         dst_access,
                         vk::PipelineStageFlags::ALL_COMMANDS,
                         dst_stage,

@@ -52,6 +52,7 @@ pub struct Renderer {
     pub common_sampler: vk::Sampler,
     pub common_shadow_view: vk::ImageView,
     pub hiz_view: vk::ImageView,
+    pub as_manager: std::sync::Arc<std::sync::Mutex<crate::vulkan::as_manager::AccelerationStructureManager>>,
     egui_renderer: Option<EguiRenderer>,
     pub bindless_descriptor_set_layout: vk::DescriptorSetLayout,
     pub bindless_descriptor_set: vk::DescriptorSet,
@@ -67,7 +68,6 @@ pub struct Renderer {
     pub pass_descriptor_versions: Vec<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
     pub dummy_buffer: Buffer,
     pub culling_finished_semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
-    pub as_manager: crate::vulkan::as_manager::AccelerationStructureManager,
     pub current_packet: Option<crate::resource::FramePacket>,
 }
 
@@ -304,7 +304,7 @@ impl Renderer {
             pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).collect(),
             dummy_buffer,
             culling_finished_semaphores: [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT],
-            as_manager: crate::vulkan::as_manager::AccelerationStructureManager::new(),
+            as_manager: std::sync::Arc::new(std::sync::Mutex::new(crate::vulkan::as_manager::AccelerationStructureManager::new())),
             current_packet: None,
         };
 
@@ -1207,17 +1207,20 @@ impl Renderer {
         self.device.msaa_samples
     }
 
-    pub fn get_pass_resource_view(&self, pass_name: &str, resource_name: &str, frame_index: usize) -> Option<vk::ImageView> {
-        for pass_node in &self.render_graph.passes {
-            if pass_node.pass.name() == pass_name {
-                if let Some(view) = pass_node.pass.get_resource_view(resource_name, frame_index) {
-                    return Some(view);
-                }
-            }
-        }
+    pub fn get_pass_resource_view(&self, _pass_name: &str, resource_name: &str, frame_index: usize) -> Option<vk::ImageView> {
         // Check graph-managed physical attachments
         if let Some(attachments) = self.render_graph.physical_attachments.get(resource_name) {
             return Some(attachments[frame_index].view);
+        }
+        // Check graph-managed transient attachments
+        if let Some(attachments) = self.render_graph.transient_attachments.get(resource_name) {
+            return Some(attachments[frame_index].view);
+        }
+
+        for pass_node in &self.render_graph.passes {
+            if let Some(view) = pass_node.pass.get_resource_view(resource_name, frame_index) {
+                return Some(view);
+            }
         }
         None
     }
@@ -1256,7 +1259,9 @@ impl Renderer {
     }
 
     pub fn compile_render_graph(&mut self) {
-        self.render_graph.compile();
+        let mut graph = std::mem::take(&mut self.render_graph);
+        graph.compile(self);
+        self.render_graph = graph;
     }
 
     /// Calculates the six frustum planes from a view-projection matrix.
@@ -1449,18 +1454,6 @@ impl Renderer {
 
         // 4. Prepare Passes
         let cf = self.current_frame;
-
-        if self.device.rt_supported && !packet.opaque_meshes.is_empty() {
-             if let (Some(vb), Some(ib)) = (self.global_vertex_buffer.as_ref(), self.global_index_buffer.as_ref()) {
-                 let cb = self.frames[cf].command_buffer;
-                 let _ = self.as_manager.build_scene_tlas(
-                     &self.device, cb, &packet, vb, ib, std::mem::size_of::<crate::vertex::Vertex>() as u64, cf, self.frame_index
-                 );
-                 if self.frame_index % 100 == 0 {
-                     self.as_manager.evict_unused_blas(&self.device, self.frame_index);
-                 }
-             }
-        }
 
         for pass_node in &self.render_graph.passes {
             pass_node.pass.prepare(self, cf);
@@ -1717,7 +1710,7 @@ impl Drop for Renderer {
                 self.device.destroy_buffer(mb);
             }
 
-            self.as_manager.cleanup(&self.device);
+            self.as_manager.lock().unwrap().cleanup(&self.device);
 
 
             for sem in self.culling_finished_semaphores {

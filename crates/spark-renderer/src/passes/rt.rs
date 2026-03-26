@@ -1,6 +1,6 @@
 use ash::vk;
 use std::sync::atomic::{AtomicU64, Ordering};
-use crate::resource::{Attachment, MAX_FRAMES_IN_FLIGHT};
+use crate::resource::MAX_FRAMES_IN_FLIGHT;
 use crate::Renderer;
 use super::{RenderPass, RenderContext};
 
@@ -14,6 +14,9 @@ const BINDING_LIGHTS: u32 = 6;
 const BINDING_GBUFFER_DEPTH: u32 = 7;
 const BINDING_GBUFFER_NORMAL: u32 = 8;
 const BINDING_GBUFFER_ALBEDO: u32 = 9;
+const BINDING_GBUFFER_PBR: u32 = 10;
+
+use super::ResourceBinding;
 
 /// A rendering pass that performs hardware-accelerated ray tracing.
 pub struct RayTracingPass {
@@ -21,7 +24,6 @@ pub struct RayTracingPass {
     pub layout: vk::PipelineLayout,
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     pub descriptor_sets: Vec<vk::DescriptorSet>,
-    pub output_images: Vec<Attachment>,
     pub as_loader: ash::khr::acceleration_structure::Device,
     pub rt_loader: ash::khr::ray_tracing_pipeline::Device,
     pub sbt_buffer: Option<crate::resource::Buffer>,
@@ -32,20 +34,22 @@ pub struct RayTracingPass {
 impl RenderPass for RayTracingPass {
     fn name(&self) -> &str { "RayTracingPass" }
     fn inputs(&self) -> Vec<&'static str> { vec!["GBufferDepth", "GBufferNormal", "GBufferAlbedo", "GBufferPBR", "HiZ"] }
-    fn on_resize(&mut self, renderer: &mut Renderer, new_extent: vk::Extent2D) {
-        for img in self.output_images.drain(..) {
-            img.destroy(&renderer.device.device, &renderer.device.allocator);
-        }
-        self.output_images = (0..MAX_FRAMES_IN_FLIGHT).map(|_| {
-            Attachment::create_image_resource(
-                &renderer.device,
-                new_extent.width,
-                new_extent.height,
-                vk::Format::R16G16B16A16_SFLOAT,
-                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
-                vk::SampleCountFlags::TYPE_1,
-            ).unwrap()
-        }).collect();
+    fn on_resize(&mut self, _renderer: &mut Renderer, _new_extent: vk::Extent2D) {}
+
+    fn bindings(&self) -> Vec<ResourceBinding> {
+        vec![
+            ResourceBinding::AccelerationStructure("SceneTLAS".to_string()),
+            ResourceBinding::StorageImage("RTOutput".to_string()),
+            ResourceBinding::StorageBuffer("Vertices".to_string()),
+            ResourceBinding::StorageBuffer("Indices".to_string()),
+            ResourceBinding::StorageBuffer("MeshData".to_string()),
+            ResourceBinding::StorageBuffer("Materials".to_string()),
+            ResourceBinding::StorageBuffer("Lights".to_string()),
+            ResourceBinding::SampledImage("GBufferDepth".to_string()),
+            ResourceBinding::SampledImage("GBufferNormal".to_string()),
+            ResourceBinding::SampledImage("GBufferAlbedo".to_string()),
+            ResourceBinding::SampledImage("GBufferPBR".to_string()),
+        ]
     }
 
     fn destroy(&mut self, renderer: &mut Renderer) {
@@ -54,9 +58,6 @@ impl RenderPass for RayTracingPass {
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            for img in self.output_images.drain(..) {
-                img.destroy(device, &renderer.device.allocator);
-            }
             if let Some(sbt) = self.sbt_buffer.take() {
                 renderer.device.destroy_buffer(sbt);
             }
@@ -64,6 +65,7 @@ impl RenderPass for RayTracingPass {
     }
     fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
         vec![
+            ("SceneTLAS".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
             ("GBufferDepth".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
             ("GBufferNormal".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
             ("GBufferAlbedo".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
@@ -80,7 +82,10 @@ impl RenderPass for RayTracingPass {
         if let Some(ref vb) = renderer.global_vertex_buffer { version += vb.version.load(Ordering::Relaxed); }
         if let Some(ref ib) = renderer.global_index_buffer { version += ib.version.load(Ordering::Relaxed); }
         if let Some(ref mat) = renderer.global_material_buffer { version += mat.version.load(Ordering::Relaxed); }
-        if let Some(ref tlas) = renderer.as_manager.current_tlas[frame_index] { version += tlas.buffer.version.load(Ordering::Relaxed); }
+        {
+            let as_manager = renderer.as_manager.lock().unwrap();
+            if let Some(ref tlas) = as_manager.current_tlas[frame_index] { version += tlas.buffer.version.load(Ordering::Relaxed); }
+        }
 
         version != self.descriptor_versions[frame_index].load(Ordering::Relaxed)
     }
@@ -156,9 +161,10 @@ impl RayTracingPass {
         let device = &renderer.device.device;
         let ds = self.descriptor_sets[current_frame];
 
+        let out_view = renderer.get_pass_resource_view("", "RTOutput", current_frame).unwrap_or(renderer.common_shadow_view);
         let out_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::GENERAL)
-            .image_view(self.output_images[current_frame].view)];
+            .image_view(out_view)];
 
         let mut writes = vec![
             vk::WriteDescriptorSet::default()
@@ -167,6 +173,8 @@ impl RayTracingPass {
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(&out_info),
         ];
+
+        let as_manager = renderer.as_manager.lock().unwrap();
 
         let vb_info;
         if let Some(ref vb) = renderer.global_vertex_buffer {
@@ -219,17 +227,20 @@ impl RayTracingPass {
         let depth_view = renderer.get_pass_resource_view("", "GBufferDepth", current_frame).unwrap_or(renderer.common_shadow_view);
         let normal_view = renderer.get_pass_resource_view("", "GBufferNormal", current_frame).unwrap_or(renderer.common_shadow_view);
         let albedo_view = renderer.get_pass_resource_view("", "GBufferAlbedo", current_frame).unwrap_or(renderer.common_shadow_view);
+        let pbr_view = renderer.get_pass_resource_view("", "GBufferPBR", current_frame).unwrap_or(renderer.common_shadow_view);
 
         let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(depth_view).sampler(renderer.common_sampler)];
         let normal_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(normal_view).sampler(renderer.common_sampler)];
         let albedo_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(albedo_view).sampler(renderer.common_sampler)];
+        let pbr_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(pbr_view).sampler(renderer.common_sampler)];
 
         writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(BINDING_GBUFFER_DEPTH).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&depth_info));
         writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(BINDING_GBUFFER_NORMAL).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&normal_info));
         writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(BINDING_GBUFFER_ALBEDO).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&albedo_info));
+        writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(BINDING_GBUFFER_PBR).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&pbr_info));
 
         let mut as_info;
-        if let Some(ref tlas) = renderer.as_manager.current_tlas[current_frame] {
+        if let Some(ref tlas) = as_manager.current_tlas[current_frame] {
             as_info = vk::WriteDescriptorSetAccelerationStructureKHR::default()
                 .acceleration_structures(std::slice::from_ref(&tlas.handle));
 
@@ -251,7 +262,7 @@ impl RayTracingPass {
         if let Some(ref vb) = renderer.global_vertex_buffer { version += vb.version.load(Ordering::Relaxed); }
         if let Some(ref ib) = renderer.global_index_buffer { version += ib.version.load(Ordering::Relaxed); }
         if let Some(ref mat) = renderer.global_material_buffer { version += mat.version.load(Ordering::Relaxed); }
-        if let Some(ref tlas) = renderer.as_manager.current_tlas[current_frame] { version += tlas.buffer.version.load(Ordering::Relaxed); }
+        if let Some(ref tlas) = as_manager.current_tlas[current_frame] { version += tlas.buffer.version.load(Ordering::Relaxed); }
 
         self.descriptor_versions[current_frame].store(version, Ordering::Relaxed);
     }
@@ -269,18 +280,6 @@ impl RayTracingPass {
             return Ok(Self::new_empty(as_loader, rt_loader));
         }
 
-        let extent = renderer.get_extent();
-        let output_images = (0..MAX_FRAMES_IN_FLIGHT).map(|_| {
-            Attachment::create_image_resource(
-                &renderer.device,
-                extent.width,
-                extent.height,
-                vk::Format::R16G16B16A16_SFLOAT,
-                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
-                vk::SampleCountFlags::TYPE_1,
-            ).unwrap()
-        }).collect::<Vec<_>>();
-
         let ds_layout = Self::create_descriptor_set_layout(device)?;
         let layout = Self::create_pipeline_layout(renderer, device, ds_layout)?;
         let descriptor_sets = Self::allocate_descriptor_sets(renderer, device, ds_layout)?;
@@ -294,7 +293,6 @@ impl RayTracingPass {
             layout,
             descriptor_set_layout: ds_layout,
             descriptor_sets,
-            output_images,
             as_loader,
             rt_loader,
             sbt_buffer: Some(sbt_buffer),
@@ -309,7 +307,6 @@ impl RayTracingPass {
             layout: vk::PipelineLayout::null(),
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
             descriptor_sets: Vec::new(),
-            output_images: Vec::new(),
             as_loader,
             rt_loader,
             sbt_buffer: None,
@@ -330,6 +327,7 @@ impl RayTracingPass {
             vk::DescriptorSetLayoutBinding::default().binding(BINDING_GBUFFER_DEPTH).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
             vk::DescriptorSetLayoutBinding::default().binding(BINDING_GBUFFER_NORMAL).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
             vk::DescriptorSetLayoutBinding::default().binding(BINDING_GBUFFER_ALBEDO).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+            vk::DescriptorSetLayoutBinding::default().binding(BINDING_GBUFFER_PBR).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
         ];
 
         unsafe {

@@ -32,12 +32,23 @@ pub struct RenderContext<'a> {
 }
 
 /// A trait representing a modular rendering pass.
+pub enum ResourceBinding {
+    StorageImage(String),
+    SampledImage(String),
+    StorageBuffer(String),
+    UniformBuffer(String),
+    AccelerationStructure(String),
+}
+
 pub trait RenderPass: Send + Sync {
     /// Returns the unique name of the rendering pass.
     fn name(&self) -> &str;
 
     /// Declarative GPU resource requirements for the pass.
     fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> { Vec::new() }
+
+    /// Returns the list of resource bindings required by this pass.
+    fn bindings(&self) -> Vec<ResourceBinding> { Vec::new() }
 
     /// Returns true if the pass is currently enabled and should be executed.
     fn is_enabled(&self, _renderer: &Renderer) -> bool {

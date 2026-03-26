@@ -86,7 +86,8 @@ void main() {
     if (rt_any) {
         // In this implementation, the RT pass calculates the full lit scene if any RT features are on.
         // We mix it with the rasterized result.
-        color = mix(color, rtColor + fogColor, 0.8);
+        // Using a higher weight for RT result to ensure its effects (shadows, reflections) are dominant
+        color = mix(color, rtColor + fogColor, 0.9);
     }
 
     // Apply DoF
