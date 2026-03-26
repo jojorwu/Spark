@@ -18,6 +18,7 @@ pub mod ssgi;
 pub mod luminance;
 pub mod dof;
 pub mod rt;
+pub mod as_build;
 
 use ash::vk;
 use crate::Renderer;

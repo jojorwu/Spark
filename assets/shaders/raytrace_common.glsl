@@ -4,6 +4,9 @@ struct RayPayload {
     uint hit;
     vec3 normal;
     uint material_index;
+    float roughness;
+    float metallic;
+    vec3 emissive;
 };
 
 struct Vertex {

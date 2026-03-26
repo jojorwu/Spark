@@ -115,6 +115,7 @@ impl Renderer {
         let point_shadow_pass = crate::passes::point_shadow::PointShadowPass::new(self, &shaders.point_shadow_vert, &shaders.point_shadow_frag)?;
         let ssgi_pass = crate::passes::ssgi::SSGIPass::new(self, &shaders.ssgi)?;
 
+        let as_build_pass = crate::passes::as_build::AccelerationStructurePass::new();
         let rt_pass = crate::passes::rt::RayTracingPass::new(self, &shaders.rgen, &shaders.rmiss, &shaders.rchit)?;
 
         let mut post_process_pass = crate::passes::post_process::PostProcessPass::new(
@@ -163,7 +164,8 @@ impl Renderer {
         self.add_render_pass(dof_pass, &["HDRColor", "GBuffer"], &["DoF"]);
         self.add_render_pass(point_shadow_pass, &[], &["PointShadowMap"]);
         self.add_render_pass(ssgi_pass, &["GBuffer", "HDRColor"], &["SSGI"]);
-        self.add_render_pass(rt_pass, &["GBufferDepth", "GBufferNormal", "GBufferPBR", "HiZ"], &["RTOutput"]);
+        self.add_render_pass(as_build_pass, &[], &["SceneTLAS"]);
+        self.add_render_pass(rt_pass, &["GBufferDepth", "GBufferNormal", "GBufferPBR", "HiZ", "SceneTLAS"], &["RTOutput"]);
         self.add_render_pass(sprite_pass, &["GBuffer"], &["SpriteColor"]);
         self.add_render_pass(post_process_pass, &["TAAColor", "SpriteColor", "Luminance", "DoF", "SSGI", "RTOutput"], &["FinalColor"]);
 

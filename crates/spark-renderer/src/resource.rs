@@ -175,6 +175,7 @@ pub struct MeshDraw {
     pub mesh_id: u32,
 }
 
+#[derive(Clone)]
 pub struct LightDraw {
     pub position: spark_math::Vec3,
     pub direction: spark_math::Vec3,
@@ -185,6 +186,7 @@ pub struct LightDraw {
     pub spot_angles: [f32; 2], // inner, outer (cos)
 }
 
+#[derive(Clone)]
 pub struct FramePacket {
     pub view_matrix: spark_math::Mat4,
     pub projection_matrix: spark_math::Mat4,

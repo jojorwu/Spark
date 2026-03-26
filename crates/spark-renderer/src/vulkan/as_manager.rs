@@ -86,7 +86,7 @@ impl AccelerationStructureManager {
             self.blas_usage.insert(key, frame_id);
             let blas = self.blas_cache.get(&key).unwrap();
 
-            let m = mesh.model.transpose();
+            let m = mesh.model;
             let transform = vk::TransformMatrixKHR {
                 matrix: [
                     m.row(0).x, m.row(0).y, m.row(0).z, m.row(0).w,

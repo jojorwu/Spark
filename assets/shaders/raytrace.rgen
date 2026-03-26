@@ -54,15 +54,20 @@ vec3 randomHemispherePoint(vec3 n) {
     return p.x * tangent + p.y * bitangent + p.z * n;
 }
 
-// Fresnel Schlick approximation
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-vec3 calculateLighting(vec3 hitPos, vec3 normal, vec3 albedo, vec3 viewDir) {
-    vec3 color = vec3(0.0);
-    vec3 F0 = vec3(0.04);
-    F0 = mix(F0, albedo, 0.0); // Assuming non-metallic for this simple calc
+float D_GGX(float dotNH, float roughness) {
+    float alpha = roughness * roughness;
+    float alpha2 = alpha * alpha;
+    float denom = dotNH * dotNH * (alpha2 - 1.0) + 1.0;
+    return alpha2 / (3.14159265 * denom * denom);
+}
+
+vec3 calculateLighting(vec3 hitPos, vec3 normal, vec3 albedo, vec3 viewDir, float roughness, float metallic, vec3 emissive) {
+    vec3 color = emissive;
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
     for (int i = 0; i < 16; i++) {
         Light light = lights.l[i];
@@ -88,15 +93,27 @@ vec3 calculateLighting(vec3 hitPos, vec3 normal, vec3 albedo, vec3 viewDir) {
             }
         }
 
-        float diff = max(dot(normal, L), 0.0);
-        vec3 diffuse = albedo * light.col_intensity.rgb * light.col_intensity.w * diff * attenuation;
+        vec3 H = normalize(L + viewDir);
+        float dotNL = max(dot(normal, L), 0.0);
+        float dotNH = max(dot(normal, H), 0.0);
 
-        if (pc.shadows_enabled > 0.5 && diff > 0.0) {
+        vec3 F = fresnelSchlick(max(dot(H, viewDir), 0.0), F0);
+        float D = D_GGX(dotNH, roughness);
+
+        vec3 kS = F;
+        vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+
+        vec3 lightContrib = (kD * albedo / 3.14159265 + F * D) * light.col_intensity.rgb * light.col_intensity.w * dotNL * attenuation;
+
+        if (pc.shadows_enabled > 0.5 && dotNL > 0.0) {
             uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+
+            uint oldHit = payload.hit;
             traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, L, dist, 0);
-            if (payload.hit == 1) diffuse *= 0.1;
+            if (payload.hit == 1) lightContrib *= 0.1;
+            payload.hit = oldHit;
         }
-        color += diffuse;
+        color += lightContrib;
     }
     return color;
 }
@@ -123,7 +140,11 @@ void main()
     vec3 viewDir = normalize(ubo.camera_pos.xyz - hitPos);
 
     vec3 albedo = vec3(0.8);
-    vec3 finalColor = calculateLighting(hitPos, normal, albedo, viewDir);
+    float roughness = 0.5;
+    float metallic = 0.0;
+    vec3 emissive = vec3(0.0);
+
+    vec3 finalColor = calculateLighting(hitPos, normal, albedo, viewDir, roughness, metallic, emissive);
 
     if (pc.ao_enabled > 0.5) {
         float ao = 0.0;
@@ -131,8 +152,11 @@ void main()
         for (int i = 0; i < aoSamples; i++) {
             vec3 aoDir = randomHemispherePoint(normal);
             uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+
+            uint oldHit = payload.hit;
             traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, aoDir, 2.0, 0);
             if (payload.hit == 0) ao += 1.0;
+            payload.hit = oldHit;
         }
         ao /= float(aoSamples);
         finalColor *= (0.3 + 0.7 * ao);
@@ -143,9 +167,9 @@ void main()
         traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, reflectDir, 1000.0, 0);
         if (payload.hit == 1) {
             vec3 rHitPos = hitPos + reflectDir * payload.dist;
-            vec3 reflectColor = calculateLighting(rHitPos, payload.normal, payload.color, -reflectDir);
+            vec3 reflectColor = calculateLighting(rHitPos, payload.normal, payload.color, -reflectDir, payload.roughness, payload.metallic, payload.emissive);
 
-            vec3 F = fresnelSchlick(max(dot(normal, viewDir), 0.0), vec3(0.04));
+            vec3 F = fresnelSchlick(max(dot(normal, viewDir), 0.0), mix(vec3(0.04), albedo, metallic));
             finalColor = mix(finalColor, reflectColor, F * 0.5);
         }
     }

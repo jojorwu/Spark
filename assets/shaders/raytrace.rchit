@@ -44,4 +44,7 @@ void main()
   payload.hit = 1;
   payload.normal = normal;
   payload.material_index = mesh.material_index;
+  payload.roughness = mat.roughness_factor;
+  payload.metallic = mat.metallic_factor;
+  payload.emissive = mat.emissive_factor.rgb;
 }

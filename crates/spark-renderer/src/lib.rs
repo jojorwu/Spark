@@ -68,6 +68,7 @@ pub struct Renderer {
     pub dummy_buffer: Buffer,
     pub culling_finished_semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
     pub as_manager: crate::vulkan::as_manager::AccelerationStructureManager,
+    pub current_packet: Option<crate::resource::FramePacket>,
 }
 
 #[repr(C)]
@@ -304,6 +305,7 @@ impl Renderer {
             dummy_buffer,
             culling_finished_semaphores: [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT],
             as_manager: crate::vulkan::as_manager::AccelerationStructureManager::new(),
+            current_packet: None,
         };
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
@@ -1286,6 +1288,7 @@ impl Renderer {
         &mut self,
         packet: crate::resource::FramePacket,
     ) -> u32 {
+        self.current_packet = Some(packet.clone());
         self.scene_view_matrix_for_pos = packet.view_matrix;
 
         // 1. Prepare GPU Indirect and Object buffers in parallel

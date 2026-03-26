@@ -5,6 +5,7 @@ use crate::passes::{RenderPass, RenderContext};
 pub enum ResourceType {
     Image,
     Buffer,
+    AccelerationStructure,
 }
 
 pub struct RenderGraphResource {
@@ -129,6 +130,8 @@ impl RenderGraph {
                         vk::ImageLayout::TRANSFER_SRC_OPTIMAL
                     } else if dst_access.contains(vk::AccessFlags::TRANSFER_WRITE) {
                         vk::ImageLayout::TRANSFER_DST_OPTIMAL
+                    } else if dst_stage.contains(vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR) || dst_stage.contains(vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR) {
+                        vk::ImageLayout::GENERAL
                     } else {
                         vk::ImageLayout::GENERAL
                     };
