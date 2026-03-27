@@ -6,6 +6,9 @@ pub trait Command: Send + Sync {
     fn apply(&mut self, scene: &mut Scene, resource_manager: &mut ResourceManager);
 }
 
+unsafe impl Send for AddNodeCommand {}
+unsafe impl Sync for AddNodeCommand {}
+
 pub struct AddNodeCommand {
     pub parent: NodeKey,
     pub node: Option<Node>,

@@ -1,3 +1,5 @@
+pub mod asset;
+pub mod gltf_loader;
 pub mod command;
 pub mod event;
 pub mod event_bus;
@@ -116,6 +118,7 @@ pub struct InitContext<'a> {
     pub scene: &'a mut Scene,
     pub renderer: &'a mut Renderer,
     pub resource_manager: &'a mut ResourceManager,
+    pub asset_manager: &'a mut crate::asset::AssetManager,
     pub resources: &'a mut crate::resource_container::Resources,
     pub task_system: &'a TaskSystem,
 }
@@ -125,6 +128,7 @@ pub struct FrameContext<'a> {
     scene: *mut Scene,
     renderer: *mut Renderer,
     resource_manager: *mut ResourceManager,
+    asset_manager: *mut crate::asset::AssetManager,
     pub project: &'a Project,
     pub resources: &'a crate::resource_container::Resources,
     pub task_system: &'a TaskSystem,
@@ -144,6 +148,7 @@ impl<'a> FrameContext<'a> {
         scene: &mut Scene,
         renderer: &mut Renderer,
         resource_manager: &mut ResourceManager,
+        asset_manager: &mut crate::asset::AssetManager,
         project: &'a Project,
         resources: &'a crate::resource_container::Resources,
         task_system: &'a TaskSystem,
@@ -157,6 +162,7 @@ impl<'a> FrameContext<'a> {
             scene: scene as *mut Scene,
             renderer: renderer as *mut Renderer,
             resource_manager: resource_manager as *mut ResourceManager,
+            asset_manager: asset_manager as *mut crate::asset::AssetManager,
             project,
             resources,
             task_system,
@@ -176,6 +182,9 @@ impl<'a> FrameContext<'a> {
     }
     pub fn resource_manager(&self) -> &ResourceManager {
         unsafe { &*self.resource_manager }
+    }
+    pub fn asset_manager(&self) -> &crate::asset::AssetManager {
+        unsafe { &*self.asset_manager }
     }
 
     /// Returns a mutable reference to the scene.
@@ -206,6 +215,16 @@ impl<'a> FrameContext<'a> {
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn resource_manager_mut(&self) -> &mut ResourceManager {
         &mut *self.resource_manager
+    }
+
+    /// Returns a mutable reference to the asset manager.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure no other threads are accessing the asset manager concurrently.
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn asset_manager_mut(&self) -> &mut crate::asset::AssetManager {
+        &mut *self.asset_manager
     }
 
     pub fn get_component<T: 'static>(&self, node: crate::scene::NodeKey) -> Option<&T> {
@@ -262,6 +281,7 @@ pub trait System: Send + Sync {
             .with_scene(Access::Write)
             .with_renderer(Access::Write)
             .with_resource_manager(Access::Write)
+            .with::<crate::asset::AssetManager>(Access::Write)
     }
 }
 
@@ -326,23 +346,12 @@ impl App {
     }
 
     pub fn set_state(&mut self, state: &str) {
-        let mut init_ctx = InitContext {
-            scene: &mut self.engine.scene,
-            renderer: &mut self.engine.renderer,
-            resource_manager: &mut self.engine.resource_manager,
-            resources: &mut self.engine.resources,
-            task_system: &self.engine.task_system,
-        };
-        crate::systems::Scheduler::set_state(
-            &mut self.engine.system_registry,
-            state,
-            &mut init_ctx,
-        );
+        crate::systems::Scheduler::set_state(&mut self.engine.system_registry, state);
     }
 
     pub fn run(mut self) {
         self.run_startup();
-        self.engine.run(|_, _, _, _, _, _, _, _| (false, None));
+        self.engine.run(|_, _, _, _, _, _, _, _, _| (false, None));
     }
 
     pub fn run_with_ui<F>(mut self, ui_callback: F)
@@ -352,6 +361,7 @@ impl App {
                 &winit::event::Event<()>,
                 &mut Scene,
                 &mut ResourceManager,
+                &mut crate::asset::AssetManager,
                 &mut Renderer,
                 &mut Project,
                 &mut crate::resource_container::Resources,
@@ -368,6 +378,7 @@ impl App {
             scene: &mut self.engine.scene,
             renderer: &mut self.engine.renderer,
             resource_manager: &mut self.engine.resource_manager,
+            asset_manager: &mut self.engine.asset_manager,
             resources: &mut self.engine.resources,
             task_system: &self.engine.task_system,
         };
@@ -384,6 +395,7 @@ pub struct Engine {
     pub renderer: Renderer,
     pub task_system: TaskSystem,
     pub resource_manager: ResourceManager,
+    pub asset_manager: crate::asset::AssetManager,
     pub resources: crate::resource_container::Resources,
     pub input_manager: crate::input::InputManager,
     pub command_queue: crate::command::CommandQueue,
@@ -410,6 +422,7 @@ impl Engine {
         let scene = Scene::new();
         let task_system = TaskSystem::new();
         let resource_manager = ResourceManager::new();
+        let asset_manager = crate::asset::AssetManager::new();
         let resources = crate::resource_container::Resources::new();
         let input_manager = crate::input::InputManager::new();
         let command_queue = crate::command::CommandQueue::new();
@@ -423,6 +436,7 @@ impl Engine {
             renderer,
             task_system,
             resource_manager,
+            asset_manager,
             resources,
             input_manager,
             command_queue,
@@ -473,6 +487,7 @@ impl Engine {
                 &winit::event::Event<()>,
                 &mut Scene,
                 &mut ResourceManager,
+                &mut crate::asset::AssetManager,
                 &mut Renderer,
                 &mut Project,
                 &mut crate::resource_container::Resources,
@@ -487,6 +502,7 @@ impl Engine {
                 scene: &mut self.scene,
                 renderer: &mut self.renderer,
                 resource_manager: &mut self.resource_manager,
+                asset_manager: &mut self.asset_manager,
                 resources: &mut self.resources,
                 task_system: &self.task_system,
             };
@@ -500,6 +516,7 @@ impl Engine {
                     &event,
                     &mut self.scene,
                     &mut self.resource_manager,
+                    &mut self.asset_manager,
                     &mut self.renderer,
                     &mut self.project,
                     &mut self.resources,
@@ -519,10 +536,22 @@ impl Engine {
                         self.last_frame_time = now;
                         self.current_fps = 0.9 * self.current_fps + 0.1 * (1.0 / delta.max(0.001));
 
+                        self.event_bus.swap_buffers();
+
+                        {
+                            let mut init_ctx = InitContext {
+                                scene: &mut self.scene,
+                                renderer: &mut self.renderer,
+                                resource_manager: &mut self.resource_manager,
+                                asset_manager: &mut self.asset_manager,
+                                resources: &mut self.resources,
+                                task_system: &self.task_system,
+                            };
+                            crate::systems::Scheduler::apply_state_changes(&mut self.system_registry, &mut init_ctx);
+                        }
+
                         self.update_phase(delta);
                         self.render_phase(egui_output, delta);
-
-                        self.event_bus.clear_events();
                     }
                     _ => (),
                 }
@@ -532,6 +561,7 @@ impl Engine {
                         scene: &mut self.scene,
                         renderer: &mut self.renderer,
                         resource_manager: &mut self.resource_manager,
+                        asset_manager: &mut self.asset_manager,
                         resources: &mut self.resources,
                         task_system: &self.task_system,
                     };
@@ -552,6 +582,7 @@ impl Engine {
                 &mut self.scene,
                 &mut self.renderer,
                 &mut self.resource_manager,
+                &mut self.asset_manager,
                 &self.project,
                 &self.resources,
                 &self.task_system,
@@ -622,7 +653,7 @@ impl Engine {
         // Collect visibility and light data
         let mut packet = self
             .scene
-            .collect_frame_packet(frustum_ref, &self.resource_manager);
+            .collect_frame_packet(frustum_ref, &self.resource_manager, &self.asset_manager);
         packet.projection_matrix = projection_matrix;
         let total_objects = self.renderer.prepare_frame(packet);
 

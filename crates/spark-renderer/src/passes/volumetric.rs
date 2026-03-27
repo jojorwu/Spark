@@ -16,50 +16,46 @@ impl RenderPass for VolumetricPass {
     fn name(&self) -> &str {
         "VolumetricPass"
     }
+
+    fn inputs(&self) -> Vec<&'static str> {
+        vec!["GBufferDepth", "ShadowMap"]
+    }
+
+    fn outputs(&self) -> Vec<&'static str> {
+        vec!["VolumetricOutput"]
+    }
+
     fn is_enabled(&self, renderer: &Renderer) -> bool {
         renderer.settings.enable_volumetric
     }
-    fn prepare(&self, renderer: &Renderer, current_frame: usize) {
-        let out_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::GENERAL)
-            .image_view(self.output_images[current_frame].view)];
-        let depth_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(
-                renderer
-                    .get_pass_resource_view("", "GBufferDepth", current_frame)
-                    .unwrap_or(renderer.common_shadow_view),
-            )
-            .sampler(renderer.common_sampler)];
-        let shadow_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(renderer.common_shadow_view)
-            .sampler(renderer.common_sampler)];
 
-        let writes = [
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(&out_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&depth_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(2)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&shadow_info),
-        ];
-        unsafe {
-            renderer.device.device.update_descriptor_sets(&writes, &[]);
-        }
+    fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout {
+        self.descriptor_set_layout
     }
 
-    fn update_descriptor_sets(&self, _renderer: &Renderer) {
-        // Handled in prepare
+    fn set_descriptor_sets(&mut self, sets: Vec<vk::DescriptorSet>) {
+        self.descriptor_sets = sets;
+    }
+
+    fn bindings(&self) -> Vec<super::ResourceBinding> {
+        vec![
+            super::ResourceBinding::StorageImage(0, "VolumetricOutput".to_string()),
+            super::ResourceBinding::SampledImage(1, "GBufferDepth".to_string()),
+            super::ResourceBinding::SampledImage(2, "ShadowMap".to_string()),
+        ]
+    }
+
+    fn declared_resources(&self) -> std::collections::HashMap<String, super::ResourceDesc> {
+        let mut res = std::collections::HashMap::new();
+        res.insert(
+            "VolumetricOutput".to_string(),
+            super::ResourceDesc::Image(super::AttachmentDesc {
+                format: vk::Format::R16G16B16A16_SFLOAT,
+                usage: vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
+                size: super::AttachmentSize::Relative(0.5, 0.5),
+            }),
+        );
+        res
     }
 
     fn record_commands(&self, ctx: &RenderContext) {

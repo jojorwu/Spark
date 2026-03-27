@@ -110,7 +110,7 @@ impl RenderPass for LuminancePass {
         }
     }
 
-    fn get_resource_buffer(&self, name: &str) -> Option<Buffer> {
+    fn get_resource_buffer(&self, name: &str, _frame_index: usize) -> Option<Buffer> {
         if name == "Luminance" {
             Some(self.luminance_buffer.clone())
         } else {

@@ -406,10 +406,10 @@ impl Renderer {
             let mut g = None;
             let mut idx = None;
             for pass_node in &self.render_graph.passes {
-                if let Some(b) = pass_node.pass.get_resource_buffer("light_grid") {
+                if let Some(b) = pass_node.pass.get_resource_buffer("light_grid", 0) {
                     g = Some(b);
                 }
-                if let Some(b) = pass_node.pass.get_resource_buffer("index_list") {
+                if let Some(b) = pass_node.pass.get_resource_buffer("index_list", 0) {
                     idx = Some(b);
                 }
             }
@@ -1396,12 +1396,26 @@ impl Renderer {
         None
     }
 
-    pub fn get_resource_buffer(&self, pass_name: &str, resource_name: &str) -> Option<Buffer> {
+    pub fn get_resource_buffer(&self, _pass_name: &str, resource_name: &str, frame_index: usize) -> Option<Buffer> {
+        if resource_name == "light_buffer" || resource_name == "Lights" {
+            return self.frame_manager.frames[frame_index].light_buffer.clone();
+        }
+        if resource_name == "object_data_buffer" || resource_name == "MeshData" {
+            return self.frame_manager.frames[frame_index].object_data_buffer.clone();
+        }
+        if resource_name == "Vertices" {
+            return self.gpu_resource_manager.global_vertex_buffer.clone();
+        }
+        if resource_name == "Indices" {
+            return self.gpu_resource_manager.global_index_buffer.clone();
+        }
+        if resource_name == "Materials" {
+            return self.gpu_resource_manager.global_material_buffer.clone();
+        }
+
         for pass_node in &self.render_graph.passes {
-            if pass_node.pass.name() == pass_name {
-                if let Some(buffer) = pass_node.pass.get_resource_buffer(resource_name) {
-                    return Some(buffer);
-                }
+            if let Some(buffer) = pass_node.pass.get_resource_buffer(resource_name, frame_index) {
+                return Some(buffer);
             }
         }
         None

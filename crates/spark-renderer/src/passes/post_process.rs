@@ -36,6 +36,39 @@ impl RenderPass for PostProcessPass {
     fn name(&self) -> &str {
         "PostProcessPass"
     }
+
+    fn inputs(&self) -> Vec<&'static str> {
+        vec![
+            "GBufferHDR",
+            "GBufferVelocity",
+            "VolumetricOutput",
+            "SpriteColor",
+            "DoFOutput",
+            "RTOutput",
+        ]
+    }
+
+    fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout {
+        self.descriptor_set_layout
+    }
+
+    fn set_descriptor_sets(&mut self, sets: Vec<vk::DescriptorSet>) {
+        self.descriptor_sets = sets;
+    }
+
+    fn bindings(&self) -> Vec<super::ResourceBinding> {
+        vec![
+            super::ResourceBinding::SampledImage(0, "GBufferHDR".to_string()),
+            super::ResourceBinding::SampledImage(1, "BloomOutput".to_string()),
+            super::ResourceBinding::SampledImage(2, "VolumetricOutput".to_string()),
+            super::ResourceBinding::SampledImage(3, "SpriteColor".to_string()),
+            super::ResourceBinding::SampledImage(4, "GBufferVelocity".to_string()),
+            super::ResourceBinding::StorageBuffer(5, "Luminance".to_string()),
+            super::ResourceBinding::SampledImage(6, "DoFOutput".to_string()),
+            super::ResourceBinding::SampledImage(7, "RTOutput".to_string()),
+        ]
+    }
+
     fn dependencies(&self) -> Vec<&'static str> {
         vec![
             "LightingPass",
@@ -46,129 +79,14 @@ impl RenderPass for PostProcessPass {
         ]
     }
 
-    fn prepare(&self, renderer: &Renderer, current_frame: usize) {
-        let device = &renderer.device.device;
-        let sampler = renderer.common_sampler;
-
-        let taa_view = renderer.get_pass_resource_view("TAAPass", "history", current_frame);
-        let fog_view = renderer.get_pass_resource_view("VolumetricPass", "output", current_frame);
-        let sprite_view =
-            renderer.get_pass_resource_view("SpritePass", "SpriteColor", current_frame);
-        let velocity_view = renderer.get_pass_resource_view("", "GBufferVelocity", current_frame);
-        let dof_view = renderer.get_pass_resource_view("DoFPass", "output", current_frame);
-        let rt_view = renderer.get_pass_resource_view("RayTracingPass", "RTOutput", current_frame);
-
-        let input_view = taa_view.unwrap_or(
-            renderer
-                .get_pass_resource_view("", "GBufferHDR", current_frame)
-                .unwrap_or(renderer.common_shadow_view),
-        );
-        let final_fog_view = fog_view.unwrap_or(input_view);
-        let final_sprite_view = sprite_view.unwrap_or(renderer.common_shadow_view);
-        let final_velocity_view = velocity_view.unwrap_or(renderer.common_shadow_view);
-
-        let img_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(input_view)
-            .sampler(sampler)];
-
-        // Final bloom result is in bloom_mips[0] after upsampling
-        let blm_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(self.bloom_mips[0].view)
-            .sampler(sampler)];
-
-        let fog_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(final_fog_view)
-            .sampler(sampler)];
-
-        let sprite_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(final_sprite_view)
-            .sampler(sampler)];
-
-        let velocity_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(final_velocity_view)
-            .sampler(sampler)];
-
-        let dof_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(dof_view.unwrap_or(renderer.common_shadow_view))
-            .sampler(sampler)];
-
-        let rt_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(rt_view.unwrap_or(renderer.common_shadow_view))
-            .sampler(sampler)];
-
-        let mut writes = vec![
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&img_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&blm_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(2)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&fog_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(3)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&sprite_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(4)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&velocity_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(6)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&dof_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(7)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&rt_info),
-        ];
-
-        let lum_buffer = renderer.get_resource_buffer("LuminancePass", "Luminance");
-        let lum_info;
-        if let Some(buf) = lum_buffer {
-            lum_info = [vk::DescriptorBufferInfo::default()
-                .buffer(buf.handle)
-                .range(buf.size)];
-            writes.push(
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[current_frame])
-                    .dst_binding(5)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&lum_info),
-            );
-        }
-
-        unsafe {
-            device.update_descriptor_sets(&writes, &[]);
-        }
-    }
-
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
         let target_view = renderer.viewport_attachment.as_ref().map(|a| a.view);
 
-        let taa_view = renderer.get_pass_resource_view("TAAPass", "history", ctx.current_frame);
+        let taa_view = renderer.get_pass_resource_view("TAAPass", "history", 0);
         let input_view = taa_view.unwrap_or(
             renderer
-                .get_pass_resource_view("", "GBufferHDR", ctx.current_frame)
+                .get_pass_resource_view("", "GBufferHDR", 0)
                 .unwrap_or(renderer.common_shadow_view),
         );
 
@@ -182,7 +100,7 @@ impl RenderPass for PostProcessPass {
 
             for i in 0..self.bloom_mips.len() {
                 let mip = &self.bloom_mips[i];
-                let ds = self.bloom_descriptor_sets[ctx.current_frame * self.bloom_mips.len() + i];
+                let ds = self.bloom_descriptor_sets[0 * self.bloom_mips.len() + i];
 
                 // Update descriptor with current source
                 let img_info = [vk::DescriptorImageInfo::default()
@@ -295,7 +213,7 @@ impl RenderPass for PostProcessPass {
                 let dst_mip = &self.bloom_mips[i];
                 let src_mip = &self.bloom_mips[i + 1];
                 let ds =
-                    self.bloom_descriptor_sets[ctx.current_frame * self.bloom_mips.len() + i + 1]; // Reuse DS for upsampling
+                    self.bloom_descriptor_sets[0 * self.bloom_mips.len() + i + 1]; // Reuse DS for upsampling
 
                 let img_info = [vk::DescriptorImageInfo::default()
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -454,7 +372,7 @@ impl RenderPass for PostProcessPass {
                 0,
                 &[
                     renderer.gpu_resource_manager.bindless_descriptor_set,
-                    self.descriptor_sets[ctx.current_frame],
+                    self.descriptor_sets[0],
                 ],
                 &[],
             );

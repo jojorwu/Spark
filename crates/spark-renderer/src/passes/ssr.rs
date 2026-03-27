@@ -17,111 +17,50 @@ impl RenderPass for SSRPass {
         "SSRPass"
     }
     fn inputs(&self) -> Vec<&'static str> {
-        vec!["GBuffer", "HDRColor", "HiZ"]
+        vec![
+            "GBufferAlbedo",
+            "GBufferNormal",
+            "GBufferPBR",
+            "GBufferDepth",
+            "GBufferHDR",
+            "HiZ",
+        ]
     }
     fn outputs(&self) -> Vec<&'static str> {
         vec!["SSR"]
     }
 
-    fn prepare(&self, renderer: &Renderer, current_frame: usize) {
-        let device = &renderer.device.device;
-        let sampler = renderer.common_sampler;
+    fn declared_resources(&self) -> std::collections::HashMap<String, super::ResourceDesc> {
+        let mut res = std::collections::HashMap::new();
+        res.insert(
+            "SSR".to_string(),
+            super::ResourceDesc::Image(super::AttachmentDesc {
+                format: vk::Format::R16G16B16A16_SFLOAT,
+                usage: vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
+                size: super::AttachmentSize::Relative(1.0, 1.0),
+            }),
+        );
+        res
+    }
 
-        let hiz_view = renderer
-            .get_pass_resource_view("HiZPass", "pyramid", current_frame)
-            .unwrap_or(renderer.common_shadow_view);
-        let hdr_view = renderer
-            .get_pass_resource_view("LightingPass", "HDRColor", current_frame)
-            .unwrap_or(renderer.common_shadow_view);
+    fn bindings(&self) -> Vec<super::ResourceBinding> {
+        vec![
+            super::ResourceBinding::SampledImage(0, "GBufferAlbedo".to_string()),
+            super::ResourceBinding::SampledImage(1, "GBufferNormal".to_string()),
+            super::ResourceBinding::SampledImage(2, "GBufferPBR".to_string()),
+            super::ResourceBinding::SampledImage(3, "GBufferDepth".to_string()),
+            super::ResourceBinding::SampledImage(4, "GBufferHDR".to_string()),
+            super::ResourceBinding::SampledImage(5, "HiZ".to_string()),
+            super::ResourceBinding::StorageImage(6, "SSR".to_string()),
+        ]
+    }
 
-        let img_infos = [
-            vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(
-                    renderer
-                        .get_pass_resource_view("", "GBufferAlbedo", current_frame)
-                        .unwrap_or(renderer.common_shadow_view),
-                )
-                .sampler(sampler),
-            vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(
-                    renderer
-                        .get_pass_resource_view("", "GBufferNormal", current_frame)
-                        .unwrap_or(renderer.common_shadow_view),
-                )
-                .sampler(sampler),
-            vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(
-                    renderer
-                        .get_pass_resource_view("", "GBufferPBR", current_frame)
-                        .unwrap_or(renderer.common_shadow_view),
-                )
-                .sampler(sampler),
-            vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(
-                    renderer
-                        .get_pass_resource_view("", "GBufferDepth", current_frame)
-                        .unwrap_or(renderer.common_shadow_view),
-                )
-                .sampler(sampler),
-            vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(hdr_view)
-                .sampler(sampler),
-            vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(hiz_view)
-                .sampler(sampler),
-        ];
+    fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout {
+        self.descriptor_set_layout
+    }
 
-        let out_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::GENERAL)
-            .image_view(self.output_images[current_frame].view)];
-
-        let writes = [
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&img_infos[0..1]),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&img_infos[1..2]),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(2)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&img_infos[2..3]),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(3)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&img_infos[3..4]),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(4)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&img_infos[4..5]),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(5)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&img_infos[5..6]),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[current_frame])
-                .dst_binding(6)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(&out_info),
-        ];
-
-        unsafe {
-            device.update_descriptor_sets(&writes, &[]);
-        }
+    fn set_descriptor_sets(&mut self, sets: Vec<vk::DescriptorSet>) {
+        self.descriptor_sets = sets;
     }
 
     fn record_commands(&self, ctx: &RenderContext) {

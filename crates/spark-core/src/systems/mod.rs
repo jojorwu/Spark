@@ -19,6 +19,7 @@ pub struct SystemRegistry {
     pub systems: HashMap<CoreStage, Vec<Box<dyn System>>>,
     pub sorted_indices: HashMap<CoreStage, Vec<Vec<usize>>>,
     pub active_state: Option<String>,
+    pub pending_state_change: Option<String>,
 }
 
 impl SystemRegistry {
@@ -34,6 +35,7 @@ impl SystemRegistry {
             systems,
             sorted_indices: HashMap::new(),
             active_state: None,
+            pending_state_change: None,
         }
     }
 
@@ -228,27 +230,33 @@ impl Scheduler {
         }
     }
 
-    pub fn set_state(registry: &mut SystemRegistry, state: &str, ctx: &mut InitContext) {
-        let old_state = registry.active_state.clone();
-        registry.active_state = Some(state.to_string());
+    pub fn set_state(registry: &mut SystemRegistry, state: &str) {
+        registry.pending_state_change = Some(state.to_string());
+    }
 
-        for systems in registry.systems.values_mut() {
-            for system in systems {
-                let allowed = system.run_in_states();
-                if allowed.is_empty() {
-                    continue;
-                }
+    pub fn apply_state_changes(registry: &mut SystemRegistry, ctx: &mut InitContext) {
+        if let Some(state) = registry.pending_state_change.take() {
+            let old_state = registry.active_state.clone();
+            registry.active_state = Some(state.clone());
 
-                if let Some(ref old) = old_state {
-                    if allowed.contains(old) && !allowed.contains(&state.to_string()) {
-                        system.on_exit(ctx);
+            for systems in registry.systems.values_mut() {
+                for system in systems {
+                    let allowed = system.run_in_states();
+                    if allowed.is_empty() {
+                        continue;
                     }
-                }
 
-                if allowed.contains(&state.to_string())
-                    && (old_state.is_none() || !allowed.contains(old_state.as_ref().unwrap()))
-                {
-                    system.on_enter(ctx);
+                    if let Some(ref old) = old_state {
+                        if allowed.contains(old) && !allowed.contains(&state) {
+                            system.on_exit(ctx);
+                        }
+                    }
+
+                    if allowed.contains(&state)
+                        && (old_state.is_none() || !allowed.contains(old_state.as_ref().unwrap()))
+                    {
+                        system.on_enter(ctx);
+                    }
                 }
             }
         }

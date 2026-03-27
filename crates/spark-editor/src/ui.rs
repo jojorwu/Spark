@@ -167,12 +167,13 @@ impl EditorUI {
         &mut self,
         scene: &mut Scene,
         resource_manager: &mut spark_core::resource::ResourceManager,
+        asset_manager: &mut spark_core::asset::AssetManager,
         renderer: &mut spark_renderer::Renderer,
         project: &mut spark_core::Project,
         fps: f32,
     ) {
-        self.draw_menu_bar(scene, resource_manager, renderer);
-        self.draw_bottom_panel(scene, resource_manager, renderer, project, fps);
+        self.draw_menu_bar(scene, resource_manager, asset_manager, renderer);
+        self.draw_bottom_panel(scene, resource_manager, asset_manager, renderer, project, fps);
         self.draw_hierarchy_panel(scene);
         self.draw_inspector_panel(scene, renderer);
 
@@ -271,6 +272,7 @@ impl EditorUI {
         &mut self,
         scene: &mut Scene,
         resource_manager: &mut spark_core::resource::ResourceManager,
+        asset_manager: &mut spark_core::asset::AssetManager,
         renderer: &mut spark_renderer::Renderer,
     ) {
         let ctx = self.egui_ctx.clone();
@@ -299,7 +301,7 @@ impl EditorUI {
                                 .add_filter("glTF", &["gltf", "glb"])
                                 .pick_file()
                             {
-                                resource_manager.load_scene(path, scene, renderer);
+                                resource_manager.load_scene(path, scene, renderer, asset_manager);
                             }
                             ui.close_menu();
                         }
@@ -397,6 +399,7 @@ impl EditorUI {
         &mut self,
         scene: &mut Scene,
         resource_manager: &mut spark_core::resource::ResourceManager,
+        asset_manager: &mut spark_core::asset::AssetManager,
         renderer: &mut spark_renderer::Renderer,
         project: &mut spark_core::Project,
         fps: f32,
@@ -512,7 +515,7 @@ impl EditorUI {
                         self.asset_current_dir = dir;
                     }
                     if let Some(path) = asset_to_load {
-                        resource_manager.load_scene(path, scene, renderer);
+                        resource_manager.load_scene(path, scene, renderer, asset_manager);
                     }
                 }
                 BottomTab::Settings => {

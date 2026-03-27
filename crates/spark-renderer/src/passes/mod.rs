@@ -22,6 +22,7 @@ pub mod volumetric;
 
 use crate::Renderer;
 use ash::vk;
+use std::collections::HashMap;
 
 pub struct RenderContext<'a> {
     pub renderer: &'a Renderer,
@@ -31,13 +32,40 @@ pub struct RenderContext<'a> {
     pub delta: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AttachmentSize {
+    Absolute(u32, u32),
+    Relative(f32, f32), // Relative to swapchain
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AttachmentDesc {
+    pub format: vk::Format,
+    pub usage: vk::ImageUsageFlags,
+    pub size: AttachmentSize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BufferDesc {
+    pub size: u64,
+    pub usage: vk::BufferUsageFlags,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ResourceDesc {
+    Image(AttachmentDesc),
+    Buffer(BufferDesc),
+}
+
 /// A trait representing a modular rendering pass.
+#[derive(Debug, Clone)]
 pub enum ResourceBinding {
-    StorageImage(String),
-    SampledImage(String),
-    StorageBuffer(String),
-    UniformBuffer(String),
-    AccelerationStructure(String),
+    StorageImage(u32, String),
+    SampledImage(u32, String),
+    InputAttachment(u32, String),
+    StorageBuffer(u32, String),
+    UniformBuffer(u32, String),
+    AccelerationStructure(u32, String),
 }
 
 pub trait RenderPass: Send + Sync {
@@ -97,7 +125,7 @@ pub trait RenderPass: Send + Sync {
     }
 
     /// Retrieves a specific buffer resource from the pass for cross-pass communication.
-    fn get_resource_buffer(&self, _name: &str) -> Option<crate::resource::Buffer> {
+    fn get_resource_buffer(&self, _name: &str, _frame_index: usize) -> Option<crate::resource::Buffer> {
         None
     }
 
@@ -120,5 +148,10 @@ pub trait RenderPass: Send + Sync {
     /// Returns the output resource names for this pass.
     fn outputs(&self) -> Vec<&'static str> {
         Vec::new()
+    }
+
+    /// Declarative specification of transient resources created by this pass.
+    fn declared_resources(&self) -> HashMap<String, ResourceDesc> {
+        HashMap::new()
     }
 }

