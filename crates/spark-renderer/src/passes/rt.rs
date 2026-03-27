@@ -1,8 +1,7 @@
-use ash::vk;
-use std::sync::atomic::{AtomicU64, Ordering};
+use super::{RenderContext, RenderPass};
 use crate::resource::MAX_FRAMES_IN_FLIGHT;
 use crate::Renderer;
-use super::{RenderPass, RenderContext};
+use ash::vk;
 
 const BINDING_TLAS: u32 = 0;
 const BINDING_IMAGE: u32 = 1;
@@ -28,27 +27,36 @@ pub struct RayTracingPass {
     pub rt_loader: ash::khr::ray_tracing_pipeline::Device,
     pub sbt_buffer: Option<crate::resource::Buffer>,
     pub sbt_regions: [vk::StridedDeviceAddressRegionKHR; 4],
-    pub descriptor_versions: Vec<AtomicU64>,
 }
 
 impl RenderPass for RayTracingPass {
-    fn name(&self) -> &str { "RayTracingPass" }
-    fn inputs(&self) -> Vec<&'static str> { vec!["GBufferDepth", "GBufferNormal", "GBufferAlbedo", "GBufferPBR", "HiZ"] }
+    fn name(&self) -> &str {
+        "RayTracingPass"
+    }
+    fn inputs(&self) -> Vec<&'static str> {
+        vec![
+            "GBufferDepth",
+            "GBufferNormal",
+            "GBufferAlbedo",
+            "GBufferPBR",
+            "HiZ",
+        ]
+    }
     fn on_resize(&mut self, _renderer: &mut Renderer, _new_extent: vk::Extent2D) {}
 
     fn bindings(&self) -> Vec<ResourceBinding> {
         vec![
-            ResourceBinding::AccelerationStructure("SceneTLAS".to_string()),
-            ResourceBinding::StorageImage("RTOutput".to_string()),
-            ResourceBinding::StorageBuffer("Vertices".to_string()),
-            ResourceBinding::StorageBuffer("Indices".to_string()),
-            ResourceBinding::StorageBuffer("MeshData".to_string()),
-            ResourceBinding::StorageBuffer("Materials".to_string()),
-            ResourceBinding::StorageBuffer("Lights".to_string()),
-            ResourceBinding::SampledImage("GBufferDepth".to_string()),
-            ResourceBinding::SampledImage("GBufferNormal".to_string()),
-            ResourceBinding::SampledImage("GBufferAlbedo".to_string()),
-            ResourceBinding::SampledImage("GBufferPBR".to_string()),
+            ResourceBinding::AccelerationStructure(BINDING_TLAS, "SceneTLAS".to_string()),
+            ResourceBinding::StorageImage(BINDING_IMAGE, "RTOutput".to_string()),
+            ResourceBinding::StorageBuffer(BINDING_VERTICES, "Vertices".to_string()),
+            ResourceBinding::StorageBuffer(BINDING_INDICES, "Indices".to_string()),
+            ResourceBinding::StorageBuffer(BINDING_MESHES, "MeshData".to_string()),
+            ResourceBinding::StorageBuffer(BINDING_MATERIALS, "Materials".to_string()),
+            ResourceBinding::StorageBuffer(BINDING_LIGHTS, "Lights".to_string()),
+            ResourceBinding::SampledImage(BINDING_GBUFFER_DEPTH, "GBufferDepth".to_string()),
+            ResourceBinding::SampledImage(BINDING_GBUFFER_NORMAL, "GBufferNormal".to_string()),
+            ResourceBinding::SampledImage(BINDING_GBUFFER_ALBEDO, "GBufferAlbedo".to_string()),
+            ResourceBinding::SampledImage(BINDING_GBUFFER_PBR, "GBufferPBR".to_string()),
         ]
     }
 
@@ -65,74 +73,127 @@ impl RenderPass for RayTracingPass {
     }
     fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
         vec![
-            ("SceneTLAS".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
-            ("GBufferDepth".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
-            ("GBufferNormal".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
-            ("GBufferAlbedo".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
-            ("GBufferPBR".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
-            ("RTOutput".to_string(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR),
+            (
+                "SceneTLAS".to_string(),
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            ),
+            (
+                "GBufferDepth".to_string(),
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            ),
+            (
+                "GBufferNormal".to_string(),
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            ),
+            (
+                "GBufferAlbedo".to_string(),
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            ),
+            (
+                "GBufferPBR".to_string(),
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            ),
+            (
+                "RTOutput".to_string(),
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            ),
         ]
     }
-    fn outputs(&self) -> Vec<&'static str> { vec!["RTOutput"] }
+    fn outputs(&self) -> Vec<&'static str> {
+        vec!["RTOutput"]
+    }
 
     fn needs_descriptor_update(&self, _renderer: &Renderer, _frame_index: usize) -> bool {
-        // Force update every frame to ensure TLAS handle is fresh
-        true
+        false // Now handled by RenderGraph
     }
 
     fn update_descriptor_sets(&self, _renderer: &Renderer) {
-        // Now handled per-frame in prepare
+        // Now handled by RenderGraph
     }
 
-    fn prepare(&self, renderer: &Renderer, current_frame: usize) {
-        self.prepare_internal(renderer, current_frame);
+    fn prepare(&self, _renderer: &Renderer, _current_frame: usize) {
+        // Now handled by RenderGraph
     }
 
     fn record_commands(&self, ctx: &RenderContext) {
         self.record_commands_impl(ctx);
     }
-
 }
 
-
 impl RayTracingPass {
-
     fn record_commands_impl(&self, ctx: &RenderContext) {
-        if self.pipeline == vk::Pipeline::null() { return; }
+        if self.pipeline == vk::Pipeline::null() {
+            return;
+        }
         let renderer = ctx.renderer;
         let device = &renderer.device.device;
         let extent = renderer.get_extent();
 
         unsafe {
-            device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, self.pipeline);
+            device.cmd_bind_pipeline(
+                ctx.command_buffer,
+                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                self.pipeline,
+            );
             device.cmd_bind_descriptor_sets(
                 ctx.command_buffer,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
                 self.layout,
                 0,
                 &[
-                    renderer.frames[ctx.current_frame].global_descriptor_set,
+                    renderer.frame_manager.frames[ctx.current_frame].global_descriptor_set,
                     self.descriptor_sets[ctx.current_frame],
-                    renderer.bindless_descriptor_set,
+                    renderer.gpu_resource_manager.bindless_descriptor_set,
                 ],
                 &[],
             );
 
             #[repr(C)]
-            struct RTPC {
+            struct Rtpc {
                 reflections: f32,
                 shadows: f32,
                 ao: f32,
                 gi: f32,
             }
-            let pc = RTPC {
-                reflections: if renderer.settings.enable_rt_reflections { 1.0 } else { 0.0 },
-                shadows: if renderer.settings.enable_rt_shadows { 1.0 } else { 0.0 },
-                ao: if renderer.settings.enable_rt_ao { 1.0 } else { 0.0 },
-                gi: if renderer.settings.enable_rt_gi { 1.0 } else { 0.0 },
+            let pc = Rtpc {
+                reflections: if renderer.settings.enable_rt_reflections {
+                    1.0
+                } else {
+                    0.0
+                },
+                shadows: if renderer.settings.enable_rt_shadows {
+                    1.0
+                } else {
+                    0.0
+                },
+                ao: if renderer.settings.enable_rt_ao {
+                    1.0
+                } else {
+                    0.0
+                },
+                gi: if renderer.settings.enable_rt_gi {
+                    1.0
+                } else {
+                    0.0
+                },
             };
-            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<RTPC>());
-            device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::RAYGEN_KHR, 0, pc_bytes);
+            let pc_bytes = std::slice::from_raw_parts(
+                &pc as *const _ as *const u8,
+                std::mem::size_of::<Rtpc>(),
+            );
+            device.cmd_push_constants(
+                ctx.command_buffer,
+                self.layout,
+                vk::ShaderStageFlags::RAYGEN_KHR,
+                0,
+                pc_bytes,
+            );
 
             self.rt_loader.cmd_trace_rays(
                 ctx.command_buffer,
@@ -147,126 +208,28 @@ impl RayTracingPass {
         }
     }
 
-
-    fn prepare_internal(&self, renderer: &Renderer, current_frame: usize) {
-        if self.pipeline == vk::Pipeline::null() { return; }
-        let device = &renderer.device.device;
-        let ds = self.descriptor_sets[current_frame];
-
-        let out_view = renderer.get_pass_resource_view("", "RTOutput", current_frame).unwrap_or(renderer.common_shadow_view);
-        let out_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::GENERAL)
-            .image_view(out_view)];
-
-        let mut writes = vec![
-            vk::WriteDescriptorSet::default()
-                .dst_set(ds)
-                .dst_binding(BINDING_IMAGE)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(&out_info),
-        ];
-
-        let as_manager = renderer.as_manager.lock().unwrap();
-
-        let vb_info;
-        if let Some(ref vb) = renderer.global_vertex_buffer {
-            vb_info = [vk::DescriptorBufferInfo::default().buffer(vb.handle).range(vb.size)];
-            writes.push(vk::WriteDescriptorSet::default()
-                .dst_set(ds)
-                .dst_binding(BINDING_VERTICES)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&vb_info));
-        }
-
-        let ib_info;
-        if let Some(ref ib) = renderer.global_index_buffer {
-            ib_info = [vk::DescriptorBufferInfo::default().buffer(ib.handle).range(ib.size)];
-            writes.push(vk::WriteDescriptorSet::default()
-                .dst_set(ds)
-                .dst_binding(BINDING_INDICES)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&ib_info));
-        }
-
-        let md_buf = renderer.frames[current_frame].object_data_buffer.as_ref().unwrap_or(&renderer.dummy_buffer);
-        let md_info = [vk::DescriptorBufferInfo::default().buffer(md_buf.handle).range(md_buf.size)];
-        writes.push(vk::WriteDescriptorSet::default()
-            .dst_set(ds)
-            .dst_binding(BINDING_MESHES)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .buffer_info(&md_info));
-
-        let mat_info;
-        if let Some(ref mat_buf) = renderer.global_material_buffer {
-            mat_info = [vk::DescriptorBufferInfo::default().buffer(mat_buf.handle).range(mat_buf.size)];
-            writes.push(vk::WriteDescriptorSet::default()
-                .dst_set(ds)
-                .dst_binding(BINDING_MATERIALS)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&mat_info));
-        }
-
-        let light_info;
-        if let Some(ref light_buf) = renderer.frames[current_frame].light_buffer {
-            light_info = [vk::DescriptorBufferInfo::default().buffer(light_buf.handle).range(light_buf.size)];
-            writes.push(vk::WriteDescriptorSet::default()
-                .dst_set(ds)
-                .dst_binding(BINDING_LIGHTS)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&light_info));
-        }
-
-        let depth_view = renderer.get_pass_resource_view("", "GBufferDepth", current_frame).unwrap_or(renderer.common_shadow_view);
-        let normal_view = renderer.get_pass_resource_view("", "GBufferNormal", current_frame).unwrap_or(renderer.common_shadow_view);
-        let albedo_view = renderer.get_pass_resource_view("", "GBufferAlbedo", current_frame).unwrap_or(renderer.common_shadow_view);
-        let pbr_view = renderer.get_pass_resource_view("", "GBufferPBR", current_frame).unwrap_or(renderer.common_shadow_view);
-
-        let depth_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(depth_view).sampler(renderer.common_sampler)];
-        let normal_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(normal_view).sampler(renderer.common_sampler)];
-        let albedo_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(albedo_view).sampler(renderer.common_sampler)];
-        let pbr_info = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL).image_view(pbr_view).sampler(renderer.common_sampler)];
-
-        writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(BINDING_GBUFFER_DEPTH).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&depth_info));
-        writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(BINDING_GBUFFER_NORMAL).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&normal_info));
-        writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(BINDING_GBUFFER_ALBEDO).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&albedo_info));
-        writes.push(vk::WriteDescriptorSet::default().dst_set(ds).dst_binding(BINDING_GBUFFER_PBR).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&pbr_info));
-
-        let mut as_info;
-        if let Some(ref tlas) = as_manager.current_tlas[current_frame] {
-            as_info = vk::WriteDescriptorSetAccelerationStructureKHR::default()
-                .acceleration_structures(std::slice::from_ref(&tlas.handle));
-
-            let w = vk::WriteDescriptorSet::default()
-                .dst_set(ds)
-                .dst_binding(BINDING_TLAS)
-                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .descriptor_count(1)
-                .push_next(&mut as_info);
-
-            writes.push(w);
-        }
-
-        unsafe {
-            device.update_descriptor_sets(&writes, &[]);
-        }
-
-        let mut version = 0u64;
-        if let Some(ref vb) = renderer.global_vertex_buffer { version += vb.version.load(Ordering::Relaxed); }
-        if let Some(ref ib) = renderer.global_index_buffer { version += ib.version.load(Ordering::Relaxed); }
-        if let Some(ref mat) = renderer.global_material_buffer { version += mat.version.load(Ordering::Relaxed); }
-        if let Some(ref tlas) = as_manager.current_tlas[current_frame] { version += tlas.buffer.version.load(Ordering::Relaxed); }
-
-        self.descriptor_versions[current_frame].store(version, Ordering::Relaxed);
-    }
-
-
 }
 
 impl RayTracingPass {
-    pub fn new(renderer: &Renderer, rgen_spirv: &[u32], rmiss_spirv: &[u32], rchit_spirv: &[u32]) -> Result<Self, crate::error::RendererError> {
+    pub fn new(
+        renderer: &Renderer,
+        rgen_spirv: &[u32],
+        rmiss_spirv: &[u32],
+        rchit_spirv: &[u32],
+    ) -> Result<Self, crate::error::RendererError> {
         let device = &renderer.device.device;
-        let as_loader = renderer.device.as_loader.as_ref().ok_or(crate::error::RendererError::NoSuitableDevice)?.clone();
-        let rt_loader = renderer.device.rt_loader.as_ref().ok_or(crate::error::RendererError::NoSuitableDevice)?.clone();
+        let as_loader = renderer
+            .device
+            .as_loader
+            .as_ref()
+            .ok_or(crate::error::RendererError::NoSuitableDevice)?
+            .clone();
+        let rt_loader = renderer
+            .device
+            .rt_loader
+            .as_ref()
+            .ok_or(crate::error::RendererError::NoSuitableDevice)?
+            .clone();
 
         if !renderer.device.rt_supported {
             return Ok(Self::new_empty(as_loader, rt_loader));
@@ -277,7 +240,13 @@ impl RayTracingPass {
         let descriptor_sets = Self::allocate_descriptor_sets(renderer, device, ds_layout)?;
 
         let (pipeline, sbt_buffer, sbt_regions) = Self::create_pipeline_and_sbt(
-            renderer, device, &rt_loader, layout, rgen_spirv, rmiss_spirv, rchit_spirv
+            renderer,
+            device,
+            &rt_loader,
+            layout,
+            rgen_spirv,
+            rmiss_spirv,
+            rchit_spirv,
         )?;
 
         Ok(Self {
@@ -289,11 +258,13 @@ impl RayTracingPass {
             rt_loader,
             sbt_buffer: Some(sbt_buffer),
             sbt_regions,
-            descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| AtomicU64::new(0)).collect(),
         })
     }
 
-    fn new_empty(as_loader: ash::khr::acceleration_structure::Device, rt_loader: ash::khr::ray_tracing_pipeline::Device) -> Self {
+    fn new_empty(
+        as_loader: ash::khr::acceleration_structure::Device,
+        rt_loader: ash::khr::ray_tracing_pipeline::Device,
+    ) -> Self {
         Self {
             pipeline: vk::Pipeline::null(),
             layout: vk::PipelineLayout::null(),
@@ -303,31 +274,85 @@ impl RayTracingPass {
             rt_loader,
             sbt_buffer: None,
             sbt_regions: [vk::StridedDeviceAddressRegionKHR::default(); 4],
-            descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT).map(|_| AtomicU64::new(0)).collect(),
         }
     }
 
-    fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::DescriptorSetLayout, crate::error::RendererError> {
+    fn create_descriptor_set_layout(
+        device: &ash::Device,
+    ) -> Result<vk::DescriptorSetLayout, crate::error::RendererError> {
         let bindings = [
-            vk::DescriptorSetLayoutBinding::default().binding(BINDING_TLAS).descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR),
-            vk::DescriptorSetLayoutBinding::default().binding(BINDING_IMAGE).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
-            vk::DescriptorSetLayoutBinding::default().binding(BINDING_VERTICES).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
-            vk::DescriptorSetLayoutBinding::default().binding(BINDING_INDICES).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
-            vk::DescriptorSetLayoutBinding::default().binding(BINDING_MESHES).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
-            vk::DescriptorSetLayoutBinding::default().binding(BINDING_MATERIALS).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
-            vk::DescriptorSetLayoutBinding::default().binding(BINDING_LIGHTS).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
-            vk::DescriptorSetLayoutBinding::default().binding(BINDING_GBUFFER_DEPTH).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
-            vk::DescriptorSetLayoutBinding::default().binding(BINDING_GBUFFER_NORMAL).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
-            vk::DescriptorSetLayoutBinding::default().binding(BINDING_GBUFFER_ALBEDO).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
-            vk::DescriptorSetLayoutBinding::default().binding(BINDING_GBUFFER_PBR).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(BINDING_TLAS)
+                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                .descriptor_count(1)
+                .stage_flags(
+                    vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                ),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(BINDING_IMAGE)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(BINDING_VERTICES)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(BINDING_INDICES)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(BINDING_MESHES)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(BINDING_MATERIALS)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(BINDING_LIGHTS)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(BINDING_GBUFFER_DEPTH)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(BINDING_GBUFFER_NORMAL)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(BINDING_GBUFFER_ALBEDO)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(BINDING_GBUFFER_PBR)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
         ];
 
         unsafe {
-            Ok(device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings), None)?)
+            Ok(device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+                None,
+            )?)
         }
     }
 
-    fn create_pipeline_layout(renderer: &Renderer, device: &ash::Device, ds_layout: vk::DescriptorSetLayout) -> Result<vk::PipelineLayout, crate::error::RendererError> {
+    fn create_pipeline_layout(
+        renderer: &Renderer,
+        device: &ash::Device,
+        ds_layout: vk::DescriptorSetLayout,
+    ) -> Result<vk::PipelineLayout, crate::error::RendererError> {
         let pc_range = vk::PushConstantRange {
             stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
             offset: 0,
@@ -336,19 +361,27 @@ impl RayTracingPass {
         unsafe {
             Ok(device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(&[renderer.global_descriptor_set_layout, ds_layout, renderer.bindless_descriptor_set_layout])
+                    .set_layouts(&[
+                        renderer.global_descriptor_set_layout,
+                        ds_layout,
+                        renderer.gpu_resource_manager.bindless_descriptor_set_layout,
+                    ])
                     .push_constant_ranges(&[pc_range]),
                 None,
             )?)
         }
     }
 
-    fn allocate_descriptor_sets(renderer: &Renderer, device: &ash::Device, ds_layout: vk::DescriptorSetLayout) -> Result<Vec<vk::DescriptorSet>, crate::error::RendererError> {
+    fn allocate_descriptor_sets(
+        renderer: &Renderer,
+        device: &ash::Device,
+        ds_layout: vk::DescriptorSetLayout,
+    ) -> Result<Vec<vk::DescriptorSet>, crate::error::RendererError> {
         let layouts = [ds_layout; MAX_FRAMES_IN_FLIGHT];
         unsafe {
             Ok(device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
-                    .descriptor_pool(renderer.descriptor_pool)
+                    .descriptor_pool(renderer.gpu_resource_manager.descriptor_pool)
                     .set_layouts(&layouts),
             )?)
         }
@@ -362,28 +395,68 @@ impl RayTracingPass {
         rgen_spirv: &[u32],
         rmiss_spirv: &[u32],
         rchit_spirv: &[u32],
-    ) -> Result<(vk::Pipeline, crate::resource::Buffer, [vk::StridedDeviceAddressRegionKHR; 4]), crate::error::RendererError> {
+    ) -> Result<
+        (
+            vk::Pipeline,
+            crate::resource::Buffer,
+            [vk::StridedDeviceAddressRegionKHR; 4],
+        ),
+        crate::error::RendererError,
+    > {
         let rgen_module = crate::pipeline::Pipeline::create_shader_module(device, rgen_spirv);
         let rmiss_module = crate::pipeline::Pipeline::create_shader_module(device, rmiss_spirv);
         let rchit_module = crate::pipeline::Pipeline::create_shader_module(device, rchit_spirv);
 
         let entry_point = std::ffi::CString::new("main").unwrap();
         let stages = [
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::RAYGEN_KHR).module(rgen_module).name(&entry_point),
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::MISS_KHR).module(rmiss_module).name(&entry_point),
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR).module(rchit_module).name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::RAYGEN_KHR)
+                .module(rgen_module)
+                .name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::MISS_KHR)
+                .module(rmiss_module)
+                .name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
+                .module(rchit_module)
+                .name(&entry_point),
         ];
 
         let groups = [
-            vk::RayTracingShaderGroupCreateInfoKHR::default().ty(vk::RayTracingShaderGroupTypeKHR::GENERAL).general_shader(0).closest_hit_shader(vk::SHADER_UNUSED_KHR).any_hit_shader(vk::SHADER_UNUSED_KHR).intersection_shader(vk::SHADER_UNUSED_KHR),
-            vk::RayTracingShaderGroupCreateInfoKHR::default().ty(vk::RayTracingShaderGroupTypeKHR::GENERAL).general_shader(1).closest_hit_shader(vk::SHADER_UNUSED_KHR).any_hit_shader(vk::SHADER_UNUSED_KHR).intersection_shader(vk::SHADER_UNUSED_KHR),
-            vk::RayTracingShaderGroupCreateInfoKHR::default().ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP).general_shader(vk::SHADER_UNUSED_KHR).closest_hit_shader(2).any_hit_shader(vk::SHADER_UNUSED_KHR).intersection_shader(vk::SHADER_UNUSED_KHR),
+            vk::RayTracingShaderGroupCreateInfoKHR::default()
+                .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
+                .general_shader(0)
+                .closest_hit_shader(vk::SHADER_UNUSED_KHR)
+                .any_hit_shader(vk::SHADER_UNUSED_KHR)
+                .intersection_shader(vk::SHADER_UNUSED_KHR),
+            vk::RayTracingShaderGroupCreateInfoKHR::default()
+                .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
+                .general_shader(1)
+                .closest_hit_shader(vk::SHADER_UNUSED_KHR)
+                .any_hit_shader(vk::SHADER_UNUSED_KHR)
+                .intersection_shader(vk::SHADER_UNUSED_KHR),
+            vk::RayTracingShaderGroupCreateInfoKHR::default()
+                .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
+                .general_shader(vk::SHADER_UNUSED_KHR)
+                .closest_hit_shader(2)
+                .any_hit_shader(vk::SHADER_UNUSED_KHR)
+                .intersection_shader(vk::SHADER_UNUSED_KHR),
         ];
 
         let pipeline = unsafe {
-            rt_loader.create_ray_tracing_pipelines(vk::DeferredOperationKHR::null(), vk::PipelineCache::null(), &[
-                vk::RayTracingPipelineCreateInfoKHR::default().stages(&stages).groups(&groups).max_pipeline_ray_recursion_depth(2).layout(layout)
-            ], None).unwrap()[0]
+            rt_loader
+                .create_ray_tracing_pipelines(
+                    vk::DeferredOperationKHR::null(),
+                    vk::PipelineCache::null(),
+                    &[vk::RayTracingPipelineCreateInfoKHR::default()
+                        .stages(&stages)
+                        .groups(&groups)
+                        .max_pipeline_ray_recursion_depth(2)
+                        .layout(layout)],
+                    None,
+                )
+                .unwrap()[0]
         };
 
         unsafe {
@@ -395,7 +468,10 @@ impl RayTracingPass {
         let rt_props = unsafe {
             let mut props = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
             let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut props);
-            renderer.context.instance.get_physical_device_properties2(renderer.device.pdevice, &mut props2);
+            renderer
+                .context
+                .instance
+                .get_physical_device_properties2(renderer.device.pdevice, &mut props2);
             props
         };
 
@@ -408,12 +484,21 @@ impl RayTracingPass {
 
         let sbt_buffer = renderer.device.create_buffer(
             region_size * 4,
-            vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         )?;
 
         let handles = unsafe {
-            rt_loader.get_ray_tracing_shader_group_handles(pipeline, 0, groups.len() as u32, (groups.len() as u32 * handle_size) as usize).unwrap()
+            rt_loader
+                .get_ray_tracing_shader_group_handles(
+                    pipeline,
+                    0,
+                    groups.len() as u32,
+                    (groups.len() as u32 * handle_size) as usize,
+                )
+                .unwrap()
         };
 
         let mut sbt_regions = [vk::StridedDeviceAddressRegionKHR::default(); 4];
@@ -430,9 +515,21 @@ impl RayTracingPass {
             }
         }
 
-        sbt_regions[0] = vk::StridedDeviceAddressRegionKHR { device_address: sbt_address, stride: handle_size_aligned as u64, size: region_size };
-        sbt_regions[1] = vk::StridedDeviceAddressRegionKHR { device_address: sbt_address + region_size, stride: handle_size_aligned as u64, size: region_size };
-        sbt_regions[2] = vk::StridedDeviceAddressRegionKHR { device_address: sbt_address + 2 * region_size, stride: handle_size_aligned as u64, size: region_size };
+        sbt_regions[0] = vk::StridedDeviceAddressRegionKHR {
+            device_address: sbt_address,
+            stride: handle_size_aligned as u64,
+            size: region_size,
+        };
+        sbt_regions[1] = vk::StridedDeviceAddressRegionKHR {
+            device_address: sbt_address + region_size,
+            stride: handle_size_aligned as u64,
+            size: region_size,
+        };
+        sbt_regions[2] = vk::StridedDeviceAddressRegionKHR {
+            device_address: sbt_address + 2 * region_size,
+            stride: handle_size_aligned as u64,
+            size: region_size,
+        };
 
         Ok((pipeline, sbt_buffer, sbt_regions))
     }

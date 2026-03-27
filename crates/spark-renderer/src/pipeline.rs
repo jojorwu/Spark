@@ -26,10 +26,7 @@ pub struct PipelineCreateParams<'a> {
 }
 
 impl Pipeline {
-    pub fn new(
-        device: &Device,
-        params: &PipelineCreateParams,
-    ) -> Self {
+    pub fn new(device: &Device, params: &PipelineCreateParams) -> Self {
         let vert_shader_code = params.vert_shader_code;
         let frag_shader_code = params.frag_shader_code;
         let msaa_samples = params.msaa_samples;
@@ -93,8 +90,8 @@ impl Pipeline {
             .stencil_test_enable(false);
 
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::default()
-            .dynamic_states(&dynamic_states);
+        let dynamic_state_info =
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
         let mut color_blend_attachments = Vec::new();
         if !is_deferred_lighting {
@@ -185,7 +182,12 @@ impl Pipeline {
 
         let mut rendering_info = vk::PipelineRenderingCreateInfo::default();
         let color_formats = if !is_deferred_lighting {
-            vec![vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::R8G8B8A8_UNORM, vk::Format::R16G16_SFLOAT]
+            vec![
+                vk::Format::R8G8B8A8_UNORM,
+                vk::Format::A2B10G10R10_UNORM_PACK32,
+                vk::Format::R8G8B8A8_UNORM,
+                vk::Format::R16G16_SFLOAT,
+            ]
         } else {
             vec![vk::Format::R16G16B16A16_SFLOAT]
         };

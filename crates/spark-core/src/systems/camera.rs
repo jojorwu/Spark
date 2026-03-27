@@ -3,14 +3,14 @@ use crate::System;
 pub struct CameraSystem;
 
 impl System for CameraSystem {
-    fn name(&self) -> &str { "CameraSystem" }
+    fn name(&self) -> &str {
+        "CameraSystem"
+    }
 
     fn resource_access(&self) -> crate::ResourceAccess {
-        crate::ResourceAccess {
-            scene: crate::Access::Read,
-            renderer: crate::Access::Write,
-            resource_manager: crate::Access::None,
-        }
+        crate::ResourceAccess::new()
+            .with_scene(crate::Access::Read)
+            .with_renderer(crate::Access::Write)
     }
 
     fn update(&mut self, ctx: &crate::FrameContext) {

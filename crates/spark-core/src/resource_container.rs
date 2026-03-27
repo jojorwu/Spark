@@ -8,11 +8,14 @@ pub struct Resources {
 
 impl Resources {
     pub fn new() -> Self {
-        Self { storage: HashMap::new() }
+        Self {
+            storage: HashMap::new(),
+        }
     }
 
     pub fn insert<T: Send + Sync + 'static>(&mut self, resource: T) {
-        self.storage.insert(TypeId::of::<T>(), Arc::new(RwLock::new(Box::new(resource))));
+        self.storage
+            .insert(TypeId::of::<T>(), Arc::new(RwLock::new(Box::new(resource))));
     }
 
     pub fn get<T: 'static>(&self) -> Option<Arc<RwLock<Box<dyn Any + Send + Sync>>>> {

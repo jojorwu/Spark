@@ -22,7 +22,6 @@ impl Default for TaskSystem {
 }
 
 impl TaskSystem {
-
     pub fn spawn<F>(&self, job: F)
     where
         F: FnOnce() + Send + 'static,

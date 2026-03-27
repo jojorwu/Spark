@@ -1,8 +1,8 @@
 pub mod ffi;
-use spark_core::System;
 use libloading::{Library, Symbol};
+use netcorehost::{hostfxr::Hostfxr, nethost, pdcstring::PdCString};
+use spark_core::System;
 use std::rc::Rc;
-use netcorehost::{nethost, hostfxr::Hostfxr, pdcstring::PdCString};
 
 pub struct ScriptHost {
     libraries: Vec<Rc<Library>>,
@@ -26,7 +26,6 @@ impl Default for ScriptHost {
 }
 
 impl ScriptHost {
-
     pub fn load_rust_plugin(&mut self, path: &str) -> Box<dyn System> {
         log::info!("Loading Rust plugin from: {}", path);
 
@@ -35,7 +34,9 @@ impl ScriptHost {
         self.libraries.push(lib.clone());
 
         unsafe {
-            let constructor: Symbol<fn() -> Box<dyn System>> = lib.get(b"create_system").expect("Failed to find constructor");
+            let constructor: Symbol<fn() -> Box<dyn System>> = lib
+                .get(b"create_system")
+                .expect("Failed to find constructor");
             constructor()
         }
     }
@@ -45,8 +46,12 @@ impl ScriptHost {
 
         if let Some(hostfxr) = &self.hostfxr {
             let config_path_pdc = PdCString::from_os_str(config_path).unwrap();
-            let context = hostfxr.initialize_for_runtime_config(config_path_pdc).expect("Failed to initialize .NET core");
-            let _loader = context.get_delegate_loader().expect("Failed to get delegate loader");
+            let context = hostfxr
+                .initialize_for_runtime_config(config_path_pdc)
+                .expect("Failed to initialize .NET core");
+            let _loader = context
+                .get_delegate_loader()
+                .expect("Failed to get delegate loader");
             log::info!(".NET Runtime initialized successfully");
         } else {
             log::warn!(".NET Hostfxr not found. C# scripting will be unavailable.");

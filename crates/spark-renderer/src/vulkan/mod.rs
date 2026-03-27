@@ -1,8 +1,10 @@
+pub mod as_manager;
 pub mod context;
 pub mod device;
+pub mod frame_manager;
 pub mod gbuffer;
+pub mod ibl;
+pub mod resource_manager;
 pub mod swapchain;
 pub mod texture;
 pub mod utils;
-pub mod as_manager;
-pub mod ibl;

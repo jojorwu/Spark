@@ -18,6 +18,9 @@ impl<'a> EventProxy<'a> {
     }
 
     pub fn publish_custom(&self, name: &str, data: serde_json::Value) {
-        self.outgoing.lock().unwrap().push(SystemEvent::Custom(name.to_string(), data));
+        self.outgoing
+            .lock()
+            .unwrap()
+            .push(SystemEvent::Custom(name.to_string(), data));
     }
 }

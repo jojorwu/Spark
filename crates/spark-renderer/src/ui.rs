@@ -122,13 +122,24 @@ impl EguiRenderer {
                         let device = renderer.get_device();
 
                         let color_attachment = vk::RenderingAttachmentInfo::default()
-                            .image_view(renderer.get_pass_resource_view("", "GBufferHDR", renderer.current_frame).unwrap())
+                            .image_view(
+                                renderer
+                                    .get_pass_resource_view(
+                                        "",
+                                        "GBufferHDR",
+                                        renderer.frame_manager.current_frame,
+                                    )
+                                    .unwrap(),
+                            )
                             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                             .load_op(vk::AttachmentLoadOp::LOAD)
                             .store_op(vk::AttachmentStoreOp::STORE);
 
                         let rendering_info = vk::RenderingInfo::default()
-                            .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent: renderer.get_extent() })
+                            .render_area(vk::Rect2D {
+                                offset: vk::Offset2D { x: 0, y: 0 },
+                                extent: renderer.get_extent(),
+                            })
                             .layer_count(1)
                             .color_attachments(std::slice::from_ref(&color_attachment));
 
@@ -200,7 +211,12 @@ impl EguiRenderer {
         }
     }
 
-    fn update_buffers(&mut self, renderer: &mut crate::Renderer, vertex_count: u64, index_count: u64) {
+    fn update_buffers(
+        &mut self,
+        renderer: &mut crate::Renderer,
+        vertex_count: u64,
+        index_count: u64,
+    ) {
         if self.vertex_buffer.is_none() || self.max_vertices < vertex_count {
             if let Some(vb) = self.vertex_buffer.take() {
                 renderer.destroy_buffer(vb);
@@ -307,12 +323,12 @@ impl EguiRenderer {
             .attachments(std::slice::from_ref(&color_blend_attachment));
 
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::default()
-            .dynamic_states(&dynamic_states);
+        let dynamic_state_info =
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
         let color_formats = [vk::Format::R16G16B16A16_SFLOAT];
-        let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(&color_formats);
+        let mut rendering_info =
+            vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
 
         let info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&stages)
@@ -340,14 +356,22 @@ impl EguiRenderer {
         pipeline
     }
 
-    pub fn register_native_texture(&mut self, renderer: &mut crate::Renderer, view: vk::ImageView, sampler: vk::Sampler) -> egui::TextureId {
+    pub fn register_native_texture(
+        &mut self,
+        renderer: &mut crate::Renderer,
+        view: vk::ImageView,
+        sampler: vk::Sampler,
+    ) -> egui::TextureId {
         let layout = [self.descriptor_set_layout];
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(self.descriptor_pool)
             .set_layouts(&layout);
 
         let ds = unsafe {
-            renderer.get_device().allocate_descriptor_sets(&alloc_info).unwrap()[0]
+            renderer
+                .get_device()
+                .allocate_descriptor_sets(&alloc_info)
+                .unwrap()[0]
         };
 
         let image_info = [vk::DescriptorImageInfo::default()
@@ -398,8 +422,8 @@ impl EguiRenderer {
                 );
                 renderer.upload_to_buffer(&staging, &pixels);
 
-                let (image, _old_alloc) = renderer.create_image_basic(
-                    &crate::vulkan::device::ImageCreateParams {
+                let (image, _old_alloc) =
+                    renderer.create_image_basic(&crate::vulkan::device::ImageCreateParams {
                         width: size[0],
                         height: size[1],
                         mip_levels: 1,
@@ -408,8 +432,7 @@ impl EguiRenderer {
                         usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
                         properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
                         samples: vk::SampleCountFlags::TYPE_1,
-                    }
-                );
+                    });
 
                 renderer.transition_image_layout_basic(
                     image,

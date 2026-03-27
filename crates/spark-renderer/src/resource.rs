@@ -1,6 +1,6 @@
 use ash::vk;
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use serde::{Serialize, Deserialize};
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -126,7 +126,6 @@ impl Clone for Buffer {
     }
 }
 
-
 impl std::fmt::Debug for Buffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Buffer")
@@ -182,7 +181,7 @@ pub struct LightDraw {
     pub color: spark_math::Vec3,
     pub intensity: f32,
     pub range: f32,
-    pub light_type: u32, // 0: Dir, 1: Point, 2: Spot
+    pub light_type: u32,       // 0: Dir, 1: Point, 2: Spot
     pub spot_angles: [f32; 2], // inner, outer (cos)
 }
 
@@ -272,7 +271,9 @@ impl Default for ResourceTracker {
 
 impl ResourceTracker {
     pub fn new() -> Self {
-        Self { image_layouts: Arc::new(Mutex::new(std::collections::HashMap::new())) }
+        Self {
+            image_layouts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -290,7 +291,9 @@ impl ResourceTracker {
     ) {
         let mut layouts = self.image_layouts.lock().unwrap();
         let old_layout = *layouts.get(&image).unwrap_or(&vk::ImageLayout::UNDEFINED);
-        if old_layout == new_layout { return; }
+        if old_layout == new_layout {
+            return;
+        }
 
         let barrier = vk::ImageMemoryBarrier2::default()
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
@@ -308,8 +311,8 @@ impl ResourceTracker {
                 layer_count: 1,
             });
 
-        let dependency_info = vk::DependencyInfo::default()
-            .image_memory_barriers(std::slice::from_ref(&barrier));
+        let dependency_info =
+            vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier));
 
         unsafe {
             device.cmd_pipeline_barrier2(cb, &dependency_info);
@@ -320,7 +323,11 @@ impl ResourceTracker {
 
 impl Attachment {
     /// Destroys the attachment resources.
-    pub fn destroy(&self, device: &ash::Device, allocator: &std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>) {
+    pub fn destroy(
+        &self,
+        device: &ash::Device,
+        allocator: &std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>,
+    ) {
         unsafe {
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
@@ -338,7 +345,6 @@ impl Attachment {
         usage: vk::ImageUsageFlags,
         samples: vk::SampleCountFlags,
     ) -> Result<Self, crate::error::RendererError> {
-
         let (img, allocation) = device.create_image(&crate::vulkan::device::ImageCreateParams {
             width,
             height,
@@ -374,11 +380,19 @@ impl Attachment {
             }
         }
 
-        let is_depth = format == vk::Format::D32_SFLOAT || format == vk::Format::D32_SFLOAT_S8_UINT || format == vk::Format::D24_UNORM_S8_UINT;
+        let is_depth = format == vk::Format::D32_SFLOAT
+            || format == vk::Format::D32_SFLOAT_S8_UINT
+            || format == vk::Format::D24_UNORM_S8_UINT;
         let usage = if is_depth {
-            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+                | vk::ImageUsageFlags::SAMPLED
+                | vk::ImageUsageFlags::TRANSFER_SRC
         } else {
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::INPUT_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::STORAGE
+            vk::ImageUsageFlags::COLOR_ATTACHMENT
+                | vk::ImageUsageFlags::SAMPLED
+                | vk::ImageUsageFlags::INPUT_ATTACHMENT
+                | vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::STORAGE
         };
 
         let (img, allocation) = device.create_image(&crate::vulkan::device::ImageCreateParams {
@@ -396,7 +410,8 @@ impl Attachment {
         *self.allocation.lock().unwrap() = Some(allocation);
         self.view = device.create_image_view(img, format, 1);
         self.extent = vk::Extent2D { width, height };
-        self.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         Ok(())
     }
@@ -415,7 +430,9 @@ pub fn create_frame_attachments(
                 extent.width,
                 extent.height,
                 format,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::INPUT_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT
+                    | vk::ImageUsageFlags::INPUT_ATTACHMENT
+                    | vk::ImageUsageFlags::SAMPLED,
                 msaa,
             )
         })

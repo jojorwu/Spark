@@ -1,7 +1,7 @@
-use std::collections::{HashSet, HashMap};
-use winit::keyboard::KeyCode;
 use crate::event::EngineEvent;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use winit::keyboard::KeyCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum InputAction {

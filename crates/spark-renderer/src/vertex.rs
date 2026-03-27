@@ -14,7 +14,13 @@ pub struct Vertex {
 }
 
 impl Vertex {
-    pub fn pack(pos: Vec3, normal: Vec3, tex_coord: spark_math::Vec2, color: Vec3, tangent: Vec3) -> Self {
+    pub fn pack(
+        pos: Vec3,
+        normal: Vec3,
+        tex_coord: spark_math::Vec2,
+        color: Vec3,
+        tangent: Vec3,
+    ) -> Self {
         let pack_10_10_10_2 = |n: Vec3| -> u32 {
             let n = n.normalize();
             let x = ((n.x * 0.5 + 0.5) * 1023.0) as u32;

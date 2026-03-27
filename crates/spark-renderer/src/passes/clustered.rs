@@ -1,14 +1,18 @@
-use ash::vk;
 use crate::resource::{Buffer, ClusterAABB, LightGrid};
 use crate::Renderer;
+use ash::vk;
 use spark_math::Mat4;
 
-use super::{RenderPass, RenderContext};
+use super::{RenderContext, RenderPass};
 
 impl RenderPass for ClusteredPass {
-    fn name(&self) -> &str { "ClusteredPass" }
+    fn name(&self) -> &str {
+        "ClusteredPass"
+    }
     fn prepare(&self, renderer: &Renderer, _current_frame: usize) {
-        if let Some(ref lb) = renderer.frames[renderer.current_frame].light_buffer {
+        if let Some(ref lb) =
+            renderer.frame_manager.frames[renderer.frame_manager.current_frame].light_buffer
+        {
             self.update_descriptor_sets(&renderer.device.device, lb);
         }
     }
@@ -24,7 +28,10 @@ impl RenderPass for ClusteredPass {
             100.0,
         );
 
-        let screen_size = [renderer.swapchain.extent.width as f32, renderer.swapchain.extent.height as f32];
+        let screen_size = [
+            renderer.swapchain.extent.width as f32,
+            renderer.swapchain.extent.height as f32,
+        ];
 
         let mut last_p = self.last_proj.lock().unwrap();
         let mut last_s = self.last_screen_size.lock().unwrap();
@@ -36,16 +43,25 @@ impl RenderPass for ClusteredPass {
                 proj.inverse(),
                 screen_size,
                 0.1,
-                100.0
+                100.0,
             );
             *last_p = proj;
             *last_s = screen_size;
         }
 
-        self.record_cull_commands(&renderer.device.device, command_buffer, view, renderer.light_count);
+        self.record_cull_commands(
+            &renderer.device.device,
+            command_buffer,
+            view,
+            renderer.light_count,
+        );
     }
 
-    fn get_resource_buffer(&self, name: &str) -> Option<crate::resource::Buffer> {
+    fn get_resource_buffer(
+        &self,
+        name: &str,
+        _frame_index: usize,
+    ) -> Option<crate::resource::Buffer> {
         match name {
             "light_grid" => Some(self.light_grid_buffer.clone()),
             "index_list" => Some(self.global_index_list.clone()),
@@ -120,11 +136,31 @@ impl ClusteredPass {
 
         // 2. Descriptor Sets
         let bindings = [
-            vk::DescriptorSetLayoutBinding::default().binding(0).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default().binding(1).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default().binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default().binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default().binding(4).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
 
         let ds_layout = unsafe {
@@ -137,7 +173,7 @@ impl ClusteredPass {
         let descriptor_set = unsafe {
             renderer.device.device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
-                    .descriptor_pool(renderer.descriptor_pool)
+                    .descriptor_pool(renderer.gpu_resource_manager.descriptor_pool)
                     .set_layouts(&[ds_layout]),
             )?[0]
         };
@@ -157,38 +193,52 @@ impl ClusteredPass {
         };
 
         let build_module = unsafe {
-            device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(build_shader), None)?
+            device.create_shader_module(
+                &vk::ShaderModuleCreateInfo::default().code(build_shader),
+                None,
+            )?
         };
         let cull_module = unsafe {
-            device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(cull_shader), None)?
+            device.create_shader_module(
+                &vk::ShaderModuleCreateInfo::default().code(cull_shader),
+                None,
+            )?
         };
 
         let entry_point = std::ffi::CString::new("main").unwrap();
 
         let build_pipeline = unsafe {
-            device.create_compute_pipelines(
-                vk::PipelineCache::null(),
-                &[vk::ComputePipelineCreateInfo::default()
-                    .stage(vk::PipelineShaderStageCreateInfo::default()
-                        .stage(vk::ShaderStageFlags::COMPUTE)
-                        .module(build_module)
-                        .name(&entry_point))
-                    .layout(layout)],
-                None,
-            ).unwrap()[0]
+            device
+                .create_compute_pipelines(
+                    vk::PipelineCache::null(),
+                    &[vk::ComputePipelineCreateInfo::default()
+                        .stage(
+                            vk::PipelineShaderStageCreateInfo::default()
+                                .stage(vk::ShaderStageFlags::COMPUTE)
+                                .module(build_module)
+                                .name(&entry_point),
+                        )
+                        .layout(layout)],
+                    None,
+                )
+                .unwrap()[0]
         };
 
         let cull_pipeline = unsafe {
-            device.create_compute_pipelines(
-                vk::PipelineCache::null(),
-                &[vk::ComputePipelineCreateInfo::default()
-                    .stage(vk::PipelineShaderStageCreateInfo::default()
-                        .stage(vk::ShaderStageFlags::COMPUTE)
-                        .module(cull_module)
-                        .name(&entry_point))
-                    .layout(layout)],
-                None,
-            ).unwrap()[0]
+            device
+                .create_compute_pipelines(
+                    vk::PipelineCache::null(),
+                    &[vk::ComputePipelineCreateInfo::default()
+                        .stage(
+                            vk::PipelineShaderStageCreateInfo::default()
+                                .stage(vk::ShaderStageFlags::COMPUTE)
+                                .module(cull_module)
+                                .name(&entry_point),
+                        )
+                        .layout(layout)],
+                    None,
+                )
+                .unwrap()[0]
         };
 
         unsafe {
@@ -212,21 +262,53 @@ impl ClusteredPass {
     }
 
     pub fn update_descriptor_sets(&self, device: &ash::Device, light_buffer: &Buffer) {
-        let b0 = [vk::DescriptorBufferInfo::default().buffer(self.cluster_buffer.handle).range(self.cluster_buffer.size)];
-        let b1 = [vk::DescriptorBufferInfo::default().buffer(light_buffer.handle).range(light_buffer.size)];
-        let b2 = [vk::DescriptorBufferInfo::default().buffer(self.light_grid_buffer.handle).range(self.light_grid_buffer.size)];
-        let b3 = [vk::DescriptorBufferInfo::default().buffer(self.global_index_list.handle).range(self.global_index_list.size)];
-        let b4 = [vk::DescriptorBufferInfo::default().buffer(self.index_counter.handle).range(self.index_counter.size)];
+        let b0 = [vk::DescriptorBufferInfo::default()
+            .buffer(self.cluster_buffer.handle)
+            .range(self.cluster_buffer.size)];
+        let b1 = [vk::DescriptorBufferInfo::default()
+            .buffer(light_buffer.handle)
+            .range(light_buffer.size)];
+        let b2 = [vk::DescriptorBufferInfo::default()
+            .buffer(self.light_grid_buffer.handle)
+            .range(self.light_grid_buffer.size)];
+        let b3 = [vk::DescriptorBufferInfo::default()
+            .buffer(self.global_index_list.handle)
+            .range(self.global_index_list.size)];
+        let b4 = [vk::DescriptorBufferInfo::default()
+            .buffer(self.index_counter.handle)
+            .range(self.index_counter.size)];
 
         let writes = [
-            vk::WriteDescriptorSet::default().dst_set(self.descriptor_set).dst_binding(0).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&b0),
-            vk::WriteDescriptorSet::default().dst_set(self.descriptor_set).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&b1),
-            vk::WriteDescriptorSet::default().dst_set(self.descriptor_set).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&b2),
-            vk::WriteDescriptorSet::default().dst_set(self.descriptor_set).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&b3),
-            vk::WriteDescriptorSet::default().dst_set(self.descriptor_set).dst_binding(4).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&b4),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_set)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&b0),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_set)
+                .dst_binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&b1),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_set)
+                .dst_binding(2)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&b2),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_set)
+                .dst_binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&b3),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_set)
+                .dst_binding(4)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&b4),
         ];
 
-        unsafe { device.update_descriptor_sets(&writes, &[]); }
+        unsafe {
+            device.update_descriptor_sets(&writes, &[]);
+        }
     }
 
     pub fn record_build_commands(
@@ -239,8 +321,19 @@ impl ClusteredPass {
         z_far: f32,
     ) {
         unsafe {
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, self.build_pipeline);
-            device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[self.descriptor_set], &[]);
+            device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::COMPUTE,
+                self.build_pipeline,
+            );
+            device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::COMPUTE,
+                self.layout,
+                0,
+                &[self.descriptor_set],
+                &[],
+            );
 
             #[repr(C)]
             struct PC {
@@ -249,9 +342,21 @@ impl ClusteredPass {
                 z_near: f32,
                 z_far: f32,
             }
-            let pc = PC { inv_proj, screen_size, z_near, z_far };
-            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
-            device.cmd_push_constants(command_buffer, self.layout, vk::ShaderStageFlags::COMPUTE, 0, pc_bytes);
+            let pc = PC {
+                inv_proj,
+                screen_size,
+                z_near,
+                z_far,
+            };
+            let pc_bytes =
+                std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+            device.cmd_push_constants(
+                command_buffer,
+                self.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                pc_bytes,
+            );
 
             device.cmd_dispatch(command_buffer, 1, 1, 6); // 16x9x24 total
         }
@@ -273,10 +378,29 @@ impl ClusteredPass {
                 .size(4)
                 .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
                 .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE);
-            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[barrier], &[]);
+            device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[barrier],
+                &[],
+            );
 
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, self.cull_pipeline);
-            device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[self.descriptor_set], &[]);
+            device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::COMPUTE,
+                self.cull_pipeline,
+            );
+            device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::COMPUTE,
+                self.layout,
+                0,
+                &[self.descriptor_set],
+                &[],
+            );
 
             #[repr(C)]
             struct PC {
@@ -284,11 +408,17 @@ impl ClusteredPass {
                 light_count: u32,
             }
             let pc = PC { view, light_count };
-            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
-            device.cmd_push_constants(command_buffer, self.layout, vk::ShaderStageFlags::COMPUTE, 0, pc_bytes);
+            let pc_bytes =
+                std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+            device.cmd_push_constants(
+                command_buffer,
+                self.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                pc_bytes,
+            );
 
             device.cmd_dispatch(command_buffer, 1, 1, 6);
         }
     }
-
 }

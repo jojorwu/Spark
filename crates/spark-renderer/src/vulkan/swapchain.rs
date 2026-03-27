@@ -24,7 +24,13 @@ impl VulkanSwapchain {
         height: u32,
     ) -> Result<Self, crate::error::RendererError> {
         let loader = SwapchainLoader::new(instance, device);
-        let SwapchainData { handle, images, image_views, format, extent } = Self::create_internal(
+        let SwapchainData {
+            handle,
+            images,
+            image_views,
+            format,
+            extent,
+        } = Self::create_internal(
             pdevice,
             device,
             surface_loader,
@@ -53,10 +59,8 @@ impl VulkanSwapchain {
         width: u32,
         height: u32,
     ) -> Result<SwapchainData, crate::error::RendererError> {
-        let formats = unsafe {
-            surface_loader
-                .get_physical_device_surface_formats(pdevice, surface)?
-        };
+        let formats =
+            unsafe { surface_loader.get_physical_device_surface_formats(pdevice, surface)? };
 
         // Prefer HDR/High-bit-depth formats
         let surface_format = formats
@@ -68,10 +72,8 @@ impl VulkanSwapchain {
             })
             .unwrap_or(formats[0]);
 
-        let surface_caps = unsafe {
-            surface_loader
-                .get_physical_device_surface_capabilities(pdevice, surface)?
-        };
+        let surface_caps =
+            unsafe { surface_loader.get_physical_device_surface_capabilities(pdevice, surface)? };
 
         let mut extent = surface_caps.current_extent;
         if extent.width == u32::MAX {
@@ -98,15 +100,9 @@ impl VulkanSwapchain {
             .clipped(true)
             .image_array_layers(1);
 
-        let handle = unsafe {
-            loader
-                .create_swapchain(&swapchain_create_info, None)?
-        };
+        let handle = unsafe { loader.create_swapchain(&swapchain_create_info, None)? };
 
-        let images = unsafe {
-            loader
-                .get_swapchain_images(handle)?
-        };
+        let images = unsafe { loader.get_swapchain_images(handle)? };
 
         let mut views = Vec::new();
         for &image in &images {
@@ -125,7 +121,13 @@ impl VulkanSwapchain {
             views.push(view);
         }
 
-        Ok(SwapchainData { handle, images, image_views: views, format: surface_format.format, extent })
+        Ok(SwapchainData {
+            handle,
+            images,
+            image_views: views,
+            format: surface_format.format,
+            extent,
+        })
     }
 }
 

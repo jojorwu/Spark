@@ -1,11 +1,11 @@
-use egui::{Context, Visuals, Ui};
-use egui_winit::State;
-use winit::window::Window;
-use winit::event::WindowEvent;
+use egui::{Context, Ui, Visuals};
 use egui_gizmo::{Gizmo, GizmoMode};
+use egui_winit::State;
 use spark_math::Vec4Swizzles;
+use winit::event::WindowEvent;
+use winit::window::Window;
 
-use spark_core::scene::{Scene, NodeKey, Node};
+use spark_core::scene::{Node, NodeKey, Scene};
 
 pub trait Command {
     fn execute(&mut self, scene: &mut Scene);
@@ -138,7 +138,8 @@ impl EditorUI {
 
     pub fn end_frame(&mut self, window: &Window) -> egui::FullOutput {
         let full_output = self.egui_ctx.end_frame();
-        self.egui_state.handle_platform_output(window, full_output.platform_output.clone());
+        self.egui_state
+            .handle_platform_output(window, full_output.platform_output.clone());
         full_output
     }
 
@@ -162,9 +163,17 @@ impl EditorUI {
         }
     }
 
-    pub fn draw_ui(&mut self, scene: &mut Scene, resource_manager: &mut spark_core::resource::ResourceManager, renderer: &mut spark_renderer::Renderer, project: &mut spark_core::Project, fps: f32) {
-        self.draw_menu_bar(scene, resource_manager, renderer);
-        self.draw_bottom_panel(scene, resource_manager, renderer, project, fps);
+    pub fn draw_ui(
+        &mut self,
+        scene: &mut Scene,
+        resource_manager: &mut spark_core::resource::ResourceManager,
+        asset_manager: &mut spark_core::asset::AssetManager,
+        renderer: &mut spark_renderer::Renderer,
+        project: &mut spark_core::Project,
+        fps: f32,
+    ) {
+        self.draw_menu_bar(scene, resource_manager, asset_manager, renderer);
+        self.draw_bottom_panel(scene, resource_manager, asset_manager, renderer, project, fps);
         self.draw_hierarchy_panel(scene);
         self.draw_inspector_panel(scene, renderer);
 
@@ -182,11 +191,17 @@ impl EditorUI {
                         children: Vec::new(),
                         components: Vec::new(),
                     };
-                    node.components.push(Box::new(spark_core::scene::MeshComponent {
-                        vertex_count: 0, index_count: 0, first_index: 0, vertex_offset: 0,
-                        texture_handle: None, material_index: None, bounding_radius: 1.0,
-                        skin_index: None,
-                    }));
+                    node.components
+                        .push(Box::new(spark_core::scene::MeshComponent {
+                            vertex_count: 0,
+                            index_count: 0,
+                            first_index: 0,
+                            vertex_offset: 0,
+                            texture_handle: None,
+                            material_index: None,
+                            bounding_radius: 1.0,
+                            skin_index: None,
+                        }));
                     scene.add_node(parent, node);
                 }
                 NodeType::Light => {
@@ -201,14 +216,15 @@ impl EditorUI {
                         children: Vec::new(),
                         components: Vec::new(),
                     };
-                    node.components.push(Box::new(spark_core::scene::LightComponent {
-                        light_type: spark_core::scene::LightType::Point,
-                        color: spark_math::Vec3::ONE,
-                        intensity: 1.0,
-                        range: 10.0,
-                        spot_inner_angle: 30.0,
-                        spot_outer_angle: 45.0,
-                    }));
+                    node.components
+                        .push(Box::new(spark_core::scene::LightComponent {
+                            light_type: spark_core::scene::LightType::Point,
+                            color: spark_math::Vec3::ONE,
+                            intensity: 1.0,
+                            range: 10.0,
+                            spot_inner_angle: 30.0,
+                            spot_outer_angle: 45.0,
+                        }));
                     scene.add_node(parent, node);
                 }
                 NodeType::Sprite => {
@@ -223,13 +239,14 @@ impl EditorUI {
                         children: Vec::new(),
                         components: Vec::new(),
                     };
-                    node.components.push(Box::new(spark_core::scene::SpriteComponent {
-                         texture_handle: None,
-                         color: [1.0, 1.0, 1.0, 1.0],
-                         flip_x: false,
-                         flip_y: false,
-                         size: spark_math::Vec2::new(1.0, 1.0),
-                    }));
+                    node.components
+                        .push(Box::new(spark_core::scene::SpriteComponent {
+                            texture_handle: None,
+                            color: [1.0, 1.0, 1.0, 1.0],
+                            flip_x: false,
+                            flip_y: false,
+                            size: spark_math::Vec2::new(1.0, 1.0),
+                        }));
                     scene.add_node(parent, node);
                 }
             }
@@ -251,7 +268,13 @@ impl EditorUI {
         }
     }
 
-    fn draw_menu_bar(&mut self, scene: &mut Scene, resource_manager: &mut spark_core::resource::ResourceManager, renderer: &mut spark_renderer::Renderer) {
+    fn draw_menu_bar(
+        &mut self,
+        scene: &mut Scene,
+        resource_manager: &mut spark_core::resource::ResourceManager,
+        asset_manager: &mut spark_core::asset::AssetManager,
+        renderer: &mut spark_renderer::Renderer,
+    ) {
         let ctx = self.egui_ctx.clone();
         egui::TopBottomPanel::top("menu_toolbar").show(&ctx, |ui| {
             ui.horizontal(|ui| {
@@ -264,8 +287,10 @@ impl EditorUI {
                         if ui.button("Open").clicked() {
                             if let Some(path) = rfd::FileDialog::new()
                                 .add_filter("Spark Scene", &["json"])
-                                .pick_file() {
-                                if let Ok(new_scene) = Scene::load_from_file(path.to_str().unwrap()) {
+                                .pick_file()
+                            {
+                                if let Ok(new_scene) = Scene::load_from_file(path.to_str().unwrap())
+                                {
                                     *scene = new_scene;
                                 }
                             }
@@ -274,15 +299,17 @@ impl EditorUI {
                         if ui.button("Import glTF").clicked() {
                             if let Some(path) = rfd::FileDialog::new()
                                 .add_filter("glTF", &["gltf", "glb"])
-                                .pick_file() {
-                                resource_manager.load_scene(path, scene, renderer);
+                                .pick_file()
+                            {
+                                resource_manager.load_scene(path, scene, renderer, asset_manager);
                             }
                             ui.close_menu();
                         }
                         if ui.button("Save").clicked() {
                             if let Some(path) = rfd::FileDialog::new()
                                 .add_filter("Spark Scene", &["json"])
-                                .save_file() {
+                                .save_file()
+                            {
                                 let _ = scene.save_to_file(path.to_str().unwrap());
                             }
                             ui.close_menu();
@@ -310,7 +337,10 @@ impl EditorUI {
                         ("▶ Play", egui::Color32::LIGHT_GREEN)
                     };
 
-                    if ui.button(egui::RichText::new(play_label).color(play_color)).clicked() {
+                    if ui
+                        .button(egui::RichText::new(play_label).color(play_color))
+                        .clicked()
+                    {
                         if self.sim_state == SimulationState::Stopped {
                             // Manual cloning to avoid derive issues or missing trait
                             // Actually, let's just use JSON serialization as a robust clone
@@ -324,7 +354,10 @@ impl EditorUI {
                         };
                     }
 
-                    if ui.button(egui::RichText::new("⏹ Stop").color(egui::Color32::LIGHT_RED)).clicked() {
+                    if ui
+                        .button(egui::RichText::new("⏹ Stop").color(egui::Color32::LIGHT_RED))
+                        .clicked()
+                    {
                         if let Some(snapshot) = self.scene_snapshot.take() {
                             *scene = snapshot;
                         }
@@ -343,25 +376,45 @@ impl EditorUI {
                 ui.toggle_value(&mut self.gizmo_local, "Local");
                 ui.toggle_value(&mut self.snap_enabled, "Snap");
                 if self.snap_enabled {
-                    ui.add(egui::DragValue::new(&mut self.snap_distance).speed(0.1).clamp_range(0.0..=10.0));
+                    ui.add(
+                        egui::DragValue::new(&mut self.snap_distance)
+                            .speed(0.1)
+                            .clamp_range(0.0..=10.0),
+                    );
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("⟳").on_hover_text("Redo").clicked() { self.redo(scene); }
-                    if ui.button("⟲").on_hover_text("Undo").clicked() { self.undo(scene); }
+                    if ui.button("⟳").on_hover_text("Redo").clicked() {
+                        self.redo(scene);
+                    }
+                    if ui.button("⟲").on_hover_text("Undo").clicked() {
+                        self.undo(scene);
+                    }
                 });
             });
         });
     }
 
-    fn draw_bottom_panel(&mut self, scene: &mut Scene, resource_manager: &mut spark_core::resource::ResourceManager, renderer: &mut spark_renderer::Renderer, project: &mut spark_core::Project, fps: f32) {
+    fn draw_bottom_panel(
+        &mut self,
+        scene: &mut Scene,
+        resource_manager: &mut spark_core::resource::ResourceManager,
+        asset_manager: &mut spark_core::asset::AssetManager,
+        renderer: &mut spark_renderer::Renderer,
+        project: &mut spark_core::Project,
+        fps: f32,
+    ) {
         let ctx = self.egui_ctx.clone();
         egui::TopBottomPanel::bottom("bottom_panel").show(&ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Console, "Console");
                 ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Assets, "Assets");
                 ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Settings, "Settings");
-                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Statistics, "Statistics");
+                ui.selectable_value(
+                    &mut self.active_bottom_tab,
+                    BottomTab::Statistics,
+                    "Statistics",
+                );
             });
             ui.separator();
 
@@ -371,21 +424,29 @@ impl EditorUI {
                         ui.checkbox(&mut self.log_filter_info, "Info");
                         ui.checkbox(&mut self.log_filter_warn, "Warn");
                         ui.checkbox(&mut self.log_filter_error, "Error");
-                        if ui.button("Clear").clicked() { self.logs.lock().unwrap().clear(); }
-                    });
-                    ui.separator();
-                    egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                        let logs = self.logs.lock().unwrap();
-                        for log in logs.iter() {
-                            let (color, visible) = if log.contains("ERROR") { (egui::Color32::LIGHT_RED, self.log_filter_error) }
-                                         else if log.contains("WARN") { (egui::Color32::KHAKI, self.log_filter_warn) }
-                                         else { (egui::Color32::LIGHT_GRAY, self.log_filter_info) };
-
-                            if visible {
-                                ui.label(egui::RichText::new(log).color(color).monospace());
-                            }
+                        if ui.button("Clear").clicked() {
+                            self.logs.lock().unwrap().clear();
                         }
                     });
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            let logs = self.logs.lock().unwrap();
+                            for log in logs.iter() {
+                                let (color, visible) = if log.contains("ERROR") {
+                                    (egui::Color32::LIGHT_RED, self.log_filter_error)
+                                } else if log.contains("WARN") {
+                                    (egui::Color32::KHAKI, self.log_filter_warn)
+                                } else {
+                                    (egui::Color32::LIGHT_GRAY, self.log_filter_info)
+                                };
+
+                                if visible {
+                                    ui.label(egui::RichText::new(log).color(color).monospace());
+                                }
+                            }
+                        });
                 }
                 BottomTab::Assets => {
                     let mut asset_to_load = None;
@@ -406,7 +467,8 @@ impl EditorUI {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         let entries = std::fs::read_dir(&self.asset_current_dir);
                         if let Ok(entries) = entries {
-                            let mut sorted_entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+                            let mut sorted_entries: Vec<_> =
+                                entries.filter_map(|e| e.ok()).collect();
                             sorted_entries.sort_by_key(|e| (!e.path().is_dir(), e.file_name()));
 
                             for entry in sorted_entries {
@@ -415,18 +477,33 @@ impl EditorUI {
 
                                 ui.horizontal(|ui| {
                                     if path.is_dir() {
-                                        if ui.selectable_label(false, format!("📁 {}", label)).clicked() {
+                                        if ui
+                                            .selectable_label(false, format!("📁 {}", label))
+                                            .clicked()
+                                        {
                                             dir_to_set = Some(path.to_path_buf());
                                         }
                                     } else {
-                                        let is_gltf = path.extension().map_or(false, |ext| ext == "gltf" || ext == "glb");
-                                        let is_img = path.extension().map_or(false, |ext| ext == "png" || ext == "jpg");
-                                        let icon = if is_gltf { "📦" } else if is_img { "🖼" } else { "📄" };
+                                        let is_gltf = path
+                                            .extension()
+                                            .is_some_and(|ext| ext == "gltf" || ext == "glb");
+                                        let is_img = path
+                                            .extension()
+                                            .is_some_and(|ext| ext == "png" || ext == "jpg");
+                                        let icon = if is_gltf {
+                                            "📦"
+                                        } else if is_img {
+                                            "🖼"
+                                        } else {
+                                            "📄"
+                                        };
 
-                                        if ui.selectable_label(false, format!("{} {}", icon, label)).clicked() {
-                                            if is_gltf {
-                                                asset_to_load = Some(path.to_path_buf());
-                                            }
+                                        if ui
+                                            .selectable_label(false, format!("{} {}", icon, label))
+                                            .clicked()
+                                            && is_gltf
+                                        {
+                                            asset_to_load = Some(path.to_path_buf());
                                         }
                                     }
                                 });
@@ -434,25 +511,46 @@ impl EditorUI {
                         }
                     });
 
-                    if let Some(dir) = dir_to_set { self.asset_current_dir = dir; }
-                    if let Some(path) = asset_to_load { resource_manager.load_scene(path, scene, renderer); }
+                    if let Some(dir) = dir_to_set {
+                        self.asset_current_dir = dir;
+                    }
+                    if let Some(path) = asset_to_load {
+                        resource_manager.load_scene(path, scene, renderer, asset_manager);
+                    }
                 }
                 BottomTab::Settings => {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.heading("Post-Processing");
                         ui.horizontal(|ui| {
                             ui.label("Manual Exposure:");
-                            ui.add(egui::Slider::new(&mut renderer.settings.exposure, 0.1..=10.0));
+                            ui.add(egui::Slider::new(
+                                &mut renderer.settings.exposure,
+                                0.1..=10.0,
+                            ));
                         });
                         ui.horizontal(|ui| {
-                            ui.checkbox(&mut renderer.settings.enable_auto_exposure, "Auto Exposure");
+                            ui.checkbox(
+                                &mut renderer.settings.enable_auto_exposure,
+                                "Auto Exposure",
+                            );
                             if renderer.settings.enable_auto_exposure {
                                 ui.label("Min:");
-                                ui.add(egui::DragValue::new(&mut renderer.settings.auto_exposure_min).speed(0.1));
+                                ui.add(
+                                    egui::DragValue::new(&mut renderer.settings.auto_exposure_min)
+                                        .speed(0.1),
+                                );
                                 ui.label("Max:");
-                                ui.add(egui::DragValue::new(&mut renderer.settings.auto_exposure_max).speed(0.1));
+                                ui.add(
+                                    egui::DragValue::new(&mut renderer.settings.auto_exposure_max)
+                                        .speed(0.1),
+                                );
                                 ui.label("Speed:");
-                                ui.add(egui::DragValue::new(&mut renderer.settings.auto_exposure_speed).speed(0.1));
+                                ui.add(
+                                    egui::DragValue::new(
+                                        &mut renderer.settings.auto_exposure_speed,
+                                    )
+                                    .speed(0.1),
+                                );
                             }
                         });
                         ui.horizontal(|ui| {
@@ -465,46 +563,79 @@ impl EditorUI {
                             ui.checkbox(&mut renderer.settings.enable_bloom, "Bloom");
                             if renderer.settings.enable_bloom {
                                 ui.label("Threshold:");
-                                ui.add(egui::Slider::new(&mut renderer.settings.bloom_threshold, 0.1..=2.0));
+                                ui.add(egui::Slider::new(
+                                    &mut renderer.settings.bloom_threshold,
+                                    0.1..=2.0,
+                                ));
                                 ui.label("Intensity:");
-                                ui.add(egui::Slider::new(&mut renderer.settings.bloom_intensity, 0.0..=2.0));
+                                ui.add(egui::Slider::new(
+                                    &mut renderer.settings.bloom_intensity,
+                                    0.0..=2.0,
+                                ));
                             }
                         });
 
                         ui.horizontal(|ui| {
-                            ui.checkbox(&mut renderer.settings.enable_color_grading, "Color Grading");
+                            ui.checkbox(
+                                &mut renderer.settings.enable_color_grading,
+                                "Color Grading",
+                            );
                             if renderer.settings.enable_color_grading {
                                 ui.label("LUT Index:");
-                                ui.add(egui::DragValue::new(&mut renderer.settings.lut_index).clamp_range(-1..=15));
+                                ui.add(
+                                    egui::DragValue::new(&mut renderer.settings.lut_index)
+                                        .clamp_range(-1..=15),
+                                );
                             }
                         });
 
                         ui.horizontal(|ui| {
                             ui.label("Vignette Intensity:");
-                            ui.add(egui::Slider::new(&mut renderer.settings.vignette_intensity, 0.0..=1.0));
+                            ui.add(egui::Slider::new(
+                                &mut renderer.settings.vignette_intensity,
+                                0.0..=1.0,
+                            ));
                             ui.label("Smoothness:");
-                            ui.add(egui::Slider::new(&mut renderer.settings.vignette_smoothness, 0.0..=1.0));
+                            ui.add(egui::Slider::new(
+                                &mut renderer.settings.vignette_smoothness,
+                                0.0..=1.0,
+                            ));
                         });
 
                         ui.horizontal(|ui| {
                             ui.label("Chromatic Aberration:");
-                            ui.add(egui::Slider::new(&mut renderer.settings.chromatic_aberration, 0.0..=0.01));
+                            ui.add(egui::Slider::new(
+                                &mut renderer.settings.chromatic_aberration,
+                                0.0..=0.01,
+                            ));
                         });
 
                         ui.horizontal(|ui| {
                             ui.label("Film Grain:");
-                            ui.add(egui::Slider::new(&mut renderer.settings.film_grain, 0.0..=0.1));
+                            ui.add(egui::Slider::new(
+                                &mut renderer.settings.film_grain,
+                                0.0..=0.1,
+                            ));
                         });
 
                         ui.horizontal(|ui| {
                             ui.checkbox(&mut renderer.settings.enable_dof, "Depth of Field");
                             if renderer.settings.enable_dof {
                                 ui.label("Distance:");
-                                ui.add(egui::Slider::new(&mut renderer.settings.dof_focus_distance, 0.1..=50.0));
+                                ui.add(egui::Slider::new(
+                                    &mut renderer.settings.dof_focus_distance,
+                                    0.1..=50.0,
+                                ));
                                 ui.label("Range:");
-                                ui.add(egui::Slider::new(&mut renderer.settings.dof_focus_range, 0.1..=20.0));
+                                ui.add(egui::Slider::new(
+                                    &mut renderer.settings.dof_focus_range,
+                                    0.1..=20.0,
+                                ));
                                 ui.label("Size:");
-                                ui.add(egui::Slider::new(&mut renderer.settings.dof_bokeh_size, 1.0..=20.0));
+                                ui.add(egui::Slider::new(
+                                    &mut renderer.settings.dof_bokeh_size,
+                                    1.0..=20.0,
+                                ));
                             }
                         });
 
@@ -518,9 +649,15 @@ impl EditorUI {
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Density:");
-                                ui.add(egui::Slider::new(&mut renderer.settings.fog_density, 0.0..=0.1));
+                                ui.add(egui::Slider::new(
+                                    &mut renderer.settings.fog_density,
+                                    0.0..=0.1,
+                                ));
                                 ui.label("Height Falloff:");
-                                ui.add(egui::Slider::new(&mut renderer.settings.fog_height_falloff, 0.0..=1.0));
+                                ui.add(egui::Slider::new(
+                                    &mut renderer.settings.fog_height_falloff,
+                                    0.0..=1.0,
+                                ));
                             });
                         }
 
@@ -531,10 +668,22 @@ impl EditorUI {
                             if renderer.settings.enable_shadows {
                                 ui.label("PCF:");
                                 egui::ComboBox::from_id_source("shadow_pcf")
-                                    .selected_text(if renderer.settings.shadow_pcf_samples == 0 { "Hard" } else { "Soft (3x3)" })
+                                    .selected_text(if renderer.settings.shadow_pcf_samples == 0 {
+                                        "Hard"
+                                    } else {
+                                        "Soft (3x3)"
+                                    })
                                     .show_ui(ui, |ui| {
-                                        ui.selectable_value(&mut renderer.settings.shadow_pcf_samples, 0, "Hard");
-                                        ui.selectable_value(&mut renderer.settings.shadow_pcf_samples, 1, "Soft (3x3)");
+                                        ui.selectable_value(
+                                            &mut renderer.settings.shadow_pcf_samples,
+                                            0,
+                                            "Hard",
+                                        );
+                                        ui.selectable_value(
+                                            &mut renderer.settings.shadow_pcf_samples,
+                                            1,
+                                            "Soft (3x3)",
+                                        );
                                     });
                             }
                         });
@@ -542,9 +691,15 @@ impl EditorUI {
                             ui.checkbox(&mut renderer.settings.enable_ssao, "SSAO");
                             if renderer.settings.enable_ssao {
                                 ui.label("Radius:");
-                                ui.add(egui::Slider::new(&mut renderer.settings.ssao_radius, 0.1..=2.0));
+                                ui.add(egui::Slider::new(
+                                    &mut renderer.settings.ssao_radius,
+                                    0.1..=2.0,
+                                ));
                                 ui.label("Strength:");
-                                ui.add(egui::Slider::new(&mut renderer.settings.ssao_strength, 0.1..=5.0));
+                                ui.add(egui::Slider::new(
+                                    &mut renderer.settings.ssao_strength,
+                                    0.1..=5.0,
+                                ));
                             }
                         });
                         ui.checkbox(&mut renderer.settings.enable_taa, "TAA");
@@ -555,13 +710,28 @@ impl EditorUI {
                         ui.heading("Physics");
                         ui.horizontal(|ui| {
                             ui.label("Gravity:");
-                            ui.add(egui::DragValue::new(&mut project.physics_settings.gravity.x).speed(0.1).prefix("X:"));
-                            ui.add(egui::DragValue::new(&mut project.physics_settings.gravity.y).speed(0.1).prefix("Y:"));
-                            ui.add(egui::DragValue::new(&mut project.physics_settings.gravity.z).speed(0.1).prefix("Z:"));
+                            ui.add(
+                                egui::DragValue::new(&mut project.physics_settings.gravity.x)
+                                    .speed(0.1)
+                                    .prefix("X:"),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut project.physics_settings.gravity.y)
+                                    .speed(0.1)
+                                    .prefix("Y:"),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut project.physics_settings.gravity.z)
+                                    .speed(0.1)
+                                    .prefix("Z:"),
+                            );
                         });
                         ui.horizontal(|ui| {
                             ui.label("Sim Freq (Hz):");
-                            ui.add(egui::Slider::new(&mut project.physics_settings.simulation_frequency, 10.0..=240.0));
+                            ui.add(egui::Slider::new(
+                                &mut project.physics_settings.simulation_frequency,
+                                10.0..=240.0,
+                            ));
                         });
 
                         ui.separator();
@@ -572,33 +742,51 @@ impl EditorUI {
                                 ui.label("Steps:");
                                 ui.add(egui::DragValue::new(&mut renderer.settings.ssr_max_steps));
                                 ui.label("Step:");
-                                ui.add(egui::DragValue::new(&mut renderer.settings.ssr_step).speed(0.01));
+                                ui.add(
+                                    egui::DragValue::new(&mut renderer.settings.ssr_step)
+                                        .speed(0.01),
+                                );
                             }
                         });
                         ui.horizontal(|ui| {
                             ui.checkbox(&mut renderer.settings.enable_ssgi, "SSGI");
                             if renderer.settings.enable_ssgi {
                                 ui.label("Intensity:");
-                                ui.add(egui::Slider::new(&mut renderer.settings.ssgi_intensity, 0.0..=2.0));
+                                ui.add(egui::Slider::new(
+                                    &mut renderer.settings.ssgi_intensity,
+                                    0.0..=2.0,
+                                ));
                             }
                         });
                         ui.horizontal(|ui| {
                             ui.checkbox(&mut renderer.settings.enable_motion_blur, "Motion Blur");
                             if renderer.settings.enable_motion_blur {
                                 ui.label("Strength:");
-                                ui.add(egui::Slider::new(&mut renderer.settings.motion_blur_strength, 0.0..=1.0));
+                                ui.add(egui::Slider::new(
+                                    &mut renderer.settings.motion_blur_strength,
+                                    0.0..=1.0,
+                                ));
                             }
                         });
 
                         ui.separator();
                         ui.heading("Ray Tracing");
                         ui.horizontal(|ui| {
-                            ui.checkbox(&mut renderer.settings.enable_rt_reflections, "RT Reflections");
+                            ui.checkbox(
+                                &mut renderer.settings.enable_rt_reflections,
+                                "RT Reflections",
+                            );
                             ui.checkbox(&mut renderer.settings.enable_rt_shadows, "RT Shadows");
                         });
                         ui.horizontal(|ui| {
-                            ui.checkbox(&mut renderer.settings.enable_rt_ao, "RT Ambient Occlusion");
-                            ui.checkbox(&mut renderer.settings.enable_rt_gi, "RT Global Illumination");
+                            ui.checkbox(
+                                &mut renderer.settings.enable_rt_ao,
+                                "RT Ambient Occlusion",
+                            );
+                            ui.checkbox(
+                                &mut renderer.settings.enable_rt_gi,
+                                "RT Global Illumination",
+                            );
                         });
                     });
                 }
@@ -625,7 +813,9 @@ impl EditorUI {
             ui.horizontal(|ui| {
                 ui.label("🔍");
                 ui.text_edit_singleline(&mut self.hierarchy_search);
-                if ui.button("✖").clicked() { self.hierarchy_search.clear(); }
+                if ui.button("✖").clicked() {
+                    self.hierarchy_search.clear();
+                }
             });
 
             ui.horizontal(|ui| {
@@ -643,7 +833,15 @@ impl EditorUI {
             ui.separator();
 
             egui::ScrollArea::vertical().show(ui, |ui| {
-                Self::draw_node_tree(ui, scene, scene.root, &mut self.selected_node, &mut self.node_to_delete, &mut self.node_to_add_child, &self.hierarchy_search);
+                Self::draw_node_tree(
+                    ui,
+                    scene,
+                    scene.root,
+                    &mut self.selected_node,
+                    &mut self.node_to_delete,
+                    &mut self.node_to_add_child,
+                    &self.hierarchy_search,
+                );
             });
 
             if let Some(selected_key) = self.selected_node {
@@ -667,16 +865,18 @@ impl EditorUI {
             children: Vec::new(),
             components: Vec::new(),
         };
-        new_node.components.push(Box::new(spark_core::scene::MeshComponent {
-            vertex_count: 0,
-            index_count: 0,
-            first_index: 0,
-            vertex_offset: 0,
-            texture_handle: None,
-            material_index: None,
-            bounding_radius: 1.0,
-            skin_index: None,
-        }));
+        new_node
+            .components
+            .push(Box::new(spark_core::scene::MeshComponent {
+                vertex_count: 0,
+                index_count: 0,
+                first_index: 0,
+                vertex_offset: 0,
+                texture_handle: None,
+                material_index: None,
+                bounding_radius: 1.0,
+                skin_index: None,
+            }));
         scene.add_node(scene.root, new_node);
     }
 
@@ -692,14 +892,16 @@ impl EditorUI {
             children: Vec::new(),
             components: Vec::new(),
         };
-        new_node.components.push(Box::new(spark_core::scene::LightComponent {
-            light_type: spark_core::scene::LightType::Point,
-            color: spark_math::Vec3::ONE,
-            intensity: 1.0,
-            range: 10.0,
-            spot_inner_angle: 30.0,
-            spot_outer_angle: 45.0,
-        }));
+        new_node
+            .components
+            .push(Box::new(spark_core::scene::LightComponent {
+                light_type: spark_core::scene::LightType::Point,
+                color: spark_math::Vec3::ONE,
+                intensity: 1.0,
+                range: 10.0,
+                spot_inner_angle: 30.0,
+                spot_outer_angle: 45.0,
+            }));
         scene.add_node(scene.root, new_node);
     }
 
@@ -715,13 +917,15 @@ impl EditorUI {
             children: Vec::new(),
             components: Vec::new(),
         };
-        new_node.components.push(Box::new(spark_core::scene::SpriteComponent {
-            texture_handle: None,
-            color: [1.0, 1.0, 1.0, 1.0],
-            flip_x: false,
-            flip_y: false,
-            size: spark_math::Vec2::new(1.0, 1.0),
-        }));
+        new_node
+            .components
+            .push(Box::new(spark_core::scene::SpriteComponent {
+                texture_handle: None,
+                color: [1.0, 1.0, 1.0, 1.0],
+                flip_x: false,
+                flip_y: false,
+                size: spark_math::Vec2::new(1.0, 1.0),
+            }));
         scene.add_node(scene.root, new_node);
     }
 
@@ -736,7 +940,11 @@ impl EditorUI {
         scene.nodes.remove(key);
     }
 
-    fn draw_inspector_panel(&mut self, scene: &mut Scene, _renderer: &mut spark_renderer::Renderer) {
+    fn draw_inspector_panel(
+        &mut self,
+        scene: &mut Scene,
+        _renderer: &mut spark_renderer::Renderer,
+    ) {
         let ctx = self.egui_ctx.clone();
         egui::SidePanel::right("inspector").show(&ctx, |ui| {
             ui.heading("Inspector");
@@ -757,38 +965,55 @@ impl EditorUI {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.menu_button("✚ Add", |ui| {
                                 if ui.button("Mesh").clicked() {
-                                    node.components.push(Box::new(spark_core::scene::MeshComponent {
-                                        vertex_count: 0, index_count: 0, first_index: 0, vertex_offset: 0,
-                                        texture_handle: None, material_index: None, bounding_radius: 1.0,
-                                        skin_index: None,
-                                    }));
+                                    node.components.push(Box::new(
+                                        spark_core::scene::MeshComponent {
+                                            vertex_count: 0,
+                                            index_count: 0,
+                                            first_index: 0,
+                                            vertex_offset: 0,
+                                            texture_handle: None,
+                                            material_index: None,
+                                            bounding_radius: 1.0,
+                                            skin_index: None,
+                                        },
+                                    ));
                                     ui.close_menu();
                                 }
                                 if ui.button("Light").clicked() {
-                                    node.components.push(Box::new(spark_core::scene::LightComponent {
-                                        light_type: spark_core::scene::LightType::Point,
-                                        color: spark_math::Vec3::ONE,
-                                        intensity: 1.0,
-                                        range: 10.0,
-                                        spot_inner_angle: 30.0,
-                                        spot_outer_angle: 45.0,
-                                    }));
+                                    node.components.push(Box::new(
+                                        spark_core::scene::LightComponent {
+                                            light_type: spark_core::scene::LightType::Point,
+                                            color: spark_math::Vec3::ONE,
+                                            intensity: 1.0,
+                                            range: 10.0,
+                                            spot_inner_angle: 30.0,
+                                            spot_outer_angle: 45.0,
+                                        },
+                                    ));
                                     ui.close_menu();
                                 }
                                 if ui.button("Camera").clicked() {
-                                    node.components.push(Box::new(spark_core::scene::CameraComponent {
-                                        fov: 45.0, near: 0.1, far: 100.0, orthographic: false, ortho_size: 5.0,
-                                    }));
+                                    node.components.push(Box::new(
+                                        spark_core::scene::CameraComponent {
+                                            fov: 45.0,
+                                            near: 0.1,
+                                            far: 100.0,
+                                            orthographic: false,
+                                            ortho_size: 5.0,
+                                        },
+                                    ));
                                     ui.close_menu();
                                 }
                                 if ui.button("Sprite").clicked() {
-                                    node.components.push(Box::new(spark_core::scene::SpriteComponent {
-                                         texture_handle: None,
-                                         color: [1.0, 1.0, 1.0, 1.0],
-                                         flip_x: false,
-                                         flip_y: false,
-                                         size: spark_math::Vec2::new(1.0, 1.0),
-                                    }));
+                                    node.components.push(Box::new(
+                                        spark_core::scene::SpriteComponent {
+                                            texture_handle: None,
+                                            color: [1.0, 1.0, 1.0, 1.0],
+                                            flip_x: false,
+                                            flip_y: false,
+                                            size: spark_math::Vec2::new(1.0, 1.0),
+                                        },
+                                    ));
                                     ui.close_menu();
                                 }
                             });
@@ -798,10 +1023,26 @@ impl EditorUI {
                     let mut to_remove = None;
                     for (idx, component) in node.components.iter_mut().enumerate() {
                         let header = match component.as_any().type_id() {
-                            t if t == std::any::TypeId::of::<spark_core::scene::MeshComponent>() => "Mesh",
-                            t if t == std::any::TypeId::of::<spark_core::scene::LightComponent>() => "Light",
-                            t if t == std::any::TypeId::of::<spark_core::scene::CameraComponent>() => "Camera",
-                            t if t == std::any::TypeId::of::<spark_core::scene::SpriteComponent>() => "Sprite",
+                            t if t
+                                == std::any::TypeId::of::<spark_core::scene::MeshComponent>() =>
+                            {
+                                "Mesh"
+                            }
+                            t if t
+                                == std::any::TypeId::of::<spark_core::scene::LightComponent>() =>
+                            {
+                                "Light"
+                            }
+                            t if t
+                                == std::any::TypeId::of::<spark_core::scene::CameraComponent>() =>
+                            {
+                                "Camera"
+                            }
+                            t if t
+                                == std::any::TypeId::of::<spark_core::scene::SpriteComponent>() =>
+                            {
+                                "Sprite"
+                            }
                             _ => "Unknown",
                         };
 
@@ -824,18 +1065,33 @@ impl EditorUI {
                     ui.separator();
                     ui.label("Gizmo Mode");
                     ui.horizontal(|ui| {
-                        ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Translate, "T");
-                        ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Rotate, "R");
-                        ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Scale, "S");
+                        ui.selectable_value(
+                            &mut self.gizmo_mode,
+                            egui_gizmo::GizmoMode::Translate,
+                            "T",
+                        );
+                        ui.selectable_value(
+                            &mut self.gizmo_mode,
+                            egui_gizmo::GizmoMode::Rotate,
+                            "R",
+                        );
+                        ui.selectable_value(
+                            &mut self.gizmo_mode,
+                            egui_gizmo::GizmoMode::Scale,
+                            "S",
+                        );
                     });
                 }
 
                 if let Some((old, new)) = changed_transform {
-                    self.execute_command(Box::new(TransformCommand {
-                        node_key: selected_key,
-                        old_transform: old,
-                        new_transform: new,
-                    }), scene);
+                    self.execute_command(
+                        Box::new(TransformCommand {
+                            node_key: selected_key,
+                            old_transform: old,
+                            new_transform: new,
+                        }),
+                        scene,
+                    );
                 }
             } else {
                 ui.label("Select a node to inspect");
@@ -850,21 +1106,32 @@ impl EditorUI {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.style_mut().spacing.item_spacing.x = 4.0;
                 let z_resp = ui.add(egui::DragValue::new(&mut vec.z).speed(0.1).prefix("Z:"));
-                if z_resp.changed() { changed = true; }
+                if z_resp.changed() {
+                    changed = true;
+                }
                 let y_resp = ui.add(egui::DragValue::new(&mut vec.y).speed(0.1).prefix("Y:"));
-                if y_resp.changed() { changed = true; }
+                if y_resp.changed() {
+                    changed = true;
+                }
                 let x_resp = ui.add(egui::DragValue::new(&mut vec.x).speed(0.1).prefix("X:"));
-                if x_resp.changed() { changed = true; }
+                if x_resp.changed() {
+                    changed = true;
+                }
             });
         });
         changed
     }
 
-    fn draw_transform_editor(&mut self, ui: &mut Ui, node: &mut Node) -> Option<(spark_math::Mat4, spark_math::Mat4)> {
+    fn draw_transform_editor(
+        &mut self,
+        ui: &mut Ui,
+        node: &mut Node,
+    ) -> Option<(spark_math::Mat4, spark_math::Mat4)> {
         ui.vertical_centered(|ui| {
-             ui.heading("Transform");
+            ui.heading("Transform");
         });
-        let (mut scale, mut rotation, mut translation) = node.local_transform.to_scale_rotation_translation();
+        let (mut scale, mut rotation, mut translation) =
+            node.local_transform.to_scale_rotation_translation();
 
         let mut changed = false;
         let initial_transform = node.local_transform;
@@ -872,28 +1139,38 @@ impl EditorUI {
         changed |= Self::draw_vec3_editor(ui, "Position", &mut translation);
 
         let mut euler = rotation.to_euler(spark_math::EulerRot::XYZ);
-        let mut deg_euler = spark_math::Vec3::new(euler.0.to_degrees(), euler.1.to_degrees(), euler.2.to_degrees());
+        let mut deg_euler = spark_math::Vec3::new(
+            euler.0.to_degrees(),
+            euler.1.to_degrees(),
+            euler.2.to_degrees(),
+        );
         if Self::draw_vec3_editor(ui, "Rotation", &mut deg_euler) {
             euler.0 = deg_euler.x.to_radians();
             euler.1 = deg_euler.y.to_radians();
             euler.2 = deg_euler.z.to_radians();
-            rotation = spark_math::Quat::from_euler(spark_math::EulerRot::XYZ, euler.0, euler.1, euler.2);
+            rotation =
+                spark_math::Quat::from_euler(spark_math::EulerRot::XYZ, euler.0, euler.1, euler.2);
             changed = true;
         }
 
         changed |= Self::draw_vec3_editor(ui, "Scale", &mut scale);
 
         if changed {
-            node.local_transform = spark_math::Mat4::from_scale_rotation_translation(scale, rotation, translation);
+            node.local_transform =
+                spark_math::Mat4::from_scale_rotation_translation(scale, rotation, translation);
         }
 
         if ui.input(|i| i.pointer.any_released()) && changed {
-             return Some((initial_transform, node.local_transform));
+            return Some((initial_transform, node.local_transform));
         }
         None
     }
 
-    fn draw_component_editor(&mut self, ui: &mut Ui, component: &mut Box<dyn spark_core::scene::Component>) {
+    fn draw_component_editor(
+        &mut self,
+        ui: &mut Ui,
+        component: &mut Box<dyn spark_core::scene::Component>,
+    ) {
         let any = component.as_any_mut();
         if let Some(light) = any.downcast_mut::<spark_core::scene::LightComponent>() {
             ui.vertical(|ui| {
@@ -902,9 +1179,21 @@ impl EditorUI {
                     egui::ComboBox::from_id_source("light_type")
                         .selected_text(format!("{:?}", light.light_type))
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut light.light_type, spark_core::scene::LightType::Directional, "Directional");
-                            ui.selectable_value(&mut light.light_type, spark_core::scene::LightType::Point, "Point");
-                            ui.selectable_value(&mut light.light_type, spark_core::scene::LightType::Spot, "Spot");
+                            ui.selectable_value(
+                                &mut light.light_type,
+                                spark_core::scene::LightType::Directional,
+                                "Directional",
+                            );
+                            ui.selectable_value(
+                                &mut light.light_type,
+                                spark_core::scene::LightType::Point,
+                                "Point",
+                            );
+                            ui.selectable_value(
+                                &mut light.light_type,
+                                spark_core::scene::LightType::Spot,
+                                "Spot",
+                            );
                         });
                 });
                 ui.horizontal(|ui| {
@@ -913,11 +1202,19 @@ impl EditorUI {
                 });
                 ui.horizontal(|ui| {
                     ui.label("Intensity:");
-                    ui.add(egui::DragValue::new(&mut light.intensity).speed(0.1).clamp_range(0.0..=f32::MAX));
+                    ui.add(
+                        egui::DragValue::new(&mut light.intensity)
+                            .speed(0.1)
+                            .clamp_range(0.0..=f32::MAX),
+                    );
                 });
                 ui.horizontal(|ui| {
                     ui.label("Range:");
-                    ui.add(egui::DragValue::new(&mut light.range).speed(0.1).clamp_range(0.0..=f32::MAX));
+                    ui.add(
+                        egui::DragValue::new(&mut light.range)
+                            .speed(0.1)
+                            .clamp_range(0.0..=f32::MAX),
+                    );
                 });
                 if let spark_core::scene::LightType::Spot = light.light_type {
                     ui.horizontal(|ui| {
@@ -943,7 +1240,11 @@ impl EditorUI {
                 if camera.orthographic {
                     ui.horizontal(|ui| {
                         ui.label("Ortho Size:");
-                        ui.add(egui::DragValue::new(&mut camera.ortho_size).speed(0.1).clamp_range(0.0..=f32::MAX));
+                        ui.add(
+                            egui::DragValue::new(&mut camera.ortho_size)
+                                .speed(0.1)
+                                .clamp_range(0.0..=f32::MAX),
+                        );
                     });
                 } else {
                     ui.horizontal(|ui| {
@@ -953,11 +1254,19 @@ impl EditorUI {
                 }
                 ui.horizontal(|ui| {
                     ui.label("Near:");
-                    ui.add(egui::DragValue::new(&mut camera.near).speed(0.01).clamp_range(0.0..=f32::MAX));
+                    ui.add(
+                        egui::DragValue::new(&mut camera.near)
+                            .speed(0.01)
+                            .clamp_range(0.0..=f32::MAX),
+                    );
                 });
                 ui.horizontal(|ui| {
                     ui.label("Far:");
-                    ui.add(egui::DragValue::new(&mut camera.far).speed(1.0).clamp_range(0.0..=f32::MAX));
+                    ui.add(
+                        egui::DragValue::new(&mut camera.far)
+                            .speed(1.0)
+                            .clamp_range(0.0..=f32::MAX),
+                    );
                 });
             });
         } else if let Some(sprite) = any.downcast_mut::<spark_core::scene::SpriteComponent>() {
@@ -968,8 +1277,16 @@ impl EditorUI {
                 });
                 ui.horizontal(|ui| {
                     ui.label("Size:");
-                    ui.add(egui::DragValue::new(&mut sprite.size.x).speed(0.1).prefix("W:"));
-                    ui.add(egui::DragValue::new(&mut sprite.size.y).speed(0.1).prefix("H:"));
+                    ui.add(
+                        egui::DragValue::new(&mut sprite.size.x)
+                            .speed(0.1)
+                            .prefix("W:"),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut sprite.size.y)
+                            .speed(0.1)
+                            .prefix("H:"),
+                    );
                 });
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut sprite.flip_x, "Flip X");
@@ -979,20 +1296,51 @@ impl EditorUI {
         }
     }
 
-    fn draw_node_tree(ui: &mut egui::Ui, scene: &mut Scene, node_key: NodeKey, selected_node: &mut Option<NodeKey>, node_to_delete: &mut Option<NodeKey>, node_to_add_child: &mut Option<(NodeKey, NodeType)>, search: &str) {
+    fn draw_node_tree(
+        ui: &mut egui::Ui,
+        scene: &mut Scene,
+        node_key: NodeKey,
+        selected_node: &mut Option<NodeKey>,
+        node_to_delete: &mut Option<NodeKey>,
+        node_to_add_child: &mut Option<(NodeKey, NodeType)>,
+        search: &str,
+    ) {
         let (label, children, icon) = if let Some(node) = scene.nodes.get(node_key) {
-            let icon = if node.components.iter().any(|c| c.as_any().is::<spark_core::scene::CameraComponent>()) { "🎥" }
-                      else if node.components.iter().any(|c| c.as_any().is::<spark_core::scene::LightComponent>()) { "💡" }
-                      else if node.components.iter().any(|c| c.as_any().is::<spark_core::scene::SpriteComponent>()) { "🖼" }
-                      else if node.components.iter().any(|c| c.as_any().is::<spark_core::scene::MeshComponent>()) { "📦" }
-                      else { "⭕" };
+            let icon = if node
+                .components
+                .iter()
+                .any(|c| c.as_any().is::<spark_core::scene::CameraComponent>())
+            {
+                "🎥"
+            } else if node
+                .components
+                .iter()
+                .any(|c| c.as_any().is::<spark_core::scene::LightComponent>())
+            {
+                "💡"
+            } else if node
+                .components
+                .iter()
+                .any(|c| c.as_any().is::<spark_core::scene::SpriteComponent>())
+            {
+                "🖼"
+            } else if node
+                .components
+                .iter()
+                .any(|c| c.as_any().is::<spark_core::scene::MeshComponent>())
+            {
+                "📦"
+            } else {
+                "⭕"
+            };
             (node.name.clone(), node.children.clone(), icon)
         } else {
             return;
         };
 
         let is_selected = Some(node_key) == *selected_node;
-        let matches_search = search.is_empty() || label.to_lowercase().contains(&search.to_lowercase());
+        let matches_search =
+            search.is_empty() || label.to_lowercase().contains(&search.to_lowercase());
 
         if matches_search {
             ui.horizontal(|ui| {
@@ -1006,34 +1354,38 @@ impl EditorUI {
                 }
 
                 if ui.button(if visible { "👁" } else { "👓" }).clicked() {
-                    if let Some(node) = scene.nodes.get_mut(node_key) { node.visible = !node.visible; }
+                    if let Some(node) = scene.nodes.get_mut(node_key) {
+                        node.visible = !node.visible;
+                    }
                 }
                 if ui.button(if locked { "🔒" } else { "🔓" }).clicked() {
-                    if let Some(node) = scene.nodes.get_mut(node_key) { node.locked = !node.locked; }
+                    if let Some(node) = scene.nodes.get_mut(node_key) {
+                        node.locked = !node.locked;
+                    }
                 }
 
                 let response = ui.selectable_label(is_selected, &label);
 
                 let mut delete_requested = false;
-        response.context_menu(|ui| {
-                if ui.button("Delete").clicked() {
-                    delete_requested = true;
-                    ui.close_menu();
-                }
-                ui.separator();
-                if ui.button("Add Child Mesh").clicked() {
-                    *node_to_add_child = Some((node_key, NodeType::Mesh));
-                    ui.close_menu();
-                }
-                if ui.button("Add Child Light").clicked() {
-                    *node_to_add_child = Some((node_key, NodeType::Light));
-                    ui.close_menu();
-                }
-                if ui.button("Add Child Sprite").clicked() {
-                    *node_to_add_child = Some((node_key, NodeType::Sprite));
-                    ui.close_menu();
-                }
-            });
+                response.context_menu(|ui| {
+                    if ui.button("Delete").clicked() {
+                        delete_requested = true;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Add Child Mesh").clicked() {
+                        *node_to_add_child = Some((node_key, NodeType::Mesh));
+                        ui.close_menu();
+                    }
+                    if ui.button("Add Child Light").clicked() {
+                        *node_to_add_child = Some((node_key, NodeType::Light));
+                        ui.close_menu();
+                    }
+                    if ui.button("Add Child Sprite").clicked() {
+                        *node_to_add_child = Some((node_key, NodeType::Sprite));
+                        ui.close_menu();
+                    }
+                });
 
                 if delete_requested {
                     *node_to_delete = Some(node_key);
@@ -1052,7 +1404,10 @@ impl EditorUI {
                         // Check for cycles
                         let mut current = Some(node_key);
                         while let Some(k) = current {
-                            if k == dragged_key { can_reparent = false; break; }
+                            if k == dragged_key {
+                                can_reparent = false;
+                                break;
+                            }
                             current = scene.nodes.get(k).and_then(|n| n.parent);
                         }
 
@@ -1081,80 +1436,153 @@ impl EditorUI {
 
         for &child_key in &children {
             ui.indent(node_key, |ui| {
-                Self::draw_node_tree(ui, scene, child_key, selected_node, node_to_delete, node_to_add_child, search);
+                Self::draw_node_tree(
+                    ui,
+                    scene,
+                    child_key,
+                    selected_node,
+                    node_to_delete,
+                    node_to_add_child,
+                    search,
+                );
             });
         }
     }
 
-    pub fn draw_viewport(&mut self, scene: &mut Scene, renderer: &mut spark_renderer::Renderer, fps: f32) {
+    pub fn draw_viewport(
+        &mut self,
+        scene: &mut Scene,
+        renderer: &mut spark_renderer::Renderer,
+        fps: f32,
+    ) {
         if let Some(texture_id) = self.viewport_texture_id {
             let ctx = self.egui_ctx.clone();
             egui::Window::new("Viewport")
                 .default_size([800.0, 600.0])
                 .show(&ctx, |ui| {
-                // Performance Overlay
-                let painter = ui.painter();
-                let rect = ui.max_rect();
-                painter.rect_filled(
-                    egui::Rect::from_min_size(rect.min + egui::vec2(10.0, 10.0), egui::vec2(150.0, 80.0)),
-                    5.0,
-                    egui::Color32::from_black_alpha(150)
-                );
-                ui.put(
-                    egui::Rect::from_min_size(rect.min + egui::vec2(20.0, 20.0), egui::vec2(130.0, 60.0)),
-                    egui::Label::new(egui::RichText::new(format!(
-                        "FPS: {:.1}\nObjects: {}\nTris: TODO\nDraw Calls: TODO",
-                        fps, renderer.last_object_count
-                    )).color(egui::Color32::WHITE).size(12.0))
-                );
+                    // Performance Overlay
+                    let painter = ui.painter();
+                    let rect = ui.max_rect();
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            rect.min + egui::vec2(10.0, 10.0),
+                            egui::vec2(150.0, 80.0),
+                        ),
+                        5.0,
+                        egui::Color32::from_black_alpha(150),
+                    );
+                    ui.put(
+                        egui::Rect::from_min_size(
+                            rect.min + egui::vec2(20.0, 20.0),
+                            egui::vec2(130.0, 60.0),
+                        ),
+                        egui::Label::new(
+                            egui::RichText::new(format!(
+                                "FPS: {:.1}\nObjects: {}\nTris: TODO\nDraw Calls: TODO",
+                                fps, renderer.last_object_count
+                            ))
+                            .color(egui::Color32::WHITE)
+                            .size(12.0),
+                        ),
+                    );
 
-                // Keyboard shortcuts
-                if ui.input(|i| i.key_pressed(egui::Key::T)) { self.gizmo_mode = egui_gizmo::GizmoMode::Translate; }
-                if ui.input(|i| i.key_pressed(egui::Key::R)) { self.gizmo_mode = egui_gizmo::GizmoMode::Rotate; }
-                if ui.input(|i| i.key_pressed(egui::Key::S)) { self.gizmo_mode = egui_gizmo::GizmoMode::Scale; }
-
-                let size = ui.available_size();
-                let response = ui.image(egui::load::SizedTexture::new(texture_id, size));
-                let rect = response.rect;
-
-                // Camera Controls
-                if response.hovered() {
-                    let speed = self.camera_speed;
-                    let rot_speed = 0.005;
-
-                    if ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary)) {
-                        let delta = ui.input(|i| i.pointer.delta());
-                        self.camera_rot.x += delta.x * rot_speed;
-                        self.camera_rot.y -= delta.y * rot_speed;
-                        self.camera_rot.y = self.camera_rot.y.clamp(-1.5, 1.5);
+                    // Keyboard shortcuts
+                    if ui.input(|i| i.key_pressed(egui::Key::T)) {
+                        self.gizmo_mode = egui_gizmo::GizmoMode::Translate;
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::R)) {
+                        self.gizmo_mode = egui_gizmo::GizmoMode::Rotate;
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::S)) {
+                        self.gizmo_mode = egui_gizmo::GizmoMode::Scale;
                     }
 
-                    let forward = spark_math::Vec3::new(
-                        self.camera_rot.x.cos() * self.camera_rot.y.cos(),
-                        self.camera_rot.y.sin(),
-                        self.camera_rot.x.sin() * self.camera_rot.y.cos(),
-                    ).normalize();
-                    let right = forward.cross(spark_math::Vec3::Y).normalize();
+                    let size = ui.available_size();
+                    let response = ui.image(egui::load::SizedTexture::new(texture_id, size));
+                    let rect = response.rect;
 
-                    if ui.input(|i| i.key_down(egui::Key::W)) { self.camera_pos += forward * speed; }
-                    if ui.input(|i| i.key_down(egui::Key::S)) { self.camera_pos -= forward * speed; }
-                    if ui.input(|i| i.key_down(egui::Key::A)) { self.camera_pos -= right * speed; }
-                    if ui.input(|i| i.key_down(egui::Key::D)) { self.camera_pos += right * speed; }
+                    // Camera Controls
+                    if response.hovered() {
+                        let speed = self.camera_speed;
+                        let rot_speed = 0.005;
 
-                    scene.last_view_matrix = spark_math::Mat4::look_at_rh(
-                        self.camera_pos,
-                        self.camera_pos + forward,
-                        spark_math::Vec3::Y
-                    );
-                }
+                        if ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary)) {
+                            let delta = ui.input(|i| i.pointer.delta());
+                            self.camera_rot.x += delta.x * rot_speed;
+                            self.camera_rot.y -= delta.y * rot_speed;
+                            self.camera_rot.y = self.camera_rot.y.clamp(-1.5, 1.5);
+                        }
 
-                // Picking
-                if response.clicked_by(egui::PointerButton::Primary) {
-                    if let Some(pointer_pos) = ui.input(|i| i.pointer.interact_pos()) {
-                        if rect.contains(pointer_pos) {
-                            let normalized_x = (pointer_pos.x - rect.min.x) / rect.width();
-                            let normalized_y = (pointer_pos.y - rect.min.y) / rect.height();
+                        let forward = spark_math::Vec3::new(
+                            self.camera_rot.x.cos() * self.camera_rot.y.cos(),
+                            self.camera_rot.y.sin(),
+                            self.camera_rot.x.sin() * self.camera_rot.y.cos(),
+                        )
+                        .normalize();
+                        let right = forward.cross(spark_math::Vec3::Y).normalize();
 
+                        if ui.input(|i| i.key_down(egui::Key::W)) {
+                            self.camera_pos += forward * speed;
+                        }
+                        if ui.input(|i| i.key_down(egui::Key::S)) {
+                            self.camera_pos -= forward * speed;
+                        }
+                        if ui.input(|i| i.key_down(egui::Key::A)) {
+                            self.camera_pos -= right * speed;
+                        }
+                        if ui.input(|i| i.key_down(egui::Key::D)) {
+                            self.camera_pos += right * speed;
+                        }
+
+                        scene.last_view_matrix = spark_math::Mat4::look_at_rh(
+                            self.camera_pos,
+                            self.camera_pos + forward,
+                            spark_math::Vec3::Y,
+                        );
+                    }
+
+                    // Picking
+                    if response.clicked_by(egui::PointerButton::Primary) {
+                        if let Some(pointer_pos) = ui.input(|i| i.pointer.interact_pos()) {
+                            if rect.contains(pointer_pos) {
+                                let normalized_x = (pointer_pos.x - rect.min.x) / rect.width();
+                                let normalized_y = (pointer_pos.y - rect.min.y) / rect.height();
+
+                                let view = scene.last_view_matrix;
+                                let projection = spark_math::Mat4::perspective_rh(
+                                    45.0f32.to_radians(),
+                                    size.x / size.y,
+                                    0.1,
+                                    100.0,
+                                );
+                                let inv_vp = (projection * view).inverse();
+
+                                let ndc_x = normalized_x * 2.0 - 1.0;
+                                let ndc_y = (1.0 - normalized_y) * 2.0 - 1.0;
+
+                                let near_ndc = spark_math::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+                                let far_ndc = spark_math::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+
+                                let near_world = inv_vp * near_ndc;
+                                let far_world = inv_vp * far_ndc;
+
+                                let origin = near_world.xyz() / near_world.w;
+                                let target = far_world.xyz() / far_world.w;
+                                let direction = (target - origin).normalize();
+
+                                let ray = spark_math::Ray::new(origin, direction);
+                                if let Some((key, _)) = scene.pick_node(&ray) {
+                                    self.selected_node = Some(key);
+                                } else {
+                                    self.selected_node = None;
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(selected_key) = self.selected_node {
+                        let (view, projection, model, parent_key, locked) = {
+                            let node = scene.nodes.get(selected_key).unwrap();
                             let view = scene.last_view_matrix;
                             let projection = spark_math::Mat4::perspective_rh(
                                 45.0f32.to_radians(),
@@ -1162,98 +1590,88 @@ impl EditorUI {
                                 0.1,
                                 100.0,
                             );
-                            let inv_vp = (projection * view).inverse();
+                            (
+                                view,
+                                projection,
+                                node.global_transform,
+                                node.parent,
+                                node.locked,
+                            )
+                        };
 
-                            let ndc_x = normalized_x * 2.0 - 1.0;
-                            let ndc_y = (1.0 - normalized_y) * 2.0 - 1.0;
+                        if locked {
+                            ui.label(
+                                egui::RichText::new("Node is locked").color(egui::Color32::YELLOW),
+                            );
+                        }
 
-                            let near_ndc = spark_math::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
-                            let far_ndc = spark_math::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
-
-                            let near_world = inv_vp * near_ndc;
-                            let far_world = inv_vp * far_ndc;
-
-                            let origin = near_world.xyz() / near_world.w;
-                            let target = far_world.xyz() / far_world.w;
-                            let direction = (target - origin).normalize();
-
-                            let ray = spark_math::Ray::new(origin, direction);
-                            if let Some((key, _)) = scene.pick_node(&ray) {
-                                self.selected_node = Some(key);
+                        let gizmo = Gizmo::new("scene_gizmo")
+                            .view_matrix(view.to_cols_array_2d().into())
+                            .projection_matrix(projection.to_cols_array_2d().into())
+                            .model_matrix(model.to_cols_array_2d().into())
+                            .mode(self.gizmo_mode)
+                            .orientation(if self.gizmo_local {
+                                egui_gizmo::GizmoOrientation::Local
                             } else {
-                                self.selected_node = None;
+                                egui_gizmo::GizmoOrientation::Global
+                            })
+                            .snapping(self.snap_enabled)
+                            .snap_distance(self.snap_distance)
+                            .snap_angle(self.snap_distance.to_radians())
+                            .snap_scale(self.snap_distance)
+                            .viewport(rect);
+
+                        if let Some(response) = gizmo.interact(ui) {
+                            if locked {
+                                return;
+                            }
+                            if self.initial_gizmo_transform.is_none() {
+                                self.initial_gizmo_transform =
+                                    Some(scene.nodes.get(selected_key).unwrap().local_transform);
+                            }
+
+                            let m = response.transform();
+                            let new_model = spark_math::Mat4::from_cols_array_2d(&[
+                                m.x.into(),
+                                m.y.into(),
+                                m.z.into(),
+                                m.w.into(),
+                            ]);
+
+                            let parent_global_inv = if let Some(pk) = parent_key {
+                                scene
+                                    .nodes
+                                    .get(pk)
+                                    .map(|p| p.global_transform.inverse())
+                                    .unwrap_or(spark_math::Mat4::IDENTITY)
+                            } else {
+                                spark_math::Mat4::IDENTITY
+                            };
+
+                            let new_local = parent_global_inv * new_model;
+
+                            if let Some(node) = scene.nodes.get_mut(selected_key) {
+                                node.local_transform = new_local;
+                            }
+                        } else if ui.input(|i| i.pointer.any_released()) {
+                            if let Some(old_transform) = self.initial_gizmo_transform.take() {
+                                if let Some(node) = scene.nodes.get(selected_key) {
+                                    let new_transform = node.local_transform;
+                                    if old_transform != new_transform {
+                                        self.execute_command(
+                                            Box::new(TransformCommand {
+                                                node_key: selected_key,
+                                                old_transform,
+                                                new_transform,
+                                            }),
+                                            scene,
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
-                }
-
-                if let Some(selected_key) = self.selected_node {
-                    let (view, projection, model, parent_key, locked) = {
-                        let node = scene.nodes.get(selected_key).unwrap();
-                        let view = scene.last_view_matrix;
-                        let projection = spark_math::Mat4::perspective_rh(
-                            45.0f32.to_radians(),
-                            size.x / size.y,
-                            0.1,
-                            100.0,
-                        );
-                        (view, projection, node.global_transform, node.parent, node.locked)
-                    };
-
-                    if locked {
-                        ui.label(egui::RichText::new("Node is locked").color(egui::Color32::YELLOW));
-                    }
-
-                    let gizmo = Gizmo::new("scene_gizmo")
-                        .view_matrix(view.to_cols_array_2d().into())
-                        .projection_matrix(projection.to_cols_array_2d().into())
-                        .model_matrix(model.to_cols_array_2d().into())
-                        .mode(self.gizmo_mode)
-                        .orientation(if self.gizmo_local { egui_gizmo::GizmoOrientation::Local } else { egui_gizmo::GizmoOrientation::Global })
-                        .snapping(self.snap_enabled)
-                        .snap_distance(self.snap_distance)
-                        .snap_angle(self.snap_distance.to_radians())
-                        .snap_scale(self.snap_distance)
-                        .viewport(rect);
-
-                    if let Some(response) = gizmo.interact(ui) {
-                        if locked { return; }
-                        if self.initial_gizmo_transform.is_none() {
-                            self.initial_gizmo_transform = Some(scene.nodes.get(selected_key).unwrap().local_transform);
-                        }
-
-                        let m = response.transform();
-                        let new_model = spark_math::Mat4::from_cols_array_2d(&[
-                            m.x.into(), m.y.into(), m.z.into(), m.w.into()
-                        ]);
-
-                        let parent_global_inv = if let Some(pk) = parent_key {
-                            scene.nodes.get(pk).map(|p| p.global_transform.inverse()).unwrap_or(spark_math::Mat4::IDENTITY)
-                        } else {
-                            spark_math::Mat4::IDENTITY
-                        };
-
-                        let new_local = parent_global_inv * new_model;
-
-                        if let Some(node) = scene.nodes.get_mut(selected_key) {
-                            node.local_transform = new_local;
-                        }
-                    } else if ui.input(|i| i.pointer.any_released()) {
-                        if let Some(old_transform) = self.initial_gizmo_transform.take() {
-                             if let Some(node) = scene.nodes.get(selected_key) {
-                                 let new_transform = node.local_transform;
-                                 if old_transform != new_transform {
-                                     self.execute_command(Box::new(TransformCommand {
-                                         node_key: selected_key,
-                                         old_transform,
-                                         new_transform,
-                                     }), scene);
-                                 }
-                             }
-                        }
-                    }
-                }
-            });
+                });
         }
     }
 }

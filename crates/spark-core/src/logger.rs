@@ -1,5 +1,5 @@
-use std::sync::{Arc, Mutex};
 use log::{Log, Metadata, Record};
+use std::sync::{Arc, Mutex};
 
 pub struct EditorLogger {
     pub logs: Arc<Mutex<Vec<String>>>,

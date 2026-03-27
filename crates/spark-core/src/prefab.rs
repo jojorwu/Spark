@@ -1,5 +1,5 @@
-use serde::{Serialize, Deserialize};
 use crate::scene::{Node, NodeKey, Scene};
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Prefab {
@@ -13,10 +13,8 @@ impl Prefab {
     }
 
     pub fn from_node(scene: &Scene, key: NodeKey) -> Option<Self> {
-        scene.nodes.get(key).map(|node| {
-            Self {
-                root_node: node.clone(),
-            }
+        scene.nodes.get(key).map(|node| Self {
+            root_node: node.clone(),
         })
     }
 

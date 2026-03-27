@@ -1,6 +1,6 @@
-use ash::vk;
+use super::{RenderContext, RenderPass};
 use crate::Renderer;
-use super::{RenderPass, RenderContext};
+use ash::vk;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -22,10 +22,14 @@ pub struct SpritePass {
 }
 
 impl RenderPass for SpritePass {
-    fn name(&self) -> &str { "SpritePass" }
+    fn name(&self) -> &str {
+        "SpritePass"
+    }
 
     fn prepare(&self, renderer: &Renderer, current_frame: usize) {
-        if self.sprite_data.is_empty() { return; }
+        if self.sprite_data.is_empty() {
+            return;
+        }
         renderer.upload_to_buffer(&self.sprite_buffer[current_frame], &self.sprite_data);
 
         let buf_info = [vk::DescriptorBufferInfo::default()
@@ -36,15 +40,21 @@ impl RenderPass for SpritePass {
             .dst_binding(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(&buf_info)];
-        unsafe { renderer.device.device.update_descriptor_sets(&writes, &[]); }
+        unsafe {
+            renderer.device.device.update_descriptor_sets(&writes, &[]);
+        }
     }
 
-    fn outputs(&self) -> Vec<&'static str> { vec!["SpriteColor"] }
+    fn outputs(&self) -> Vec<&'static str> {
+        vec!["SpriteColor"]
+    }
 
     fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
-        vec![
-            ("SpriteColor".to_string(), vk::AccessFlags::COLOR_ATTACHMENT_WRITE, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT),
-        ]
+        vec![(
+            "SpriteColor".to_string(),
+            vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        )]
     }
 
     fn record_commands(&self, ctx: &RenderContext) {
@@ -52,7 +62,9 @@ impl RenderPass for SpritePass {
         let cf = ctx.current_frame;
         let extent = renderer.get_extent();
 
-        let sprite_view = renderer.get_pass_resource_view("SpritePass", "SpriteColor", cf).unwrap();
+        let sprite_view = renderer
+            .get_pass_resource_view("SpritePass", "SpriteColor", cf)
+            .unwrap();
 
         unsafe {
             let color_attachment = vk::RenderingAttachmentInfo::default()
@@ -60,14 +72,24 @@ impl RenderPass for SpritePass {
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 0.0] } });
+                .clear_value(vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: [0.0, 0.0, 0.0, 0.0],
+                    },
+                });
 
             let rendering_info = vk::RenderingInfo::default()
-                .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent,
+                })
                 .layer_count(1)
                 .color_attachments(std::slice::from_ref(&color_attachment));
 
-            renderer.device.device.cmd_begin_rendering(ctx.command_buffer, &rendering_info);
+            renderer
+                .device
+                .device
+                .cmd_begin_rendering(ctx.command_buffer, &rendering_info);
 
             if self.sprite_data.is_empty() {
                 renderer.device.device.cmd_end_rendering(ctx.command_buffer);
@@ -82,27 +104,58 @@ impl RenderPass for SpritePass {
                 }
             };
 
-            renderer.device.device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            renderer.device.device.cmd_bind_pipeline(
+                ctx.command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline,
+            );
 
-            let viewport = vk::Viewport::default().width(extent.width as f32).height(extent.height as f32).max_depth(1.0);
+            let viewport = vk::Viewport::default()
+                .width(extent.width as f32)
+                .height(extent.height as f32)
+                .max_depth(1.0);
             let scissor = vk::Rect2D::default().extent(extent);
-            renderer.device.device.cmd_set_viewport(ctx.command_buffer, 0, &[viewport]);
-            renderer.device.device.cmd_set_scissor(ctx.command_buffer, 0, &[scissor]);
+            renderer
+                .device
+                .device
+                .cmd_set_viewport(ctx.command_buffer, 0, &[viewport]);
+            renderer
+                .device
+                .device
+                .cmd_set_scissor(ctx.command_buffer, 0, &[scissor]);
 
             let vp = renderer.current_view_proj;
-            let pc_bytes = std::slice::from_raw_parts(&vp as *const _ as *const u8, std::mem::size_of::<spark_math::Mat4>());
-            renderer.device.device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
+            let pc_bytes = std::slice::from_raw_parts(
+                &vp as *const _ as *const u8,
+                std::mem::size_of::<spark_math::Mat4>(),
+            );
+            renderer.device.device.cmd_push_constants(
+                ctx.command_buffer,
+                self.layout,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                0,
+                pc_bytes,
+            );
 
             renderer.device.device.cmd_bind_descriptor_sets(
                 ctx.command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.layout,
                 0,
-                &[self.descriptor_sets[cf], renderer.bindless_descriptor_set],
+                &[
+                    self.descriptor_sets[cf],
+                    renderer.gpu_resource_manager.bindless_descriptor_set,
+                ],
                 &[],
             );
 
-            renderer.device.device.cmd_draw(ctx.command_buffer, 6, self.sprite_data.len() as u32, 0, 0);
+            renderer.device.device.cmd_draw(
+                ctx.command_buffer,
+                6,
+                self.sprite_data.len() as u32,
+                0,
+                0,
+            );
 
             renderer.device.device.cmd_end_rendering(ctx.command_buffer);
         }
@@ -113,8 +166,14 @@ impl RenderPass for SpritePass {
             if let Some(p) = self.pipeline {
                 renderer.device.device.destroy_pipeline(p, None);
             }
-            renderer.device.device.destroy_pipeline_layout(self.layout, None);
-            renderer.device.device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            renderer
+                .device
+                .device
+                .destroy_pipeline_layout(self.layout, None);
+            renderer
+                .device
+                .device
+                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             for b in self.sprite_buffer.drain(..) {
                 renderer.destroy_buffer(b);
             }
@@ -131,7 +190,11 @@ impl SpritePass {
         self.sprite_data.push(data);
     }
 
-    pub fn new(renderer: &Renderer, vert_spirv: &[u32], frag_spirv: &[u32]) -> Result<Self, crate::error::RendererError> {
+    pub fn new(
+        renderer: &Renderer,
+        vert_spirv: &[u32],
+        frag_spirv: &[u32],
+    ) -> Result<Self, crate::error::RendererError> {
         let device = &renderer.device.device;
 
         let sprite_binding = vk::DescriptorSetLayoutBinding::default()
@@ -150,7 +213,10 @@ impl SpritePass {
         let layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(&[ds_layout, renderer.bindless_descriptor_set_layout])
+                    .set_layouts(&[
+                        ds_layout,
+                        renderer.gpu_resource_manager.bindless_descriptor_set_layout,
+                    ])
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,
@@ -172,7 +238,7 @@ impl SpritePass {
         let descriptor_sets = unsafe {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
-                    .descriptor_pool(renderer.descriptor_pool)
+                    .descriptor_pool(renderer.gpu_resource_manager.descriptor_pool)
                     .set_layouts(&[ds_layout; crate::MAX_FRAMES_IN_FLIGHT]),
             )?
         };
@@ -182,14 +248,25 @@ impl SpritePass {
         let entry_point = std::ffi::CString::new("main").unwrap();
 
         let stages = [
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::VERTEX).module(vert_module).name(&entry_point),
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(frag_module).name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_module)
+                .name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag_module)
+                .name(&entry_point),
         ];
 
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default().cull_mode(vk::CullModeFlags::NONE).front_face(vk::FrontFace::CLOCKWISE).line_width(1.0);
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(renderer.get_msaa_samples());
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .cull_mode(vk::CullModeFlags::NONE)
+            .front_face(vk::FrontFace::CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(renderer.get_msaa_samples());
 
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
@@ -201,19 +278,23 @@ impl SpritePass {
             .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
             .alpha_blend_op(vk::BlendOp::ADD);
 
-        let color_blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(std::slice::from_ref(&color_blend_attachment));
+        let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
+            .attachments(std::slice::from_ref(&color_blend_attachment));
 
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(false)
             .depth_write_enable(false);
 
-        let viewport_state = vk::PipelineViewportStateCreateInfo::default().viewport_count(1).scissor_count(1);
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let dynamic_state_info =
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
         let color_formats = [vk::Format::R16G16B16A16_SFLOAT];
-        let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(&color_formats);
+        let mut rendering_info =
+            vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
 
         let info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&stages)
@@ -228,7 +309,11 @@ impl SpritePass {
             .layout(layout)
             .push_next(&mut rendering_info);
 
-        let pipeline = unsafe { device.create_graphics_pipelines(renderer.pipeline_cache, &[info], None).unwrap()[0] };
+        let pipeline = unsafe {
+            device
+                .create_graphics_pipelines(renderer.pipeline_cache, &[info], None)
+                .unwrap()[0]
+        };
 
         unsafe {
             device.destroy_shader_module(vert_module, None);

@@ -1,7 +1,7 @@
+use crate::pipeline::Pipeline;
+use crate::Renderer;
 use ash::vk;
 use std::sync::{Arc, Mutex};
-use crate::Renderer;
-use crate::pipeline::Pipeline;
 
 pub const SHADOW_CASCADE_COUNT: usize = 4;
 
@@ -15,37 +15,45 @@ pub struct ShadowPass {
     pub sampler: vk::Sampler,
 }
 
-use super::{RenderPass, RenderContext};
+use super::{RenderContext, RenderPass};
 
 impl RenderPass for ShadowPass {
-    fn name(&self) -> &str { "ShadowPass" }
-    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.settings.enable_shadows }
-    fn outputs(&self) -> Vec<&'static str> { vec!["ShadowMap"] }
+    fn name(&self) -> &str {
+        "ShadowPass"
+    }
+    fn is_enabled(&self, renderer: &Renderer) -> bool {
+        renderer.settings.enable_shadows
+    }
+    fn outputs(&self) -> Vec<&'static str> {
+        vec!["ShadowMap"]
+    }
 
     fn record_secondary_commands(&self, ctx: &RenderContext) -> Vec<vk::CommandBuffer> {
         let renderer = ctx.renderer;
         let device = &renderer.device.device;
-        let lvps = renderer.frames[ctx.current_frame].light_view_projs;
+        let lvps = renderer.frame_manager.frames[ctx.current_frame].light_view_projs;
 
         let mut buffers = Vec::new();
-        for cascade_idx in 0..SHADOW_CASCADE_COUNT {
+        for (cascade_idx, &lvp) in lvps.iter().enumerate().take(SHADOW_CASCADE_COUNT) {
             let cb = renderer.allocate_secondary_command_buffer();
 
-            let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::default().depth_attachment_format(vk::Format::D32_SFLOAT);
-            let inheritance = vk::CommandBufferInheritanceInfo::default()
-                .push_next(&mut rendering_info);
-            let begin = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE).inheritance_info(&inheritance);
+            let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::default()
+                .depth_attachment_format(vk::Format::D32_SFLOAT);
+            let inheritance =
+                vk::CommandBufferInheritanceInfo::default().push_next(&mut rendering_info);
+            let begin = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE)
+                .inheritance_info(&inheritance);
 
             unsafe {
                 device.begin_command_buffer(cb, &begin).unwrap();
-                self.record_cascade_commands(device, cb, lvps[cascade_idx], renderer, cascade_idx, true);
+                self.record_cascade_commands(device, cb, lvp, renderer, cascade_idx, true);
                 device.end_command_buffer(cb).unwrap();
             }
             buffers.push(cb);
         }
         buffers
     }
-
 
     fn record_commands(&self, _ctx: &RenderContext) {
         // Note: record_cascade_commands is called via record_secondary_commands.
@@ -73,7 +81,13 @@ impl RenderPass for ShadowPass {
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
             if let Some(alloc) = self.allocation.lock().unwrap().take() {
-                renderer.device.allocator.lock().unwrap().free(alloc).unwrap();
+                renderer
+                    .device
+                    .allocator
+                    .lock()
+                    .unwrap()
+                    .free(alloc)
+                    .unwrap();
             }
         }
     }
@@ -89,7 +103,14 @@ impl ShadowPass {
         object_count: u32,
         is_secondary: bool,
     ) {
-        self.record_commands_impl(device, command_buffer, light_view_projs, renderer, object_count, is_secondary);
+        self.record_commands_impl(
+            device,
+            command_buffer,
+            light_view_projs,
+            renderer,
+            object_count,
+            is_secondary,
+        );
     }
 
     pub fn new(
@@ -117,13 +138,18 @@ impl ShadowPass {
         let image = unsafe { device.create_image(&image_info, None)? };
         let reqs = unsafe { device.get_image_memory_requirements(image) };
 
-        let allocation = device_wrapper.allocator.lock().unwrap().allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-            name: "Shadow Map",
-            requirements: reqs,
-            location: gpu_allocator::MemoryLocation::GpuOnly,
-            linear: false,
-            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-        }).map_err(|_| crate::error::RendererError::NoSuitableDevice)?;
+        let allocation = device_wrapper
+            .allocator
+            .lock()
+            .unwrap()
+            .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+                name: "Shadow Map",
+                requirements: reqs,
+                location: gpu_allocator::MemoryLocation::GpuOnly,
+                linear: false,
+                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(|_| crate::error::RendererError::NoSuitableDevice)?;
 
         unsafe { device.bind_image_memory(image, allocation.memory(), allocation.offset())? };
 
@@ -142,7 +168,7 @@ impl ShadowPass {
 
         let mut cascade_views = [vk::ImageView::null(); SHADOW_CASCADE_COUNT];
         for (i, view) in cascade_views.iter_mut().enumerate() {
-             let v_info = vk::ImageViewCreateInfo::default()
+            let v_info = vk::ImageViewCreateInfo::default()
                 .image(image)
                 .view_type(vk::ImageViewType::TYPE_2D)
                 .format(vk::Format::D32_SFLOAT)
@@ -192,7 +218,6 @@ impl ShadowPass {
             sampler,
         })
     }
-
 
     pub fn create_pipeline(
         &mut self,
@@ -341,13 +366,18 @@ impl ShadowPass {
                 address: u64,
                 vertex_address: u64,
             }
-            let frame = &renderer.frames[renderer.current_frame];
+            let frame = &renderer.frame_manager.frames[renderer.frame_manager.current_frame];
             let pc = PC {
                 lvp,
                 address: frame.object_data_buffer.as_ref().map_or(0, |b| b.address),
-                vertex_address: renderer.global_vertex_buffer.as_ref().map_or(0, |b| b.address),
+                vertex_address: renderer
+                    .gpu_resource_manager
+                    .global_vertex_buffer
+                    .as_ref()
+                    .map_or(0, |b| b.address),
             };
-            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+            let pc_bytes =
+                std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
 
             device.cmd_push_constants(
                 command_buffer,
@@ -358,8 +388,13 @@ impl ShadowPass {
             );
 
             if let Some(ref indirect_buffer) = frame.indirect_commands_buffer {
-                if let Some(ib) = renderer.global_index_buffer.as_ref() {
-                    device.cmd_bind_index_buffer(command_buffer, ib.handle, 0, vk::IndexType::UINT32);
+                if let Some(ib) = renderer.gpu_resource_manager.global_index_buffer.as_ref() {
+                    device.cmd_bind_index_buffer(
+                        command_buffer,
+                        ib.handle,
+                        0,
+                        vk::IndexType::UINT32,
+                    );
 
                     if let Some(ref count_buffer) = frame.draw_count_buffer {
                         device.cmd_draw_indexed_indirect_count(
@@ -397,8 +432,14 @@ impl ShadowPass {
         is_secondary: bool,
     ) {
         for (cascade_idx, &lvp) in light_view_projs.iter().enumerate() {
-            self.record_cascade_commands(device, command_buffer, lvp, renderer, cascade_idx, is_secondary);
+            self.record_cascade_commands(
+                device,
+                command_buffer,
+                lvp,
+                renderer,
+                cascade_idx,
+                is_secondary,
+            );
         }
     }
-
 }

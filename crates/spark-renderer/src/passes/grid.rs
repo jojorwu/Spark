@@ -1,25 +1,33 @@
-use ash::vk;
-use crate::Renderer;
 use crate::pipeline::Pipeline;
+use crate::Renderer;
+use ash::vk;
 
-use super::{RenderPass, RenderContext};
+use super::{RenderContext, RenderPass};
 
 impl RenderPass for GridPass {
-    fn name(&self) -> &str { "GridPass" }
-    fn is_enabled(&self, renderer: &Renderer) -> bool { renderer.settings.enable_grid }
+    fn name(&self) -> &str {
+        "GridPass"
+    }
+    fn is_enabled(&self, renderer: &Renderer) -> bool {
+        renderer.settings.enable_grid
+    }
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
         let command_buffer = ctx.command_buffer;
         let current_frame = ctx.current_frame;
 
-        let global_ds = renderer.frames[current_frame].global_descriptor_set;
+        let global_ds = renderer.frame_manager.frames[current_frame].global_descriptor_set;
         self.record_commands_impl(
             &renderer.device.device,
             command_buffer,
             renderer.swapchain.extent,
             global_ds,
-            renderer.get_pass_resource_view("", "GBufferHDR", current_frame).unwrap_or(renderer.common_shadow_view),
-            renderer.get_pass_resource_view("", "GBufferDepth", current_frame).unwrap_or(renderer.common_shadow_view),
+            renderer
+                .get_pass_resource_view("", "GBufferHDR", current_frame)
+                .unwrap_or(renderer.common_shadow_view),
+            renderer
+                .get_pass_resource_view("", "GBufferDepth", current_frame)
+                .unwrap_or(renderer.common_shadow_view),
         );
     }
 
@@ -48,8 +56,7 @@ impl GridPass {
     ) -> Result<Self, crate::error::RendererError> {
         let layout = unsafe {
             device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(&[global_ds_layout]),
+                &vk::PipelineLayoutCreateInfo::default().set_layouts(&[global_ds_layout]),
                 None,
             )?
         };
@@ -70,17 +77,24 @@ impl GridPass {
         ];
 
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let viewport_state = vk::PipelineViewportStateCreateInfo::default().viewport_count(1).scissor_count(1);
-        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default().cull_mode(vk::CullModeFlags::NONE).line_width(1.0);
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .cull_mode(vk::CullModeFlags::NONE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .blend_enable(true)
             .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
             .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
             .color_write_mask(vk::ColorComponentFlags::RGBA);
-        let color_blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(std::slice::from_ref(&color_blend_attachment));
+        let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
+            .attachments(std::slice::from_ref(&color_blend_attachment));
 
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(true)
@@ -88,7 +102,8 @@ impl GridPass {
             .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL);
 
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let dynamic_state_info =
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
         let color_formats = [format];
         let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
@@ -109,7 +124,9 @@ impl GridPass {
             .push_next(&mut rendering_info);
 
         let pipeline = unsafe {
-            device.create_graphics_pipelines(pipeline_cache, &[info], None).map_err(|e| e.1)?[0]
+            device
+                .create_graphics_pipelines(pipeline_cache, &[info], None)
+                .map_err(|e| e.1)?[0]
         };
 
         unsafe {
@@ -143,23 +160,39 @@ impl GridPass {
                 .store_op(vk::AttachmentStoreOp::STORE);
 
             let rendering_info = vk::RenderingInfo::default()
-                .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent,
+                })
                 .layer_count(1)
                 .color_attachments(std::slice::from_ref(&color_attachment))
                 .depth_attachment(&depth_attachment);
 
             device.cmd_begin_rendering(command_buffer, &rendering_info);
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+            device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline,
+            );
 
-            let viewport = vk::Viewport::default().width(extent.width as f32).height(extent.height as f32).max_depth(1.0);
+            let viewport = vk::Viewport::default()
+                .width(extent.width as f32)
+                .height(extent.height as f32)
+                .max_depth(1.0);
             let scissor = vk::Rect2D::default().extent(extent);
             device.cmd_set_viewport(command_buffer, 0, &[viewport]);
             device.cmd_set_scissor(command_buffer, 0, &[scissor]);
 
-            device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[global_ds], &[]);
+            device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.layout,
+                0,
+                &[global_ds],
+                &[],
+            );
             device.cmd_draw(command_buffer, 3, 1, 0, 0);
             device.cmd_end_rendering(command_buffer);
         }
     }
-
 }

@@ -1,6 +1,6 @@
-use ash::vk;
 use crate::resource::Attachment;
 use crate::MAX_FRAMES_IN_FLIGHT;
+use ash::vk;
 
 pub struct GBuffer {
     pub hdr: Vec<Attachment>,
@@ -96,12 +96,28 @@ impl GBuffer {
         Ok(())
     }
 
-    pub fn destroy(&mut self, device: &ash::Device, allocator: &std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>) {
-        for a in self.hdr.drain(..) { a.destroy(device, allocator); }
-        for a in self.albedo.drain(..) { a.destroy(device, allocator); }
-        for a in self.normal.drain(..) { a.destroy(device, allocator); }
-        for a in self.pbr.drain(..) { a.destroy(device, allocator); }
-        for a in self.velocity.drain(..) { a.destroy(device, allocator); }
-        for a in self.depth.drain(..) { a.destroy(device, allocator); }
+    pub fn destroy(
+        &mut self,
+        device: &ash::Device,
+        allocator: &std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>,
+    ) {
+        for a in self.hdr.drain(..) {
+            a.destroy(device, allocator);
+        }
+        for a in self.albedo.drain(..) {
+            a.destroy(device, allocator);
+        }
+        for a in self.normal.drain(..) {
+            a.destroy(device, allocator);
+        }
+        for a in self.pbr.drain(..) {
+            a.destroy(device, allocator);
+        }
+        for a in self.velocity.drain(..) {
+            a.destroy(device, allocator);
+        }
+        for a in self.depth.drain(..) {
+            a.destroy(device, allocator);
+        }
     }
 }

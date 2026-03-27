@@ -55,21 +55,20 @@ impl VulkanDevice {
             .ok_or(RendererError::NoSuitableDevice)?;
 
         let queue_priorities = [1.0];
-        let mut queue_infos = vec![
-            vk::DeviceQueueCreateInfo::default()
-                .queue_family_index(graphics_family)
-                .queue_priorities(&queue_priorities)
-        ];
+        let mut queue_infos = vec![vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(graphics_family)
+            .queue_priorities(&queue_priorities)];
 
         if graphics_family != compute_family {
             queue_infos.push(
                 vk::DeviceQueueCreateInfo::default()
                     .queue_family_index(compute_family)
-                    .queue_priorities(&queue_priorities)
+                    .queue_priorities(&queue_priorities),
             );
         }
 
-        let available_extensions = unsafe { instance.enumerate_device_extension_properties(pdevice)? };
+        let available_extensions =
+            unsafe { instance.enumerate_device_extension_properties(pdevice)? };
         let mut rt_supported = true;
         for ext in &[
             ash::khr::acceleration_structure::NAME,
@@ -109,8 +108,8 @@ impl VulkanDevice {
             .draw_indirect_count(true)
             .buffer_device_address(true);
 
-        let mut features11 = vk::PhysicalDeviceVulkan11Features::default()
-            .shader_draw_parameters(true);
+        let mut features11 =
+            vk::PhysicalDeviceVulkan11Features::default().shader_draw_parameters(true);
 
         let device_create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
@@ -178,16 +177,21 @@ impl VulkanDevice {
             debug_settings: Default::default(),
             buffer_device_address: true,
             allocation_sizes: Default::default(),
-        }).map_err(|_| RendererError::NoSuitableDevice)?;
+        })
+        .map_err(|_| RendererError::NoSuitableDevice)?;
 
         let as_loader = if rt_supported {
-            Some(ash::khr::acceleration_structure::Device::new(instance, &device))
+            Some(ash::khr::acceleration_structure::Device::new(
+                instance, &device,
+            ))
         } else {
             None
         };
 
         let rt_loader = if rt_supported {
-            Some(ash::khr::ray_tracing_pipeline::Device::new(instance, &device))
+            Some(ash::khr::ray_tracing_pipeline::Device::new(
+                instance, &device,
+            ))
         } else {
             None
         };
@@ -232,26 +236,35 @@ impl VulkanDevice {
             gpu_allocator::MemoryLocation::GpuOnly
         };
 
-        let allocation = self.allocator.lock().unwrap().allocate(&AllocationCreateDesc {
-            name: "Buffer",
-            requirements: mem_reqs,
-            location,
-            linear: true,
-            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        }).map_err(|_| RendererError::NoSuitableDevice)?;
+        let allocation = self
+            .allocator
+            .lock()
+            .unwrap()
+            .allocate(&AllocationCreateDesc {
+                name: "Buffer",
+                requirements: mem_reqs,
+                location,
+                linear: true,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(|_| RendererError::NoSuitableDevice)?;
 
         unsafe {
-            self.device.bind_buffer_memory(handle, allocation.memory(), allocation.offset())?;
+            self.device
+                .bind_buffer_memory(handle, allocation.memory(), allocation.offset())?;
         }
 
         let bda_info = vk::BufferDeviceAddressInfo::default().buffer(handle);
         let address = if usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS) {
-             unsafe { self.device.get_buffer_device_address(&bda_info) }
+            unsafe { self.device.get_buffer_device_address(&bda_info) }
         } else {
-             0
+            0
         };
 
-        let ptr = allocation.mapped_ptr().map(|p| p.as_ptr()).unwrap_or(std::ptr::null_mut());
+        let ptr = allocation
+            .mapped_ptr()
+            .map(|p| p.as_ptr())
+            .unwrap_or(std::ptr::null_mut());
 
         Ok(Buffer {
             handle,
@@ -268,49 +281,62 @@ impl VulkanDevice {
         params: &ImageCreateParams,
     ) -> Result<(vk::Image, gpu_allocator::vulkan::Allocation), RendererError> {
         let i = unsafe {
-            self.device
-                .create_image(
-                    &vk::ImageCreateInfo::default()
-                        .image_type(vk::ImageType::TYPE_2D)
-                        .extent(vk::Extent3D {
-                            width: params.width,
-                            height: params.height,
-                            depth: 1,
-                        })
-                        .mip_levels(params.mip_levels)
-                        .array_layers(1)
-                        .format(params.format)
-                        .tiling(params.tiling)
-                        .initial_layout(vk::ImageLayout::UNDEFINED)
-                        .usage(params.usage)
-                        .samples(params.samples)
-                        .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                    None,
-                )?
+            self.device.create_image(
+                &vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_2D)
+                    .extent(vk::Extent3D {
+                        width: params.width,
+                        height: params.height,
+                        depth: 1,
+                    })
+                    .mip_levels(params.mip_levels)
+                    .array_layers(1)
+                    .format(params.format)
+                    .tiling(params.tiling)
+                    .initial_layout(vk::ImageLayout::UNDEFINED)
+                    .usage(params.usage)
+                    .samples(params.samples)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                None,
+            )?
         };
         let reqs = unsafe { self.device.get_image_memory_requirements(i) };
 
-        let location = if params.properties.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
+        let location = if params
+            .properties
+            .contains(vk::MemoryPropertyFlags::HOST_VISIBLE)
+        {
             gpu_allocator::MemoryLocation::CpuToGpu
         } else {
             gpu_allocator::MemoryLocation::GpuOnly
         };
 
-        let allocation = self.allocator.lock().unwrap().allocate(&AllocationCreateDesc {
-            name: "Image",
-            requirements: reqs,
-            location,
-            linear: false,
-            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        }).map_err(|_| RendererError::NoSuitableDevice)?;
+        let allocation = self
+            .allocator
+            .lock()
+            .unwrap()
+            .allocate(&AllocationCreateDesc {
+                name: "Image",
+                requirements: reqs,
+                location,
+                linear: false,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(|_| RendererError::NoSuitableDevice)?;
 
         unsafe {
-            self.device.bind_image_memory(i, allocation.memory(), allocation.offset())?;
+            self.device
+                .bind_image_memory(i, allocation.memory(), allocation.offset())?;
         }
         Ok((i, allocation))
     }
 
-    pub fn create_image_view(&self, image: vk::Image, format: vk::Format, mip_levels: u32) -> vk::ImageView {
+    pub fn create_image_view(
+        &self,
+        image: vk::Image,
+        format: vk::Format,
+        mip_levels: u32,
+    ) -> vk::ImageView {
         let aspect_mask = if format == vk::Format::D32_SFLOAT
             || format == vk::Format::D32_SFLOAT_S8_UINT
             || format == vk::Format::D24_UNORM_S8_UINT
@@ -415,7 +441,11 @@ impl VulkanDevice {
         b.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    pub fn create_command_buffer(&self, pool: vk::CommandPool, level: vk::CommandBufferLevel) -> vk::CommandBuffer {
+    pub fn create_command_buffer(
+        &self,
+        pool: vk::CommandPool,
+        level: vk::CommandBufferLevel,
+    ) -> vk::CommandBuffer {
         let alloc_info = vk::CommandBufferAllocateInfo::default()
             .level(level)
             .command_pool(pool)
@@ -424,7 +454,14 @@ impl VulkanDevice {
         unsafe { self.device.allocate_command_buffers(&alloc_info).unwrap()[0] }
     }
 
-    pub fn submit_commands(&self, queue: vk::Queue, cb: vk::CommandBuffer, wait_semaphores: &[vk::Semaphore], signal_semaphores: &[vk::Semaphore], fence: vk::Fence) {
+    pub fn submit_commands(
+        &self,
+        queue: vk::Queue,
+        cb: vk::CommandBuffer,
+        wait_semaphores: &[vk::Semaphore],
+        signal_semaphores: &[vk::Semaphore],
+        fence: vk::Fence,
+    ) {
         let cbs = [cb];
         let submit_info = vk::SubmitInfo::default()
             .command_buffers(&cbs)
@@ -432,7 +469,9 @@ impl VulkanDevice {
             .signal_semaphores(signal_semaphores);
 
         unsafe {
-            self.device.queue_submit(queue, &[submit_info], fence).expect("Failed to submit commands");
+            self.device
+                .queue_submit(queue, &[submit_info], fence)
+                .expect("Failed to submit commands");
         }
     }
 
@@ -594,7 +633,8 @@ impl Drop for VulkanDevice {
                 }
             }
             self.device.destroy_command_pool(self.command_pool, None);
-            self.device.destroy_command_pool(self.compute_command_pool, None);
+            self.device
+                .destroy_command_pool(self.compute_command_pool, None);
             // Allocator must be dropped before Device
             // We use Arc to share it, so we need to ensure it's the last reference
             // or we just let Arc handle it, but wait_idle is important.

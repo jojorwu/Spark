@@ -1,6 +1,6 @@
-use ash::vk;
+use super::{RenderContext, RenderPass};
 use crate::Renderer;
-use super::{RenderPass, RenderContext};
+use ash::vk;
 
 pub struct ForwardPass {
     pub pipeline: Option<vk::Pipeline>,
@@ -8,7 +8,9 @@ pub struct ForwardPass {
 }
 
 impl RenderPass for ForwardPass {
-    fn name(&self) -> &str { "ForwardPass" }
+    fn name(&self) -> &str {
+        "ForwardPass"
+    }
 
     fn prepare(&self, _renderer: &Renderer, _current_frame: usize) {
         // Here we could implement back-to-front sorting of transparent objects
@@ -21,7 +23,7 @@ impl RenderPass for ForwardPass {
         let cf = ctx.current_frame;
 
         if renderer.last_transparent_count == 0 {
-             return;
+            return;
         }
 
         let pipeline = match self.pipeline {
@@ -33,30 +35,57 @@ impl RenderPass for ForwardPass {
 
         unsafe {
             let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(renderer.get_pass_resource_view("", "GBufferHDR", cf).unwrap_or(renderer.common_shadow_view))
+                .image_view(
+                    renderer
+                        .get_pass_resource_view("", "GBufferHDR", cf)
+                        .unwrap_or(renderer.common_shadow_view),
+                )
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::LOAD)
                 .store_op(vk::AttachmentStoreOp::STORE);
 
             let depth_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(renderer.get_pass_resource_view("", "GBufferDepth", cf).unwrap_or(renderer.common_shadow_view))
+                .image_view(
+                    renderer
+                        .get_pass_resource_view("", "GBufferDepth", cf)
+                        .unwrap_or(renderer.common_shadow_view),
+                )
                 .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::LOAD)
                 .store_op(vk::AttachmentStoreOp::STORE);
 
             let rendering_info = vk::RenderingInfo::default()
-                .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent })
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent,
+                })
                 .layer_count(1)
                 .color_attachments(std::slice::from_ref(&color_attachment))
                 .depth_attachment(&depth_attachment);
 
-            renderer.device.device.cmd_begin_rendering(ctx.command_buffer, &rendering_info);
-            renderer.device.device.cmd_bind_pipeline(ctx.command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            renderer
+                .device
+                .device
+                .cmd_begin_rendering(ctx.command_buffer, &rendering_info);
+            renderer.device.device.cmd_bind_pipeline(
+                ctx.command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline,
+            );
 
-            let viewport = vk::Viewport::default().width(extent.width as f32).height(extent.height as f32).max_depth(1.0);
+            let viewport = vk::Viewport::default()
+                .width(extent.width as f32)
+                .height(extent.height as f32)
+                .max_depth(1.0);
             let scissor = vk::Rect2D::default().extent(extent);
-            renderer.device.device.cmd_set_viewport(ctx.command_buffer, 0, &[viewport]);
-            renderer.device.device.cmd_set_scissor(ctx.command_buffer, 0, &[scissor]);
+            renderer
+                .device
+                .device
+                .cmd_set_viewport(ctx.command_buffer, 0, &[viewport]);
+            renderer
+                .device
+                .device
+                .cmd_set_scissor(ctx.command_buffer, 0, &[scissor]);
 
             #[repr(C)]
             struct PC {
@@ -77,28 +106,52 @@ impl RenderPass for ForwardPass {
                 width: extent.width as f32,
                 height: extent.height as f32,
                 padding: 0,
-                object_buffer_address: renderer.frames[cf].transparent_object_buffer.as_ref().map_or(0, |b| b.address),
+                object_buffer_address: renderer.frame_manager.frames[cf]
+                    .transparent_object_buffer
+                    .as_ref()
+                    .map_or(0, |b| b.address),
                 prev_view_proj: renderer.prev_view_proj,
-                vertex_buffer_address: renderer.global_vertex_buffer.as_ref().map_or(0, |b| b.address),
+                vertex_buffer_address: renderer
+                    .gpu_resource_manager
+                    .global_vertex_buffer
+                    .as_ref()
+                    .map_or(0, |b| b.address),
             };
-            let pc_bytes = std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+            let pc_bytes =
+                std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
 
-            renderer.device.device.cmd_push_constants(ctx.command_buffer, self.layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, pc_bytes);
+            renderer.device.device.cmd_push_constants(
+                ctx.command_buffer,
+                self.layout,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                0,
+                pc_bytes,
+            );
 
             renderer.device.device.cmd_bind_descriptor_sets(
                 ctx.command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.layout,
                 0,
-                &[renderer.frames[cf].global_descriptor_set, renderer.bindless_descriptor_set],
+                &[
+                    renderer.frame_manager.frames[cf].global_descriptor_set,
+                    renderer.gpu_resource_manager.bindless_descriptor_set,
+                ],
                 &[],
             );
 
-            if let Some(ref ib) = renderer.global_index_buffer {
-                renderer.device.device.cmd_bind_index_buffer(ctx.command_buffer, ib.handle, 0, vk::IndexType::UINT32);
+            if let Some(ref ib) = renderer.gpu_resource_manager.global_index_buffer {
+                renderer.device.device.cmd_bind_index_buffer(
+                    ctx.command_buffer,
+                    ib.handle,
+                    0,
+                    vk::IndexType::UINT32,
+                );
             }
 
-            if let Some(ref indirect_buffer) = renderer.frames[cf].transparent_indirect_buffer {
+            if let Some(ref indirect_buffer) =
+                renderer.frame_manager.frames[cf].transparent_indirect_buffer
+            {
                 renderer.device.device.cmd_draw_indexed_indirect(
                     ctx.command_buffer,
                     indirect_buffer.handle,
@@ -114,14 +167,24 @@ impl RenderPass for ForwardPass {
 
     fn destroy(&mut self, renderer: &mut Renderer) {
         unsafe {
-            renderer.device.device.destroy_pipeline(self.pipeline.unwrap(), None);
-            renderer.device.device.destroy_pipeline_layout(self.layout, None);
+            renderer
+                .device
+                .device
+                .destroy_pipeline(self.pipeline.unwrap(), None);
+            renderer
+                .device
+                .device
+                .destroy_pipeline_layout(self.layout, None);
         }
     }
 }
 
 impl ForwardPass {
-    pub fn new(renderer: &Renderer, vert_spirv: &[u32], frag_spirv: &[u32]) -> Result<Self, crate::error::RendererError> {
+    pub fn new(
+        renderer: &Renderer,
+        vert_spirv: &[u32],
+        frag_spirv: &[u32],
+    ) -> Result<Self, crate::error::RendererError> {
         let device = &renderer.device.device;
 
         let push_constant_ranges = [vk::PushConstantRange::default()
@@ -129,7 +192,10 @@ impl ForwardPass {
             .offset(0)
             .size(128)];
 
-        let set_layouts = [renderer.global_descriptor_set_layout, renderer.bindless_descriptor_set_layout];
+        let set_layouts = [
+            renderer.global_descriptor_set_layout,
+            renderer.gpu_resource_manager.bindless_descriptor_set_layout,
+        ];
 
         let layout = unsafe {
             device.create_pipeline_layout(
@@ -145,14 +211,25 @@ impl ForwardPass {
         let entry_point = std::ffi::CString::new("main").unwrap();
 
         let stages = [
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::VERTEX).module(vert_module).name(&entry_point),
-            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(frag_module).name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_module)
+                .name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag_module)
+                .name(&entry_point),
         ];
 
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default().cull_mode(vk::CullModeFlags::NONE).front_face(vk::FrontFace::CLOCKWISE).line_width(1.0);
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(renderer.get_msaa_samples());
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .cull_mode(vk::CullModeFlags::NONE)
+            .front_face(vk::FrontFace::CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(renderer.get_msaa_samples());
 
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
@@ -164,16 +241,20 @@ impl ForwardPass {
             .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
             .alpha_blend_op(vk::BlendOp::ADD);
 
-        let color_blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(std::slice::from_ref(&color_blend_attachment));
+        let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
+            .attachments(std::slice::from_ref(&color_blend_attachment));
 
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(true)
             .depth_write_enable(false)
             .depth_compare_op(vk::CompareOp::LESS);
 
-        let viewport_state = vk::PipelineViewportStateCreateInfo::default().viewport_count(1).scissor_count(1);
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let dynamic_state_info =
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
         let color_formats = [vk::Format::R16G16B16A16_SFLOAT];
         let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
@@ -193,7 +274,11 @@ impl ForwardPass {
             .layout(layout)
             .push_next(&mut rendering_info);
 
-        let pipeline = unsafe { device.create_graphics_pipelines(renderer.pipeline_cache, &[info], None).unwrap()[0] };
+        let pipeline = unsafe {
+            device
+                .create_graphics_pipelines(renderer.pipeline_cache, &[info], None)
+                .unwrap()[0]
+        };
 
         unsafe {
             device.destroy_shader_module(vert_module, None);
