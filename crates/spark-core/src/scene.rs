@@ -442,6 +442,11 @@ impl Scene {
         Some(new_key)
     }
 
+    /// Обновляет глобальные трансформации для всех узлов сцены.
+    /// Использует поуровневый параллелизм для корректного распространения изменений.
+    ///
+    /// Updates all global transforms in the scene.
+    /// Uses level-based parallelism to ensure correct parent-child propagation.
     pub fn update_all_transforms(&mut self) {
         use rayon::prelude::*;
         let mut layers = Vec::new();
@@ -458,6 +463,8 @@ impl Scene {
             current_layer = next_layer;
         }
 
+        // Итерация по уровням иерархии (от корня к листьям).
+        // Iterate through hierarchy levels (root to leaves).
         for layer in layers {
             let nodes_ptr = &self.nodes as *const SlotMap<NodeKey, Node> as usize;
             layer.into_par_iter().for_each(|key| unsafe {

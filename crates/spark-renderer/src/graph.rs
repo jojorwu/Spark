@@ -30,12 +30,18 @@ pub struct RenderGraphPassNode {
     pub descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
+/// Граф рендеринга, управляющий зависимостями между проходами и ресурсами.
+/// The RenderGraph manages dependencies between rendering passes and GPU resources.
 pub struct RenderGraph {
     pub passes: Vec<RenderGraphPassNode>,
     pub resources: HashMap<String, RenderGraphResource>,
     pub sorted_passes: Vec<usize>,
+    /// Постоянные вложения (например, G-Buffer), существующие на протяжении всей работы движка.
     pub physical_attachments: HashMap<String, Vec<crate::resource::Attachment>>,
+    /// Временные вложения, создаваемые для нужд конкретных проходов.
     pub transient_attachments: HashMap<String, Vec<crate::resource::Attachment>>,
+    /// Карта алиасов ресурсов (имя_ресурса -> имя_физического_ресурса).
+    /// Позволяет переиспользовать память для ресурсов с неперекрывающимся временем жизни.
     pub aliased_resources: HashMap<String, String>, // resource name -> backing resource name
     pub descriptor_pool: vk::DescriptorPool,
 }
@@ -186,7 +192,8 @@ impl RenderGraph {
 
         self.sorted_passes = order;
 
-        // Ensure descriptor set layout is available if needed and allocate descriptor sets
+        // 2. Распределение дескрипторов для проходов.
+        // Descriptor set allocation for passes.
         for pass_node in &mut self.passes {
             let layout = pass_node.pass.descriptor_set_layout();
             let bindings = pass_node.pass.bindings();
@@ -216,7 +223,8 @@ impl RenderGraph {
             }
         }
 
-        // Improved resource management: Resource Aliasing
+        // 3. Улучшенное управление ресурсами: Алиасинг ресурсов.
+        // Improved resource management: Resource Aliasing based on lifetime analysis.
         let extent = renderer.get_extent();
 
         // 1. Collect all declared resources from passes

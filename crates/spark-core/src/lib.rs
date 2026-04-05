@@ -591,10 +591,6 @@ impl Engine {
     ///
     /// This includes swapping event buffers, updating input state, and executing
     /// all registered systems across multiple parallel stages.
-    /// Processes a single frame's update logic.
-    ///
-    /// This includes swapping event buffers, updating input state, and executing
-    /// all registered systems across multiple parallel stages.
     fn update_phase(&mut self, delta: f32) {
         let events = self.event_bus.read_events::<crate::event::EngineEvent>();
         self.input_manager.update(&events);

@@ -165,6 +165,251 @@ impl EditorUI {
         full_output
     }
 
+    fn draw_console_tab(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.log_filter_info, "Info");
+            ui.checkbox(&mut self.log_filter_warn, "Warn");
+            ui.checkbox(&mut self.log_filter_error, "Error");
+            if ui.button("Clear").clicked() {
+                self.logs.lock().unwrap().clear();
+            }
+        });
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                let logs = self.logs.lock().unwrap();
+                for log in logs.iter() {
+                    let (color, visible) = if log.contains("ERROR") {
+                        (egui::Color32::LIGHT_RED, self.log_filter_error)
+                    } else if log.contains("WARN") {
+                        (egui::Color32::KHAKI, self.log_filter_warn)
+                    } else {
+                        (egui::Color32::LIGHT_GRAY, self.log_filter_info)
+                    };
+
+                    if visible {
+                        ui.label(egui::RichText::new(log).color(color).monospace());
+                    }
+                }
+            });
+    }
+
+    fn draw_assets_tab(
+        &mut self,
+        ui: &mut Ui,
+        scene: &mut Scene,
+        resource_manager: &mut spark_core::resource::ResourceManager,
+        renderer: &mut spark_renderer::Renderer,
+        asset_manager: &mut spark_core::asset::AssetManager,
+    ) {
+        let mut asset_to_load = None;
+        let mut dir_to_set = None;
+
+        ui.horizontal(|ui| {
+            if ui.button("⬅").on_hover_text("Up").clicked() {
+                if let Some(parent) = self.asset_current_dir.parent() {
+                    if parent.starts_with("assets") {
+                        dir_to_set = Some(parent.to_path_buf());
+                    }
+                }
+            }
+            ui.label(format!("Path: {}", self.asset_current_dir.display()));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label("🔍");
+                ui.text_edit_singleline(&mut self.asset_search);
+            });
+        });
+        ui.separator();
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            let entries = std::fs::read_dir(&self.asset_current_dir);
+            if let Ok(entries) = entries {
+                let mut sorted_entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+                sorted_entries.sort_by_key(|e| (!e.path().is_dir(), e.file_name()));
+
+                for entry in sorted_entries {
+                    let path = entry.path();
+                    let label = path.file_name().unwrap().to_string_lossy();
+
+                    if !self.asset_search.is_empty()
+                        && !label.to_lowercase().contains(&self.asset_search.to_lowercase())
+                    {
+                        continue;
+                    }
+
+                    ui.horizontal(|ui| {
+                        if path.is_dir() {
+                            if ui.selectable_label(false, format!("📁 {}", label)).clicked() {
+                                dir_to_set = Some(path.to_path_buf());
+                            }
+                        } else {
+                            let is_gltf = path
+                                .extension()
+                                .is_some_and(|ext| ext == "gltf" || ext == "glb");
+                            let is_img = path.extension().is_some_and(|ext| ext == "png" || ext == "jpg");
+                            let icon = if is_gltf {
+                                "📦"
+                            } else if is_img {
+                                "🖼"
+                            } else {
+                                "📄"
+                            };
+
+                            if ui.selectable_label(false, format!("{} {}", icon, label)).clicked() && is_gltf {
+                                asset_to_load = Some(path.to_path_buf());
+                            }
+                        }
+                    });
+                }
+            }
+        });
+
+        if let Some(dir) = dir_to_set {
+            self.asset_current_dir = dir;
+        }
+        if let Some(path) = asset_to_load {
+            resource_manager.load_scene(path, scene, renderer, asset_manager);
+        }
+    }
+
+    fn draw_materials_tab(&mut self, ui: &mut Ui, asset_manager: &mut spark_core::asset::AssetManager) {
+        ui.horizontal(|ui| {
+            ui.label("🔍 Search Materials:");
+            ui.text_edit_singleline(&mut self.material_search);
+        });
+        ui.separator();
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            let mat_indices: Vec<_> = (0..asset_manager.materials.assets_len()).collect();
+            for idx in mat_indices {
+                let handle = spark_core::resource::Handle::new(idx as u32);
+                if let Some(mat) = asset_manager.materials.get_mut(handle) {
+                    if !self.material_search.is_empty()
+                        && !mat.name.to_lowercase().contains(&self.material_search.to_lowercase())
+                    {
+                        continue;
+                    }
+
+                    ui.collapsing(format!("Material: {}", mat.name), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Name:");
+                            ui.text_edit_singleline(&mut mat.name);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Albedo:");
+                            ui.color_edit_button_rgba_unmultiplied(&mut mat.albedo_factor);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Metallic:");
+                            ui.add(egui::Slider::new(&mut mat.metallic_factor, 0.0..=1.0));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Roughness:");
+                            ui.add(egui::Slider::new(&mut mat.roughness_factor, 0.0..=1.0));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Emissive:");
+                            ui.color_edit_button_rgba_unmultiplied(&mut mat.emissive_factor);
+                        });
+                        ui.checkbox(&mut mat.is_transparent, "Transparent");
+                    });
+                }
+            }
+        });
+    }
+
+    fn draw_component_list(
+        &mut self,
+        ui: &mut Ui,
+        node: &mut Node,
+        asset_manager: &mut spark_core::asset::AssetManager,
+        selected_key: NodeKey,
+    ) {
+        ui.horizontal(|ui| {
+            ui.heading("Components");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("✚ Add", |ui| {
+                    if ui.button("Mesh").clicked() {
+                        node.components
+                            .push(Box::new(spark_core::scene::MeshComponent {
+                                vertex_count: 0,
+                                index_count: 0,
+                                first_index: 0,
+                                vertex_offset: 0,
+                                texture_handle: None,
+                                material_index: None,
+                                bounding_radius: 1.0,
+                                skin_index: None,
+                            }));
+                        ui.close_menu();
+                    }
+                    if ui.button("Light").clicked() {
+                        node.components
+                            .push(Box::new(spark_core::scene::LightComponent {
+                                light_type: spark_core::scene::LightType::Point,
+                                color: spark_math::Vec3::ONE,
+                                intensity: 1.0,
+                                range: 10.0,
+                                spot_inner_angle: 30.0,
+                                spot_outer_angle: 45.0,
+                            }));
+                        ui.close_menu();
+                    }
+                    if ui.button("Camera").clicked() {
+                        node.components
+                            .push(Box::new(spark_core::scene::CameraComponent {
+                                fov: 45.0,
+                                near: 0.1,
+                                far: 100.0,
+                                orthographic: false,
+                                ortho_size: 5.0,
+                            }));
+                        ui.close_menu();
+                    }
+                    if ui.button("Sprite").clicked() {
+                        node.components
+                            .push(Box::new(spark_core::scene::SpriteComponent {
+                                texture_handle: None,
+                                color: [1.0, 1.0, 1.0, 1.0],
+                                flip_x: false,
+                                flip_y: false,
+                                size: spark_math::Vec2::new(1.0, 1.0),
+                            }));
+                        ui.close_menu();
+                    }
+                });
+            });
+        });
+
+        let mut to_remove = None;
+        for (idx, component) in node.components.iter_mut().enumerate() {
+            ui.add_space(4.0);
+            let header = match component.as_any().type_id() {
+                t if t == std::any::TypeId::of::<spark_core::scene::MeshComponent>() => "Mesh",
+                t if t == std::any::TypeId::of::<spark_core::scene::LightComponent>() => "Light",
+                t if t == std::any::TypeId::of::<spark_core::scene::CameraComponent>() => "Camera",
+                t if t == std::any::TypeId::of::<spark_core::scene::SpriteComponent>() => "Sprite",
+                _ => "Unknown",
+            };
+
+            let response = ui.collapsing(header, |ui| {
+                self.draw_component_editor(ui, component, asset_manager);
+            });
+
+            response.header_response.context_menu(|ui| {
+                if ui.button("Remove").clicked() {
+                    to_remove = Some(idx);
+                    ui.close_menu();
+                }
+            });
+        }
+
+        if let Some(idx) = to_remove {
+            self.component_to_remove = Some((selected_key, idx));
+        }
+    }
+
     fn execute_command(&mut self, mut command: Box<dyn Command>, scene: &mut Scene) {
         command.execute(scene);
         self.undo_stack.push(command);
@@ -452,6 +697,8 @@ impl EditorUI {
         });
     }
 
+    /// Отрисовывает нижнюю панель с вкладками консоли, ассетов, материалов и настроек.
+    /// Draws the bottom panel containing console, assets, materials, and settings tabs.
     fn draw_bottom_panel(
         &mut self,
         scene: &mut Scene,
@@ -477,160 +724,9 @@ impl EditorUI {
             ui.separator();
 
             match self.active_bottom_tab {
-                BottomTab::Console => {
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.log_filter_info, "Info");
-                        ui.checkbox(&mut self.log_filter_warn, "Warn");
-                        ui.checkbox(&mut self.log_filter_error, "Error");
-                        if ui.button("Clear").clicked() {
-                            self.logs.lock().unwrap().clear();
-                        }
-                    });
-                    ui.separator();
-                    egui::ScrollArea::vertical()
-                        .stick_to_bottom(true)
-                        .show(ui, |ui| {
-                            let logs = self.logs.lock().unwrap();
-                            for log in logs.iter() {
-                                let (color, visible) = if log.contains("ERROR") {
-                                    (egui::Color32::LIGHT_RED, self.log_filter_error)
-                                } else if log.contains("WARN") {
-                                    (egui::Color32::KHAKI, self.log_filter_warn)
-                                } else {
-                                    (egui::Color32::LIGHT_GRAY, self.log_filter_info)
-                                };
-
-                                if visible {
-                                    ui.label(egui::RichText::new(log).color(color).monospace());
-                                }
-                            }
-                        });
-                }
-                BottomTab::Assets => {
-                    let mut asset_to_load = None;
-                    let mut dir_to_set = None;
-
-                    ui.horizontal(|ui| {
-                        if ui.button("⬅").on_hover_text("Up").clicked() {
-                            if let Some(parent) = self.asset_current_dir.parent() {
-                                if parent.starts_with("assets") {
-                                    dir_to_set = Some(parent.to_path_buf());
-                                }
-                            }
-                        }
-                        ui.label(format!("Path: {}", self.asset_current_dir.display()));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label("🔍");
-                            ui.text_edit_singleline(&mut self.asset_search);
-                        });
-                    });
-                    ui.separator();
-
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        let entries = std::fs::read_dir(&self.asset_current_dir);
-                        if let Ok(entries) = entries {
-                            let mut sorted_entries: Vec<_> =
-                                entries.filter_map(|e| e.ok()).collect();
-                            sorted_entries.sort_by_key(|e| (!e.path().is_dir(), e.file_name()));
-
-                            for entry in sorted_entries {
-                                let path = entry.path();
-                                let label = path.file_name().unwrap().to_string_lossy();
-
-                                if !self.asset_search.is_empty()
-                                    && !label
-                                        .to_lowercase()
-                                        .contains(&self.asset_search.to_lowercase())
-                                {
-                                    continue;
-                                }
-
-                                ui.horizontal(|ui| {
-                                    if path.is_dir() {
-                                        if ui
-                                            .selectable_label(false, format!("📁 {}", label))
-                                            .clicked()
-                                        {
-                                            dir_to_set = Some(path.to_path_buf());
-                                        }
-                                    } else {
-                                        let is_gltf = path
-                                            .extension()
-                                            .is_some_and(|ext| ext == "gltf" || ext == "glb");
-                                        let is_img = path
-                                            .extension()
-                                            .is_some_and(|ext| ext == "png" || ext == "jpg");
-                                        let icon = if is_gltf {
-                                            "📦"
-                                        } else if is_img {
-                                            "🖼"
-                                        } else {
-                                            "📄"
-                                        };
-
-                                        if ui
-                                            .selectable_label(false, format!("{} {}", icon, label))
-                                            .clicked()
-                                            && is_gltf
-                                        {
-                                            asset_to_load = Some(path.to_path_buf());
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                    });
-
-                    if let Some(dir) = dir_to_set {
-                        self.asset_current_dir = dir;
-                    }
-                    if let Some(path) = asset_to_load {
-                        resource_manager.load_scene(path, scene, renderer, asset_manager);
-                    }
-                }
-                BottomTab::Materials => {
-                    ui.horizontal(|ui| {
-                        ui.label("🔍 Search Materials:");
-                        ui.text_edit_singleline(&mut self.material_search);
-                    });
-                    ui.separator();
-
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        let mat_indices: Vec<_> = (0..asset_manager.materials.assets_len()).collect();
-                        for idx in mat_indices {
-                            let handle = spark_core::resource::Handle::new(idx as u32);
-                            if let Some(mat) = asset_manager.materials.get_mut(handle) {
-                                if !self.material_search.is_empty() && !mat.name.to_lowercase().contains(&self.material_search.to_lowercase()) {
-                                    continue;
-                                }
-
-                                ui.collapsing(format!("Material: {}", mat.name), |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label("Name:");
-                                        ui.text_edit_singleline(&mut mat.name);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("Albedo:");
-                                        ui.color_edit_button_rgba_unmultiplied(&mut mat.albedo_factor);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("Metallic:");
-                                        ui.add(egui::Slider::new(&mut mat.metallic_factor, 0.0..=1.0));
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("Roughness:");
-                                        ui.add(egui::Slider::new(&mut mat.roughness_factor, 0.0..=1.0));
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("Emissive:");
-                                        ui.color_edit_button_rgba_unmultiplied(&mut mat.emissive_factor);
-                                    });
-                                    ui.checkbox(&mut mat.is_transparent, "Transparent");
-                                });
-                            }
-                        }
-                    });
-                }
+                BottomTab::Console => self.draw_console_tab(ui),
+                BottomTab::Assets => self.draw_assets_tab(ui, scene, resource_manager, renderer, asset_manager),
+                BottomTab::Materials => self.draw_materials_tab(ui, asset_manager),
                 BottomTab::Settings => {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.heading("Post-Processing");
@@ -1054,6 +1150,8 @@ impl EditorUI {
         scene.nodes.remove(key);
     }
 
+    /// Отрисовывает панель инспектора для выбранного узла сцены.
+    /// Draws the inspector panel for the currently selected scene node.
     fn draw_inspector_panel(
         &mut self,
         scene: &mut Scene,
@@ -1085,111 +1183,8 @@ impl EditorUI {
 
                     ui.add_space(8.0);
                     ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.heading("Components");
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.menu_button("✚ Add", |ui| {
-                                if ui.button("Mesh").clicked() {
-                                    node.components.push(Box::new(
-                                        spark_core::scene::MeshComponent {
-                                            vertex_count: 0,
-                                            index_count: 0,
-                                            first_index: 0,
-                                            vertex_offset: 0,
-                                            texture_handle: None,
-                                            material_index: None,
-                                            bounding_radius: 1.0,
-                                            skin_index: None,
-                                        },
-                                    ));
-                                    ui.close_menu();
-                                }
-                                if ui.button("Light").clicked() {
-                                    node.components.push(Box::new(
-                                        spark_core::scene::LightComponent {
-                                            light_type: spark_core::scene::LightType::Point,
-                                            color: spark_math::Vec3::ONE,
-                                            intensity: 1.0,
-                                            range: 10.0,
-                                            spot_inner_angle: 30.0,
-                                            spot_outer_angle: 45.0,
-                                        },
-                                    ));
-                                    ui.close_menu();
-                                }
-                                if ui.button("Camera").clicked() {
-                                    node.components.push(Box::new(
-                                        spark_core::scene::CameraComponent {
-                                            fov: 45.0,
-                                            near: 0.1,
-                                            far: 100.0,
-                                            orthographic: false,
-                                            ortho_size: 5.0,
-                                        },
-                                    ));
-                                    ui.close_menu();
-                                }
-                                if ui.button("Sprite").clicked() {
-                                    node.components.push(Box::new(
-                                        spark_core::scene::SpriteComponent {
-                                            texture_handle: None,
-                                            color: [1.0, 1.0, 1.0, 1.0],
-                                            flip_x: false,
-                                            flip_y: false,
-                                            size: spark_math::Vec2::new(1.0, 1.0),
-                                        },
-                                    ));
-                                    ui.close_menu();
-                                }
-                            });
-                        });
+                        self.draw_component_list(ui, node, asset_manager, selected_key);
                     });
-
-                    let mut to_remove = None;
-                    for (idx, component) in node.components.iter_mut().enumerate() {
-                        ui.add_space(4.0);
-                        let header = match component.as_any().type_id() {
-                            t if t
-                                == std::any::TypeId::of::<spark_core::scene::MeshComponent>() =>
-                            {
-                                "Mesh"
-                            }
-                            t if t
-                                == std::any::TypeId::of::<spark_core::scene::LightComponent>() =>
-                            {
-                                "Light"
-                            }
-                            t if t
-                                == std::any::TypeId::of::<spark_core::scene::CameraComponent>() =>
-                            {
-                                "Camera"
-                            }
-                            t if t
-                                == std::any::TypeId::of::<spark_core::scene::SpriteComponent>() =>
-                            {
-                                "Sprite"
-                            }
-                            _ => "Unknown",
-                        };
-
-                        let response = ui.collapsing(header, |ui| {
-                            self.draw_component_editor(ui, component, asset_manager);
-                        });
-
-                        response.header_response.context_menu(|ui| {
-                            if ui.button("Remove").clicked() {
-                                to_remove = Some(idx);
-                                ui.close_menu();
-                            }
-                        });
-                    }
-
-                    if let Some(idx) = to_remove {
-                        self.component_to_remove = Some((selected_key, idx));
-                    }
-                    });
-
-                    ui.add_space(8.0);
                     ui.separator();
                     ui.label("Gizmo Mode");
                     ui.horizontal(|ui| {
