@@ -35,6 +35,8 @@ impl Default for ResourceManager {
     }
 }
 
+impl spark_renderer::RenderableResourceManager for ResourceManager {}
+
 impl ResourceManager {
     pub fn upload_global_buffers(&mut self, renderer: &mut spark_renderer::Renderer) {
         use spark_renderer::ash::vk;

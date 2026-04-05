@@ -125,9 +125,24 @@ pub struct InitContext<'a> {
 
 /// Context passed to systems during the update phase.
 ///
-/// `FrameContext` provides access to core engine subsystems. It encapsulates raw pointers
-/// to ensure that systems can be executed in parallel while maintaining controlled access
-/// to mutable state.
+/// `FrameContext` provides high-performance, shared access to core engine subsystems.
+/// It encapsulates raw pointers to bypass standard borrow checker restrictions during
+/// parallel system execution.
+///
+/// ### Thread Safety and the Multi-threading Contract
+///
+/// While `FrameContext` uses `unsafe` pointers internally, its usage is safe when
+/// orchestrated by the engine's `Scheduler`. The safety is guaranteed through:
+///
+/// 1.  **System Batching**: The `Scheduler` analyzes the `ResourceAccess` of every system
+///     before execution. Systems are grouped into parallel batches only if their
+///     resource requirements are mutually compatible (e.g., multiple readers, or
+///     one writer with no other readers/writers).
+/// 2.  **Disjoint Access**: Within a parallel batch, no two systems will attempt to
+///     mutably access the same resource simultaneously.
+/// 3.  **Deferred Mutation**: Structural changes to shared resources (like adding/removing
+///     nodes in the `Scene`) must be deferred using the provided `command_queue`
+///     during the parallel update phase to avoid data races.
 pub struct FrameContext<'a> {
     scene: *mut Scene,
     renderer: *mut Renderer,
@@ -199,12 +214,15 @@ impl<'a> FrameContext<'a> {
     ///
     /// # Safety
     ///
-    /// The caller must ensure that no other systems or threads are accessing the scene
-    /// concurrently. This is typically guaranteed by the `Scheduler` based on declared
-    /// `ResourceAccess`.
+    /// The caller must ensure that the current system has declared `Access::Write`
+    /// for the `Scene` resource. This ensures the `Scheduler` has placed this
+    /// system in a batch where it has exclusive mutable access.
     ///
-    /// IMPORTANT: Structural changes to the scene (adding/removing nodes) MUST be
-    /// deferred through the `command_queue` during parallel execution.
+    /// ### Structural Changes
+    ///
+    /// Even with mutable access, structural changes to the scene (adding or removing
+    /// nodes) MUST be performed via the `command_queue` to ensure consistency
+    /// across parallel systems.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn scene_mut(&self) -> &mut Scene {
         &mut *self.scene
@@ -266,6 +284,13 @@ impl<'a> FrameContext<'a> {
         &self,
     ) -> Option<std::sync::Arc<std::sync::RwLock<Box<dyn std::any::Any + Send + Sync>>>> {
         self.resources.get::<T>()
+    }
+
+    pub fn get_resource_by_id(
+        &self,
+        id: TypeId,
+    ) -> Option<std::sync::Arc<std::sync::RwLock<Box<dyn std::any::Any + Send + Sync>>>> {
+        self.resources.get_by_id(id)
     }
 }
 
@@ -609,7 +634,7 @@ impl Engine {
     ///
     /// This includes updating input state from the event bus and executing
     /// all registered systems across multiple parallel stages.
-    fn update_phase(&mut self, delta: f32) {
+    pub fn update_phase(&mut self, delta: f32) {
         let events = self.event_bus.read_events::<crate::event::EngineEvent>();
         self.input_manager.update(&events);
 
@@ -636,60 +661,14 @@ impl Engine {
             .execute_all(&mut self.scene, &mut self.resource_manager);
     }
 
-    fn render_phase(&mut self, egui_output: Option<(egui::FullOutput, egui::Context)>, delta: f32) {
-        // Find active camera to calculate frustum
-        let mut camera_matrix = spark_math::Mat4::IDENTITY;
-        let mut projection_matrix = spark_math::Mat4::IDENTITY;
-
-        for node in self.scene.nodes.values() {
-            for component in &node.components {
-                if let Some(camera) = component
-                    .as_any()
-                    .downcast_ref::<crate::scene::CameraComponent>()
-                {
-                    let view = node.global_transform.inverse();
-                    if camera.orthographic {
-                        let aspect = self.renderer.get_extent().width as f32
-                            / self.renderer.get_extent().height as f32;
-                        let size = camera.ortho_size;
-                        projection_matrix = spark_math::Mat4::orthographic_rh(
-                            -size * aspect,
-                            size * aspect,
-                            -size,
-                            size,
-                            camera.near,
-                            camera.far,
-                        );
-                    } else {
-                        projection_matrix = spark_math::Mat4::perspective_rh(
-                            camera.fov.to_radians(),
-                            self.renderer.get_extent().width as f32
-                                / self.renderer.get_extent().height as f32,
-                            camera.near,
-                            camera.far,
-                        );
-                    }
-                    camera_matrix = projection_matrix * view;
-                    break;
-                }
-            }
-        }
-
-        let frustum_obj = spark_math::Frustum::from_matrix(camera_matrix);
-        let frustum_ref = if camera_matrix != spark_math::Mat4::IDENTITY {
-            Some(&frustum_obj)
-        } else {
-            None
-        };
-
-        // Collect visibility and light data
-        let mut packet = self.scene.collect_frame_packet(
-            frustum_ref,
-            &self.resource_manager,
-            &self.asset_manager,
-        );
-        packet.projection_matrix = projection_matrix;
-        let total_objects = self.renderer.prepare_frame(packet);
+    pub fn render_phase(
+        &mut self,
+        egui_output: Option<(egui::FullOutput, egui::Context)>,
+        delta: f32,
+    ) {
+        let total_objects =
+            self.renderer
+                .prepare_frame(&self.scene, &self.resource_manager, &self.asset_manager);
 
         // Draw the frame
         self.renderer

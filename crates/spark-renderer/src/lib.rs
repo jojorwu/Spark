@@ -26,6 +26,21 @@ use rayon::prelude::*;
 use spark_math::Vec4Swizzles;
 use winit::window::Window;
 
+pub trait RenderableScene {
+    fn get_active_camera_matrices(
+        &self,
+        extent: vk::Extent2D,
+    ) -> Option<(spark_math::Mat4, spark_math::Mat4)>;
+    fn collect_frame_packet(
+        &self,
+        frustum: Option<&spark_math::Frustum>,
+        asset_manager: &dyn RenderableAssetManager,
+    ) -> crate::resource::FramePacket;
+}
+
+pub trait RenderableResourceManager {}
+pub trait RenderableAssetManager {}
+
 /// The main renderer of the Spark Engine, responsible for managing the Vulkan context,
 /// swapchain, and executing the rendering pipeline through a modular pass system.
 pub struct Renderer {
@@ -1562,7 +1577,32 @@ impl Renderer {
     ///
     /// # Returns
     /// * The total number of opaque objects to be rendered.
-    pub fn prepare_frame(&mut self, mut packet: crate::resource::FramePacket) -> u32 {
+    pub fn prepare_frame(
+        &mut self,
+        scene: &impl RenderableScene,
+        _resource_manager: &impl RenderableResourceManager,
+        asset_manager: &impl RenderableAssetManager,
+    ) -> u32 {
+        // Find active camera to calculate frustum
+        let mut camera_matrix = spark_math::Mat4::IDENTITY;
+        let mut projection_matrix = spark_math::Mat4::IDENTITY;
+
+        if let Some((view, proj)) = scene.get_active_camera_matrices(self.get_extent()) {
+            projection_matrix = proj;
+            camera_matrix = proj * view;
+        }
+
+        let frustum_obj = spark_math::Frustum::from_matrix(camera_matrix);
+        let frustum_ref = if camera_matrix != spark_math::Mat4::IDENTITY {
+            Some(&frustum_obj)
+        } else {
+            None
+        };
+
+        // Collect visibility and light data
+        let mut packet = scene.collect_frame_packet(frustum_ref, asset_manager);
+        packet.projection_matrix = projection_matrix;
+
         let view_pos = packet.view_matrix.inverse().w_axis.xyz();
         packet.transparent_meshes.par_sort_by(|a, b| {
             let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();

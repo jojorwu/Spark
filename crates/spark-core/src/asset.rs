@@ -74,6 +74,8 @@ impl<T> Default for AssetStorage<T> {
     }
 }
 
+impl spark_renderer::RenderableAssetManager for AssetManager {}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Material {
     pub name: String,

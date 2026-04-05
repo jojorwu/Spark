@@ -241,6 +241,55 @@ impl Default for Scene {
     }
 }
 
+impl spark_renderer::RenderableScene for Scene {
+    fn get_active_camera_matrices(
+        &self,
+        extent: spark_renderer::ash::vk::Extent2D,
+    ) -> Option<(spark_math::Mat4, spark_math::Mat4)> {
+        for node in self.nodes.values() {
+            for component in &node.components {
+                if let Some(camera) = component.as_any().downcast_ref::<CameraComponent>() {
+                    let view = node.global_transform.inverse();
+                    let projection = if camera.orthographic {
+                        let aspect = extent.width as f32 / extent.height as f32;
+                        let size = camera.ortho_size;
+                        spark_math::Mat4::orthographic_rh(
+                            -size * aspect,
+                            size * aspect,
+                            -size,
+                            size,
+                            camera.near,
+                            camera.far,
+                        )
+                    } else {
+                        spark_math::Mat4::perspective_rh(
+                            camera.fov.to_radians(),
+                            extent.width as f32 / extent.height as f32,
+                            camera.near,
+                            camera.far,
+                        )
+                    };
+                    return Some((view, projection));
+                }
+            }
+        }
+        None
+    }
+
+    fn collect_frame_packet(
+        &self,
+        frustum: Option<&spark_math::Frustum>,
+        asset_manager: &dyn spark_renderer::RenderableAssetManager,
+    ) -> spark_renderer::resource::FramePacket {
+        // We know that in this engine, RenderableAssetManager is always AssetManager
+        let am = unsafe {
+            &*(asset_manager as *const dyn spark_renderer::RenderableAssetManager
+                as *const crate::asset::AssetManager)
+        };
+        self.collect_frame_packet(frustum, am)
+    }
+}
+
 pub struct Query<'a> {
     scene: &'a Scene,
     matches: Option<std::collections::HashSet<NodeKey>>,
@@ -574,7 +623,6 @@ impl Scene {
     pub fn collect_frame_packet(
         &self,
         frustum: Option<&spark_math::Frustum>,
-        _resource_manager: &crate::resource::ResourceManager,
         asset_manager: &crate::asset::AssetManager,
     ) -> spark_renderer::resource::FramePacket {
         use rayon::prelude::*;

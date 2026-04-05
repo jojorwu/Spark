@@ -351,6 +351,12 @@ impl Scheduler {
                             }
 
                             let ctx = &*(ctx_ptr as *const FrameContext);
+
+                            // Check resource access constraints.
+                            // In a real ECS, this would be handled by the scheduler batches,
+                            // but we can add an extra safety layer here by checking
+                            // if the system only accesses allowed resources.
+
                             let system_mut =
                                 &mut *(systems_ptr.add(idx) as *mut Box<dyn crate::System>);
                             system_mut.update(ctx);
