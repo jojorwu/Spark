@@ -81,6 +81,13 @@ impl RenderGraph {
     }
 
     pub fn compile(&mut self, renderer: &mut crate::Renderer) {
+        self.ensure_descriptor_pool(renderer);
+        self.sort_passes();
+        self.allocate_pass_descriptors(renderer);
+        self.analyze_resources_and_alias(renderer);
+    }
+
+    fn ensure_descriptor_pool(&mut self, renderer: &crate::Renderer) {
         if self.descriptor_pool == vk::DescriptorPool::null() {
             let sizes = [
                 vk::DescriptorPoolSize::default()
@@ -109,17 +116,18 @@ impl RenderGraph {
                             .max_sets(100),
                         None,
                     )
-                    .unwrap()
+                    .expect("Failed to create RenderGraph descriptor pool")
             };
         }
+    }
 
+    fn sort_passes(&mut self) {
         let mut visited = HashSet::new();
         let mut temp_visited = HashSet::new();
         let mut order = Vec::new();
 
         let pass_count = self.passes.len();
 
-        // Build a map from output resource to the pass that produces it
         let mut resource_producers = HashMap::new();
         for (i, pass) in self.passes.iter().enumerate() {
             for output in &pass.outputs {
@@ -134,59 +142,8 @@ impl RenderGraph {
             .map(|(i, p)| (p.pass.name().to_string(), i))
             .collect();
 
-        fn visit(
-            idx: usize,
-            passes: &[RenderGraphPassNode],
-            resource_producers: &HashMap<String, usize>,
-            name_to_idx: &HashMap<String, usize>,
-            order: &mut Vec<usize>,
-            visited: &mut HashSet<usize>,
-            temp_visited: &mut HashSet<usize>,
-        ) {
-            if temp_visited.contains(&idx) {
-                panic!("Circular dependency detected in RenderGraph!");
-            }
-            if !visited.contains(&idx) {
-                temp_visited.insert(idx);
-
-                // For each input resource, find its producer and visit it
-                for input in &passes[idx].inputs {
-                    if let Some(&producer_idx) = resource_producers.get(input) {
-                        visit(
-                            producer_idx,
-                            passes,
-                            resource_producers,
-                            name_to_idx,
-                            order,
-                            visited,
-                            temp_visited,
-                        );
-                    }
-                }
-
-                // Also respect explicit dependencies defined in RenderPass trait
-                for dep in passes[idx].pass.dependencies() {
-                    if let Some(&dep_idx) = name_to_idx.get(dep) {
-                        visit(
-                            dep_idx,
-                            passes,
-                            resource_producers,
-                            name_to_idx,
-                            order,
-                            visited,
-                            temp_visited,
-                        );
-                    }
-                }
-
-                temp_visited.remove(&idx);
-                visited.insert(idx);
-                order.push(idx);
-            }
-        }
-
         for i in 0..pass_count {
-            visit(
+            Self::visit_pass(
                 i,
                 &self.passes,
                 &resource_producers,
@@ -198,9 +155,61 @@ impl RenderGraph {
         }
 
         self.sorted_passes = order;
+    }
 
-        // 2. Распределение дескрипторов для проходов.
-        // Descriptor set allocation for passes.
+    fn visit_pass(
+        idx: usize,
+        passes: &[RenderGraphPassNode],
+        resource_producers: &HashMap<String, usize>,
+        name_to_idx: &HashMap<String, usize>,
+        order: &mut Vec<usize>,
+        visited: &mut HashSet<usize>,
+        temp_visited: &mut HashSet<usize>,
+    ) {
+        if temp_visited.contains(&idx) {
+            panic!(
+                "Circular dependency detected in RenderGraph! Pass: {}",
+                passes[idx].pass.name()
+            );
+        }
+        if !visited.contains(&idx) {
+            temp_visited.insert(idx);
+
+            for input in &passes[idx].inputs {
+                if let Some(&producer_idx) = resource_producers.get(input) {
+                    Self::visit_pass(
+                        producer_idx,
+                        passes,
+                        resource_producers,
+                        name_to_idx,
+                        order,
+                        visited,
+                        temp_visited,
+                    );
+                }
+            }
+
+            for dep in passes[idx].pass.dependencies() {
+                if let Some(&dep_idx) = name_to_idx.get(dep) {
+                    Self::visit_pass(
+                        dep_idx,
+                        passes,
+                        resource_producers,
+                        name_to_idx,
+                        order,
+                        visited,
+                        temp_visited,
+                    );
+                }
+            }
+
+            temp_visited.remove(&idx);
+            visited.insert(idx);
+            order.push(idx);
+        }
+    }
+
+    fn allocate_pass_descriptors(&mut self, renderer: &crate::Renderer) {
         for pass_node in &mut self.passes {
             let layout = pass_node.pass.descriptor_set_layout();
             let bindings = pass_node.pass.bindings();
@@ -208,9 +217,6 @@ impl RenderGraph {
             if layout == vk::DescriptorSetLayout::null() && bindings.is_empty() {
                 continue;
             }
-
-            // If the pass provides bindings but no layout, we might want to auto-generate a layout.
-            // For now, assume passes provide their own layouts if they have bindings.
 
             if layout != vk::DescriptorSetLayout::null() {
                 let layouts = [layout; crate::MAX_FRAMES_IN_FLIGHT];
@@ -223,18 +229,17 @@ impl RenderGraph {
                                 .descriptor_pool(self.descriptor_pool)
                                 .set_layouts(&layouts),
                         )
-                        .unwrap()
+                        .expect("Failed to allocate descriptor sets for RenderPass")
                 };
                 pass_node.descriptor_sets = ds.clone();
                 pass_node.pass.set_descriptor_sets(ds);
             }
         }
+    }
 
-        // 3. Улучшенное управление ресурсами: Алиасинг ресурсов.
-        // Improved resource management: Resource Aliasing based on lifetime analysis.
+    fn analyze_resources_and_alias(&mut self, renderer: &crate::Renderer) {
         let extent = renderer.get_extent();
 
-        // 1. Collect all declared resources from passes
         let mut declared_resources: HashMap<String, crate::passes::ResourceDesc> = HashMap::new();
         for pass_node in &self.passes {
             declared_resources.extend(pass_node.pass.declared_resources());
@@ -262,11 +267,8 @@ impl RenderGraph {
         let mut transient_pool: Vec<(String, vk::Format, vk::ImageUsageFlags, u32, u32, usize)> =
             Vec::new();
 
-        let sorted_resource_names: Vec<String> = {
-            let mut names: Vec<_> = resource_lifetimes.keys().cloned().collect();
-            names.sort_by_key(|n| resource_lifetimes[n].0);
-            names
-        };
+        let mut sorted_resource_names: Vec<String> = resource_lifetimes.keys().cloned().collect();
+        sorted_resource_names.sort_by_key(|n| resource_lifetimes[n].0);
 
         for res_name in sorted_resource_names {
             if self.physical_attachments.contains_key(&res_name) {
@@ -288,7 +290,7 @@ impl RenderGraph {
                             };
                             (img.format, img.usage, w, h)
                         }
-                        _ => continue, // Buffers not yet supported in aliasing
+                        _ => continue,
                     }
                 } else {
                     let format = if res_name.contains("Depth") {
@@ -312,13 +314,10 @@ impl RenderGraph {
                     (format, usage, extent.width, extent.height)
                 };
 
-            // Try to find an existing transient resource that can be reused
             let mut found_alias = None;
             for (pool_res_name, pool_format, pool_usage, pool_width, pool_height, pool_end) in
                 &mut transient_pool
             {
-                // For now, only alias if dimensions also match (simple approach)
-                // In a perfect world, we'd check if the pooled resource is LARGER than requested.
                 if *pool_format == format
                     && *pool_usage == usage
                     && *pool_width == width
@@ -344,7 +343,7 @@ impl RenderGraph {
                             usage,
                             vk::SampleCountFlags::TYPE_1,
                         )
-                        .unwrap()
+                        .expect("Failed to create transient attachment in RenderGraph")
                     })
                     .collect();
                 self.transient_attachments
@@ -354,355 +353,347 @@ impl RenderGraph {
         }
     }
 
+    /// Выполняет граф рендеринга, проходя по отсортированным проходам.
+    /// Автоматически обрабатывает обновление дескрипторов и инъекцию барьеров памяти.
+    ///
+    /// Executes the render graph by iterating through sorted passes.
+    /// Automatically handles descriptor updates and memory barrier injection.
     pub fn execute(&self, ctx: &RenderContext, secondary_commands: &[Vec<vk::CommandBuffer>]) {
-        let renderer = ctx.renderer;
-
-        // 2. Execution
         for &idx in &self.sorted_passes {
             let pass_node = &self.passes[idx];
 
-            // 1. Automatic Descriptor Updates
-            // Only update if resources have actually changed.
-            if !pass_node.descriptor_sets.is_empty() {
-                let ds = pass_node.descriptor_sets[ctx.current_frame];
-                let bindings = pass_node.pass.bindings();
+            // 1. Update descriptor sets for the pass if any of its bound resources have changed.
+            self.update_pass_descriptors(ctx, pass_node);
 
-                let mut needs_update = false;
-                let mut current_versions = HashMap::new();
+            // 2. Inject image memory barriers based on declarative access requirements.
+            self.inject_image_barriers(ctx, pass_node);
 
-                for binding in &bindings {
-                    let name = match binding {
-                        crate::passes::ResourceBinding::SampledImage(_, n) => n,
-                        crate::passes::ResourceBinding::InputAttachment(_, n) => n,
-                        crate::passes::ResourceBinding::StorageImage(_, n) => n,
-                        crate::passes::ResourceBinding::StorageBuffer(_, n) => n,
-                        crate::passes::ResourceBinding::UniformBuffer(_, n) => n,
-                        crate::passes::ResourceBinding::AccelerationStructure(_, n) => n,
-                    };
+            // 3. Execute pre-recorded secondary command buffers for this pass.
+            self.execute_secondary_commands(ctx, &secondary_commands[idx]);
 
-                    let version = if let Some(attachments) = self
-                        .physical_attachments
-                        .get(name)
-                        .or_else(|| self.transient_attachments.get(name))
-                    {
-                        attachments[ctx.current_frame]
-                            .version
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                    } else if let Some(buffer) =
-                        renderer.get_resource_buffer(pass_node.pass.name(), name, ctx.current_frame)
-                    {
-                        buffer.version.load(std::sync::atomic::Ordering::Relaxed)
-                    } else {
-                        0
-                    };
+            // 4. Inject buffer memory barriers.
+            self.inject_buffer_barriers(ctx, pass_node);
 
-                    current_versions.insert(name.clone(), version);
-                    if pass_node.resource_versions[ctx.current_frame]
-                        .lock()
-                        .unwrap()
-                        .get(name)
-                        != Some(&version)
-                    {
-                        needs_update = true;
-                    }
-                }
+            // 5. Record primary commands for the pass.
+            pass_node.pass.record_commands(ctx);
+        }
+    }
 
-                if !needs_update {
-                    // Skip update if versions match
-                    // But we still need to record barriers and pass commands
-                } else {
-                    // Perform update
-                    *pass_node.resource_versions[ctx.current_frame]
-                        .lock()
-                        .unwrap() = current_versions;
+    fn update_pass_descriptors(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
+        let renderer = ctx.renderer;
+        if pass_node.descriptor_sets.is_empty() {
+            return;
+        }
 
-                    let mut img_infos = Vec::new();
-                    let mut buf_infos = Vec::new();
-                    let mut as_infos = Vec::new();
-                    let mut as_handles = Vec::new();
+        let ds = pass_node.descriptor_sets[ctx.current_frame];
+        let bindings = pass_node.pass.bindings();
 
-                    for binding in &bindings {
-                        match binding {
-                            crate::passes::ResourceBinding::SampledImage(_, name)
-                            | crate::passes::ResourceBinding::InputAttachment(_, name) => {
-                                let view = renderer
-                                    .get_pass_resource_view(
-                                        pass_node.pass.name(),
-                                        name,
-                                        ctx.current_frame,
-                                    )
-                                    .unwrap_or(renderer.common_shadow_view);
-                                img_infos.push(
-                                    vk::DescriptorImageInfo::default()
-                                        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                                        .image_view(view)
-                                        .sampler(renderer.common_sampler),
-                                );
-                            }
-                            crate::passes::ResourceBinding::StorageImage(_, name) => {
-                                let view = renderer
-                                    .get_pass_resource_view(
-                                        pass_node.pass.name(),
-                                        name,
-                                        ctx.current_frame,
-                                    )
-                                    .unwrap_or(renderer.common_shadow_view);
-                                img_infos.push(
-                                    vk::DescriptorImageInfo::default()
-                                        .image_layout(vk::ImageLayout::GENERAL)
-                                        .image_view(view),
-                                );
-                            }
-                            crate::passes::ResourceBinding::StorageBuffer(_, name)
-                            | crate::passes::ResourceBinding::UniformBuffer(_, name) => {
-                                if let Some(buffer) = renderer.get_resource_buffer(
-                                    pass_node.pass.name(),
-                                    name,
-                                    ctx.current_frame,
-                                ) {
-                                    buf_infos.push(
-                                        vk::DescriptorBufferInfo::default()
-                                            .buffer(buffer.handle)
-                                            .range(buffer.size),
-                                    );
-                                } else {
-                                    // Push dummy if not found to keep indices matching?
-                                    // Better to just filter them out later.
-                                }
-                            }
-                            crate::passes::ResourceBinding::AccelerationStructure(_, _) => {
-                                let as_manager = renderer.as_manager.lock().unwrap();
-                                if let Some(ref tlas) = as_manager.current_tlas[ctx.current_frame] {
-                                    as_handles.push(tlas.handle);
-                                }
-                            }
-                        }
-                    }
+        let mut needs_update = false;
+        let mut current_versions = HashMap::new();
 
-                    let mut writes = Vec::new();
-                    let mut img_idx = 0;
-                    let mut buf_idx = 0;
-                    let mut as_idx = 0;
+        for binding in &bindings {
+            let name = match binding {
+                crate::passes::ResourceBinding::SampledImage(_, n) => n,
+                crate::passes::ResourceBinding::InputAttachment(_, n) => n,
+                crate::passes::ResourceBinding::StorageImage(_, n) => n,
+                crate::passes::ResourceBinding::StorageBuffer(_, n) => n,
+                crate::passes::ResourceBinding::UniformBuffer(_, n) => n,
+                crate::passes::ResourceBinding::AccelerationStructure(_, n) => n,
+            };
 
-                    for binding in bindings {
-                        match binding {
-                            crate::passes::ResourceBinding::SampledImage(binding_idx, _) => {
-                                writes.push(
-                                    vk::WriteDescriptorSet::default()
-                                        .dst_set(ds)
-                                        .dst_binding(binding_idx)
-                                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                                        .descriptor_count(1)
-                                        .image_info(std::slice::from_ref(&img_infos[img_idx])),
-                                );
-                                img_idx += 1;
-                            }
-                            crate::passes::ResourceBinding::InputAttachment(binding_idx, _) => {
-                                writes.push(
-                                    vk::WriteDescriptorSet::default()
-                                        .dst_set(ds)
-                                        .dst_binding(binding_idx)
-                                        .descriptor_type(vk::DescriptorType::INPUT_ATTACHMENT)
-                                        .descriptor_count(1)
-                                        .image_info(std::slice::from_ref(&img_infos[img_idx])),
-                                );
-                                img_idx += 1;
-                            }
-                            crate::passes::ResourceBinding::StorageImage(binding_idx, _) => {
-                                writes.push(
-                                    vk::WriteDescriptorSet::default()
-                                        .dst_set(ds)
-                                        .dst_binding(binding_idx)
-                                        .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                                        .descriptor_count(1)
-                                        .image_info(std::slice::from_ref(&img_infos[img_idx])),
-                                );
-                                img_idx += 1;
-                            }
-                            crate::passes::ResourceBinding::StorageBuffer(binding_idx, name) => {
-                                if renderer
-                                    .get_resource_buffer(
-                                        pass_node.pass.name(),
-                                        &name,
-                                        ctx.current_frame,
-                                    )
-                                    .is_some()
-                                {
-                                    writes.push(
-                                        vk::WriteDescriptorSet::default()
-                                            .dst_set(ds)
-                                            .dst_binding(binding_idx)
-                                            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                                            .descriptor_count(1)
-                                            .buffer_info(std::slice::from_ref(&buf_infos[buf_idx])),
-                                    );
-                                    buf_idx += 1;
-                                }
-                            }
-                            crate::passes::ResourceBinding::UniformBuffer(binding_idx, name) => {
-                                if renderer
-                                    .get_resource_buffer(
-                                        pass_node.pass.name(),
-                                        &name,
-                                        ctx.current_frame,
-                                    )
-                                    .is_some()
-                                {
-                                    writes.push(
-                                        vk::WriteDescriptorSet::default()
-                                            .dst_set(ds)
-                                            .dst_binding(binding_idx)
-                                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                            .descriptor_count(1)
-                                            .buffer_info(std::slice::from_ref(&buf_infos[buf_idx])),
-                                    );
-                                    buf_idx += 1;
-                                }
-                            }
-                            crate::passes::ResourceBinding::AccelerationStructure(
-                                _binding_idx,
-                                _,
-                            ) => {
-                                if as_idx < as_handles.len() {
-                                    let info =
-                                        vk::WriteDescriptorSetAccelerationStructureKHR::default()
-                                            .acceleration_structures(std::slice::from_ref(
-                                                &as_handles[as_idx],
-                                            ));
-                                    as_infos.push(info);
-                                }
-                                as_idx += 1;
-                            }
-                        }
-                    }
+            let version = if let Some(attachments) = self
+                .physical_attachments
+                .get(name)
+                .or_else(|| self.transient_attachments.get(name))
+            {
+                attachments[ctx.current_frame]
+                    .version
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            } else if let Some(buffer) =
+                renderer.get_resource_buffer(pass_node.pass.name(), name, ctx.current_frame)
+            {
+                buffer.version.load(std::sync::atomic::Ordering::Relaxed)
+            } else {
+                0
+            };
 
-                    // Second pass for AS because of push_next lifetime issues
-                    // We need to do the update per AS because of the &mut borrow in push_next
-                    if !writes.is_empty() {
-                        unsafe {
-                            renderer.device.device.update_descriptor_sets(&writes, &[]);
-                        }
-                    }
-
-                    let mut as_idx_2 = 0;
-                    for binding in pass_node.pass.bindings() {
-                        if let crate::passes::ResourceBinding::AccelerationStructure(
-                            binding_idx,
-                            _,
-                        ) = binding
-                        {
-                            if as_idx_2 < as_infos.len() {
-                                let as_write = [vk::WriteDescriptorSet::default()
-                                    .dst_set(ds)
-                                    .dst_binding(binding_idx)
-                                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                                    .descriptor_count(1)
-                                    .push_next(&mut as_infos[as_idx_2])];
-                                unsafe {
-                                    renderer
-                                        .device
-                                        .device
-                                        .update_descriptor_sets(&as_write, &[]);
-                                }
-                                as_idx_2 += 1;
-                            }
-                        }
-                    }
-                }
+            current_versions.insert(name.clone(), version);
+            let versions = pass_node.resource_versions[ctx.current_frame]
+                .lock()
+                .expect("Failed to lock resource versions");
+            if versions.get(name) != Some(&version) {
+                needs_update = true;
             }
+        }
 
-            // 2. Automated Image Barrier Injection
-            for (mut res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_access() {
-                if let Some(alias) = self.aliased_resources.get(&res_name) {
-                    res_name = alias.clone();
-                }
+        if needs_update {
+            *pass_node.resource_versions[ctx.current_frame]
+                .lock()
+                .expect("Failed to lock resource versions for update") = current_versions;
 
-                let attachments = self
-                    .physical_attachments
-                    .get(&res_name)
-                    .or_else(|| self.transient_attachments.get(&res_name));
+            self.perform_descriptor_update(ctx, pass_node, ds, &bindings);
+        }
+    }
 
-                if let Some(attachments) = attachments {
-                    let attachment = &attachments[ctx.current_frame];
-                    let aspect = if res_name.contains("Depth") {
-                        vk::ImageAspectFlags::DEPTH
-                    } else {
-                        vk::ImageAspectFlags::COLOR
-                    };
+    fn perform_descriptor_update(
+        &self,
+        ctx: &RenderContext,
+        pass_node: &RenderGraphPassNode,
+        ds: vk::DescriptorSet,
+        bindings: &[crate::passes::ResourceBinding],
+    ) {
+        let renderer = ctx.renderer;
+        let mut img_infos = Vec::new();
+        let mut buf_infos = Vec::new();
+        let mut as_infos = Vec::new();
+        let mut as_handles = Vec::new();
 
-                    let new_layout = if dst_access.contains(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                    {
-                        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-                    } else if dst_access.contains(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE) {
-                        vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
-                    } else if dst_access.contains(vk::AccessFlags::SHADER_READ)
-                        && !dst_stage.contains(vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR)
-                    {
-                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-                    } else if dst_access.contains(vk::AccessFlags::TRANSFER_READ) {
-                        vk::ImageLayout::TRANSFER_SRC_OPTIMAL
-                    } else if dst_access.contains(vk::AccessFlags::TRANSFER_WRITE) {
-                        vk::ImageLayout::TRANSFER_DST_OPTIMAL
-                    } else {
-                        vk::ImageLayout::GENERAL
-                    };
-
-                    renderer.resource_tracker.transition_image(
-                        ctx.command_buffer,
-                        &renderer.device.device,
-                        attachment.image,
-                        new_layout,
-                        vk::AccessFlags::MEMORY_WRITE | vk::AccessFlags::MEMORY_READ,
-                        dst_access,
-                        vk::PipelineStageFlags::ALL_COMMANDS,
-                        dst_stage,
-                        aspect,
+        for binding in bindings {
+            match binding {
+                crate::passes::ResourceBinding::SampledImage(_, name)
+                | crate::passes::ResourceBinding::InputAttachment(_, name) => {
+                    let view = renderer
+                        .get_pass_resource_view(pass_node.pass.name(), name, ctx.current_frame)
+                        .unwrap_or(renderer.common_shadow_view);
+                    img_infos.push(
+                        vk::DescriptorImageInfo::default()
+                            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                            .image_view(view)
+                            .sampler(renderer.common_sampler),
                     );
                 }
-            }
-
-            if !secondary_commands[idx].is_empty() {
-                unsafe {
-                    renderer
-                        .device
-                        .device
-                        .cmd_execute_commands(ctx.command_buffer, &secondary_commands[idx]);
+                crate::passes::ResourceBinding::StorageImage(_, name) => {
+                    let view = renderer
+                        .get_pass_resource_view(pass_node.pass.name(), name, ctx.current_frame)
+                        .unwrap_or(renderer.common_shadow_view);
+                    img_infos.push(
+                        vk::DescriptorImageInfo::default()
+                            .image_layout(vk::ImageLayout::GENERAL)
+                            .image_view(view),
+                    );
+                }
+                crate::passes::ResourceBinding::StorageBuffer(_, name)
+                | crate::passes::ResourceBinding::UniformBuffer(_, name) => {
+                    if let Some(buffer) =
+                        renderer.get_resource_buffer(pass_node.pass.name(), name, ctx.current_frame)
+                    {
+                        buf_infos.push(
+                            vk::DescriptorBufferInfo::default()
+                                .buffer(buffer.handle)
+                                .range(buffer.size),
+                        );
+                    }
+                }
+                crate::passes::ResourceBinding::AccelerationStructure(_, _) => {
+                    let as_manager = renderer
+                        .as_manager
+                        .lock()
+                        .expect("Failed to lock AS manager during descriptor update");
+                    if let Some(ref tlas) = as_manager.current_tlas[ctx.current_frame] {
+                        as_handles.push(tlas.handle);
+                    }
                 }
             }
+        }
 
-            // 3. Automated Buffer Barrier Injection
-            for (res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_buffer_access() {
-                if let Some(buffer) = renderer.get_resource_buffer(
-                    pass_node.pass.name(),
-                    &res_name,
-                    ctx.current_frame,
-                ) {
-                    let barrier = vk::BufferMemoryBarrier2::default()
-                        .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                        .src_access_mask(
-                            vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
-                        )
-                        .dst_stage_mask(
-                            vk::PipelineStageFlags2::from_raw(dst_stage.as_raw() as u64),
-                        )
-                        .dst_access_mask(vk::AccessFlags2::from_raw(dst_access.as_raw() as u64))
-                        .buffer(buffer.handle)
-                        .offset(0)
-                        .size(buffer.size);
+        let mut writes = Vec::new();
+        let mut img_idx = 0;
+        let mut buf_idx = 0;
+        let mut as_idx = 0;
 
-                    let dependency_info = vk::DependencyInfo::default()
-                        .buffer_memory_barriers(std::slice::from_ref(&barrier));
+        for binding in bindings {
+            match binding {
+                crate::passes::ResourceBinding::SampledImage(binding_idx, _) => {
+                    writes.push(
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(ds)
+                            .dst_binding(*binding_idx)
+                            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                            .descriptor_count(1)
+                            .image_info(std::slice::from_ref(&img_infos[img_idx])),
+                    );
+                    img_idx += 1;
+                }
+                crate::passes::ResourceBinding::InputAttachment(binding_idx, _) => {
+                    writes.push(
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(ds)
+                            .dst_binding(*binding_idx)
+                            .descriptor_type(vk::DescriptorType::INPUT_ATTACHMENT)
+                            .descriptor_count(1)
+                            .image_info(std::slice::from_ref(&img_infos[img_idx])),
+                    );
+                    img_idx += 1;
+                }
+                crate::passes::ResourceBinding::StorageImage(binding_idx, _) => {
+                    writes.push(
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(ds)
+                            .dst_binding(*binding_idx)
+                            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                            .descriptor_count(1)
+                            .image_info(std::slice::from_ref(&img_infos[img_idx])),
+                    );
+                    img_idx += 1;
+                }
+                crate::passes::ResourceBinding::StorageBuffer(binding_idx, name) => {
+                    if renderer
+                        .get_resource_buffer(pass_node.pass.name(), name, ctx.current_frame)
+                        .is_some()
+                    {
+                        writes.push(
+                            vk::WriteDescriptorSet::default()
+                                .dst_set(ds)
+                                .dst_binding(*binding_idx)
+                                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                                .descriptor_count(1)
+                                .buffer_info(std::slice::from_ref(&buf_infos[buf_idx])),
+                        );
+                        buf_idx += 1;
+                    }
+                }
+                crate::passes::ResourceBinding::UniformBuffer(binding_idx, name) => {
+                    if renderer
+                        .get_resource_buffer(pass_node.pass.name(), name, ctx.current_frame)
+                        .is_some()
+                    {
+                        writes.push(
+                            vk::WriteDescriptorSet::default()
+                                .dst_set(ds)
+                                .dst_binding(*binding_idx)
+                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                                .descriptor_count(1)
+                                .buffer_info(std::slice::from_ref(&buf_infos[buf_idx])),
+                        );
+                        buf_idx += 1;
+                    }
+                }
+                crate::passes::ResourceBinding::AccelerationStructure(_binding_idx, _) => {
+                    if as_idx < as_handles.len() {
+                        let info = vk::WriteDescriptorSetAccelerationStructureKHR::default()
+                            .acceleration_structures(std::slice::from_ref(&as_handles[as_idx]));
+                        as_infos.push(info);
+                    }
+                    as_idx += 1;
+                }
+            }
+        }
 
+        if !writes.is_empty() {
+            unsafe {
+                renderer.device.device.update_descriptor_sets(&writes, &[]);
+            }
+        }
+
+        let mut as_idx_2 = 0;
+        for binding in pass_node.pass.bindings() {
+            if let crate::passes::ResourceBinding::AccelerationStructure(binding_idx, _) = binding {
+                if as_idx_2 < as_infos.len() {
+                    let as_write = [vk::WriteDescriptorSet::default()
+                        .dst_set(ds)
+                        .dst_binding(binding_idx)
+                        .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                        .descriptor_count(1)
+                        .push_next(&mut as_infos[as_idx_2])];
                     unsafe {
                         renderer
                             .device
                             .device
-                            .cmd_pipeline_barrier2(ctx.command_buffer, &dependency_info);
+                            .update_descriptor_sets(&as_write, &[]);
                     }
+                    as_idx_2 += 1;
                 }
             }
+        }
+    }
 
-            pass_node.pass.record_commands(ctx);
+    fn inject_image_barriers(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
+        let renderer = ctx.renderer;
+        for (mut res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_access() {
+            if let Some(alias) = self.aliased_resources.get(&res_name) {
+                res_name = alias.clone();
+            }
+
+            let attachments = self
+                .physical_attachments
+                .get(&res_name)
+                .or_else(|| self.transient_attachments.get(&res_name));
+
+            if let Some(attachments) = attachments {
+                let attachment = &attachments[ctx.current_frame];
+                let aspect = if res_name.contains("Depth") {
+                    vk::ImageAspectFlags::DEPTH
+                } else {
+                    vk::ImageAspectFlags::COLOR
+                };
+
+                let new_layout = if dst_access.contains(vk::AccessFlags::COLOR_ATTACHMENT_WRITE) {
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+                } else if dst_access.contains(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE) {
+                    vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
+                } else if dst_access.contains(vk::AccessFlags::SHADER_READ)
+                    && !dst_stage.contains(vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR)
+                {
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                } else if dst_access.contains(vk::AccessFlags::TRANSFER_READ) {
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL
+                } else if dst_access.contains(vk::AccessFlags::TRANSFER_WRITE) {
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL
+                } else {
+                    vk::ImageLayout::GENERAL
+                };
+
+                renderer.resource_tracker.transition_image(
+                    ctx.command_buffer,
+                    &renderer.device.device,
+                    attachment.image,
+                    new_layout,
+                    vk::AccessFlags::MEMORY_WRITE | vk::AccessFlags::MEMORY_READ,
+                    dst_access,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                    dst_stage,
+                    aspect,
+                );
+            }
+        }
+    }
+
+    fn execute_secondary_commands(&self, ctx: &RenderContext, commands: &[vk::CommandBuffer]) {
+        if !commands.is_empty() {
+            unsafe {
+                ctx.renderer
+                    .device
+                    .device
+                    .cmd_execute_commands(ctx.command_buffer, commands);
+            }
+        }
+    }
+
+    fn inject_buffer_barriers(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
+        let renderer = ctx.renderer;
+        for (res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_buffer_access() {
+            if let Some(buffer) =
+                renderer.get_resource_buffer(pass_node.pass.name(), &res_name, ctx.current_frame)
+            {
+                let barrier = vk::BufferMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                    .src_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
+                    .dst_stage_mask(vk::PipelineStageFlags2::from_raw(dst_stage.as_raw() as u64))
+                    .dst_access_mask(vk::AccessFlags2::from_raw(dst_access.as_raw() as u64))
+                    .buffer(buffer.handle)
+                    .offset(0)
+                    .size(buffer.size);
+
+                let dependency_info = vk::DependencyInfo::default()
+                    .buffer_memory_barriers(std::slice::from_ref(&barrier));
+
+                unsafe {
+                    renderer
+                        .device
+                        .device
+                        .cmd_pipeline_barrier2(ctx.command_buffer, &dependency_info);
+                }
+            }
         }
     }
 }

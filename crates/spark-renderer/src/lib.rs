@@ -271,18 +271,10 @@ impl Renderer {
             .insert("GBufferDepth".to_string(), gbuffer.depth);
 
         renderer.init_default_resources();
-        renderer.common_shadow_view = renderer
-            .gpu_resource_manager
-            .default_texture
-            .as_ref()
-            .unwrap()
-            .view;
-        renderer.hiz_view = renderer
-            .gpu_resource_manager
-            .default_texture
-            .as_ref()
-            .unwrap()
-            .view;
+        if let Some(ref tex) = renderer.gpu_resource_manager.default_texture {
+            renderer.common_shadow_view = tex.view;
+            renderer.hiz_view = tex.view;
+        }
 
         Ok(renderer)
     }
@@ -316,18 +308,11 @@ impl Renderer {
             self.gpu_resource_manager.default_texture = Some(tex);
         }
 
-        let view = self
-            .gpu_resource_manager
-            .default_texture
-            .as_ref()
-            .unwrap()
-            .view;
-        let sampler = self
-            .gpu_resource_manager
-            .default_texture
-            .as_ref()
-            .unwrap()
-            .sampler;
+        let (view, sampler) = if let Some(ref tex) = self.gpu_resource_manager.default_texture {
+            (tex.view, tex.sampler)
+        } else {
+            return;
+        };
 
         let pipeline_layout = if let Some(pipeline) = &self.pipeline {
             pipeline.descriptor_set_layout
@@ -621,7 +606,7 @@ impl Renderer {
             .light_buffer
             .as_ref()
             .cloned()
-            .unwrap();
+            .expect("Light buffer was not initialized before upload");
         self.upload_to_buffer(&lb, &ld);
     }
 
@@ -1937,7 +1922,7 @@ impl Renderer {
             .global_buffer
             .as_ref()
             .cloned()
-            .unwrap();
+            .expect("Global UBO buffer was not initialized before upload");
         self.upload_to_buffer(&gb, &[ubo]);
     }
 
