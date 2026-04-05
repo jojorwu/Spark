@@ -101,13 +101,17 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+/**
+ * Вычисляет коэффициент затенения для заданной позиции.
+ * Calculates shadow factor for a given world position using Cascaded Shadow Maps.
+ */
 float calculateShadow(vec3 worldPos, float linearDepth, vec3 N) {
+    // Выбор подходящего каскада на основе линейной глубины.
+    // Shadow cascade selection based on linear depth splits.
     uint cascadeIdx = 0;
-    for (uint i = 0; i < 3; ++i) {
-        if (linearDepth > global.cascadeSplits[i]) {
-            cascadeIdx = i + 1;
-        }
-    }
+    if (linearDepth > global.cascadeSplits[0]) cascadeIdx = 1;
+    if (linearDepth > global.cascadeSplits[1]) cascadeIdx = 2;
+    if (linearDepth > global.cascadeSplits[2]) cascadeIdx = 3;
 
     vec4 shadowCoord = global.lightViewProj[cascadeIdx] * vec4(worldPos, 1.0);
     shadowCoord.xyz /= shadowCoord.w;
@@ -134,25 +138,24 @@ float calculateShadow(vec3 worldPos, float linearDepth, vec3 N) {
     return shadow / 9.0;
 }
 
-vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metallic, float roughness, vec3 viewPos, float ssao, vec2 uv, float depth) {
+/**
+ * Основная функция расчета PBR освещения (Cook-Torrance BRDF).
+ * Main PBR lighting calculation using Cook-Torrance BRDF.
+ */
+vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metallic, float roughness, vec3 viewPos, float ssao, vec2 uv, float depth, uint clusterIndex, float shadow) {
     vec3 N = normalize(normal);
     vec3 V = normalize(viewPos - worldPos);
     vec3 F0 = vec3(0.04);
     F0 = mix(F0, albedo, metallic);
 
     vec3 Lo = vec3(0.0);
-    float shadow = calculateShadow(worldPos, depth, N);
 
-    uint zSlices = 24;
-    float zNear = 0.1;
-    float zFar = 100.0;
-
-    uint clusterZ = uint(max(0.0, log(depth / zNear) * float(zSlices) / log(zFar / zNear)));
-    uvec2 clusterXY = uvec2(uv * vec2(16, 9));
-    uint clusterIndex = clusterXY.x + clusterXY.y * 16 + clusterZ * 16 * 9;
-
+    // Получение данных кластера для освещения.
+    // Retrieve cluster data for lighting.
     LightGrid grid = lightGrids[clusterIndex];
 
+    // Итерация по источникам света в текущем кластере.
+    // Iterate over local lights assigned to this cluster.
     for (uint i = 0; i < grid.count; i++) {
         uint lightIdx = globalIndexList[grid.offset + i];
         Light light = lights[lightIdx];
@@ -229,6 +232,23 @@ void main()
     vec2 texCoord = gl_FragCoord.xy / vec2(push.width, push.height);
     vec3 viewPos = global.cameraPos.xyz;
 
+    // Расчет индекса кластера один раз для пикселя (оптимизация для MSAA).
+    // Calculate cluster index once per pixel (optimization for MSAA).
+    float mainDepth = subpassLoad(inputDepth).r;
+    float linearMainDepth = (2.0 * 0.1) / (100.0 + 0.1 - mainDepth * (100.0 - 0.1));
+
+    uint zSlices = 24;
+    float zNear = 0.1;
+    float zFar = 100.0;
+    uint clusterZ = uint(max(0.0, log(linearMainDepth / zNear) * float(zSlices) / log(zFar / zNear)));
+    uvec2 clusterXY = uvec2(texCoord * vec2(16, 9));
+    uint clusterIndex = clusterXY.x + clusterXY.y * 16 + clusterZ * 16 * 9;
+
+    // Предварительный расчет теней (используем основную глубину для эффективности).
+    // Pre-calculate shadows using the primary depth for efficiency.
+    vec3 mainPos = worldPosFromDepth(mainDepth, texCoord);
+    float shadow = calculateShadow(mainPos, linearMainDepth, vec3(0, 1, 0));
+
 #if MSAA_SAMPLES > 1
     vec3 color = vec3(0.0);
     for (int i = 0; i < MSAA_SAMPLES; i++) {
@@ -239,7 +259,8 @@ void main()
         vec3 position = worldPosFromDepth(depth, texCoord);
         vec2 pbr = subpassLoad(inputPBR, i).rg;
         float linearDepth = (2.0 * 0.1) / (100.0 + 0.1 - depth * (100.0 - 0.1));
-        color += calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, texCoord, linearDepth);
+
+        color += calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, texCoord, linearDepth, clusterIndex, shadow);
     }
     outColor = vec4(color / float(MSAA_SAMPLES), 1.0);
 #else
@@ -250,6 +271,7 @@ void main()
     vec3 position = worldPosFromDepth(depth, texCoord);
     vec2 pbr = subpassLoad(inputPBR).rg;
     float linearDepth = (2.0 * 0.1) / (100.0 + 0.1 - depth * (100.0 - 0.1));
-    outColor = vec4(calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, texCoord, linearDepth), 1.0);
+
+    outColor = vec4(calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, texCoord, linearDepth, clusterIndex, shadow), 1.0);
 #endif
 }
