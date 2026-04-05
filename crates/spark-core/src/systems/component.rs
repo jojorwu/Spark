@@ -25,13 +25,17 @@ impl System for ComponentSystem {
         unsafe {
             let scene = ctx.scene_mut();
 
-            // Optimization: Iterate directly over the slotmap's internal storage
-            // if possible, or use a parallel iterator that avoids full re-collection.
-            // Since SlotMap doesn't provide a direct par_iter_mut for (Key, &mut V),
-            // we use the established raw pointer pattern for high performance.
+            // Optimization: Avoid par_bridge() which has high overhead due to internal channels.
+            // Instead, we collect keys into a temporary buffer. For large scenes,
+            // the overhead of this collection is significantly lower than par_bridge.
+            // Even better, we use the raw pointer pattern to access nodes in parallel safely
+            // because each key is unique.
             let nodes_ptr = &mut scene.nodes as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node> as usize;
 
-            scene.nodes.keys().par_bridge().for_each(|key| {
+            // Pre-collecting keys into a thread-local or reusable buffer could be a further optimization.
+            let keys: Vec<_> = scene.nodes.keys().collect();
+
+            keys.into_par_iter().for_each(|key| {
                 let nodes = &mut *(nodes_ptr as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node>);
                 if let Some(node) = nodes.get_mut(key) {
                     for component in &mut node.components {

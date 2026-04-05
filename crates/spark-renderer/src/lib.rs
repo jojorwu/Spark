@@ -787,7 +787,8 @@ impl Renderer {
 
     #[allow(clippy::too_many_arguments)]
     /// Executes the full rendering frame.
-    /// Handles synchronization, image acquisition, command recording, and presentation.
+    /// Основная функция отрисовки кадра. Управляет синхронизацией, получением изображения
+    /// из swapchain, записью команд и выводом на экран.
     ///
     /// # Arguments
     /// * `window` - The window to render to.
@@ -815,10 +816,14 @@ impl Renderer {
         };
 
         unsafe {
+            // Ожидание завершения предыдущего кадра, использующего те же ресурсы.
+            // Wait for the previous frame using these resources to finish.
             self.device
                 .device
                 .wait_for_fences(&[in_flight], true, u64::MAX)
                 .expect("Failed to wait for fence");
+            // Получение индекса следующего доступного изображения из swapchain.
+            // Acquire the next available image from the swapchain.
             let result = self.swapchain.loader.acquire_next_image(
                 self.swapchain.handle,
                 u64::MAX,
@@ -870,6 +875,8 @@ impl Renderer {
                 .wait_dst_stage_mask(&w_stages)
                 .command_buffers(&c_buffers)
                 .signal_semaphores(&s_finished);
+            // Отправка командного буфера в очередь графики.
+            // Submit the command buffer to the graphics queue.
             self.device
                 .device
                 .queue_submit(self.device.graphics_queue, &[submit_info], in_flight)
@@ -1489,6 +1496,7 @@ impl Renderer {
     }
 
     /// Calculates the six frustum planes from a view-projection matrix.
+    /// Used for basic GPU-side culling and visibility testing.
     fn calculate_frustum_planes(view_proj: spark_math::Mat4) -> [spark_math::Vec4; 6] {
         let mut frustum = [spark_math::Vec4::ZERO; 6];
         let m = view_proj.transpose();
@@ -1513,12 +1521,42 @@ impl Renderer {
     ///
     /// # Returns
     /// * The total number of opaque objects to be rendered.
-    pub fn prepare_frame(&mut self, packet: crate::resource::FramePacket) -> u32 {
-        self.current_packet = Some(packet.clone());
+    pub fn prepare_frame(&mut self, mut packet: crate::resource::FramePacket) -> u32 {
+        let view_pos = packet.view_matrix.inverse().w_axis.xyz();
+        packet.transparent_meshes.par_sort_by(|a, b| {
+            let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
+            let dist_b = (b.model.w_axis.xyz() - view_pos).length_squared();
+            dist_b
+                .partial_cmp(&dist_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         self.scene_view_matrix_for_pos = packet.view_matrix;
 
-        // 1. Prepare GPU Indirect and Object buffers in parallel
-        // We use rayon to parallelize the transformation of MeshDraw to GPU-friendly SSBO and Indirect commands.
+        // 1. Prepare GPU Indirect and Object buffers.
+        let total_objects = self.prepare_mesh_data(&packet);
+
+        // 2. Update Lights.
+        self.update_lights_from_draw(&packet.lights);
+
+        // 3. Update Global UBO and Cascade Shadow Maps.
+        self.update_global_ubo(&packet);
+
+        self.current_packet = Some(packet);
+
+        // 4. Prepare Passes.
+        let cf = self.frame_manager.current_frame;
+        for pass_node in &self.render_graph.passes {
+            pass_node.pass.prepare(self, cf);
+        }
+
+        self.last_object_count = total_objects;
+        total_objects
+    }
+
+    /// Prepares mesh-related buffers (indirect commands, SSBOs).
+    fn prepare_mesh_data(&mut self, packet: &crate::resource::FramePacket) -> u32 {
+        // 1. Opaque meshes.
         let (object_ssbos, indirect_commands): (Vec<_>, Vec<_>) = packet
             .opaque_meshes
             .par_iter()
@@ -1547,21 +1585,9 @@ impl Renderer {
             .unzip();
 
         self.update_indirect_buffers(&indirect_commands, &object_ssbos);
-        let total_objects = object_ssbos.len() as u32;
 
-        // 1.1 Prepare Transparent buffers (with simple back-to-front sorting)
-        // Transparency requires back-to-front sorting for correct alpha blending.
-        let mut transparent_meshes = packet.transparent_meshes.clone();
-        let view_pos = packet.view_matrix.inverse().w_axis.xyz();
-        transparent_meshes.par_sort_by(|a, b| {
-            let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
-            let dist_b = (b.model.w_axis.xyz() - view_pos).length_squared();
-            dist_b
-                .partial_cmp(&dist_a)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let (trans_ssbos, trans_cmds): (Vec<_>, Vec<_>) = transparent_meshes
+        // 2. Transparent meshes.
+        let (trans_ssbos, trans_cmds): (Vec<_>, Vec<_>) = packet.transparent_meshes
             .par_iter()
             .enumerate()
             .map(|(i, mesh)| {
@@ -1589,14 +1615,14 @@ impl Renderer {
         self.update_transparent_buffers(&trans_cmds, &trans_ssbos);
         self.last_transparent_count = trans_ssbos.len() as u32;
 
-        // 2. Update Lights
-        self.update_lights_from_draw(&packet.lights);
+        object_ssbos.len() as u32
+    }
 
-        // 3. Update Global UBO
+    /// Updates the global Uniform Buffer, calculates CSM matrices, and handles projection jitter.
+    fn update_global_ubo(&mut self, packet: &crate::resource::FramePacket) {
         let extent = self.get_extent();
         let jitter = self.get_jitter();
 
-        // Use camera projection from packet if available, otherwise default.
         let mut projection = if packet.projection_matrix != spark_math::Mat4::IDENTITY {
             packet.projection_matrix
         } else {
@@ -1623,8 +1649,7 @@ impl Renderer {
         );
 
         let inv_vp = view_proj.inverse();
-        for i in 0..4 {
-            let _split = cascade_splits[i];
+        for proj in &mut light_view_projs {
             let mut frustum_corners = [spark_math::Vec3::ZERO; 8];
             let mut idx = 0;
             for x in &[-1.0, 1.0] {
@@ -1637,7 +1662,6 @@ impl Renderer {
                 }
             }
 
-            // Simple approximation of tight-fitting light frustum for the cascade
             let mut min_p = spark_math::Vec3::new(f32::MAX, f32::MAX, f32::MAX);
             let mut max_p = spark_math::Vec3::new(f32::MIN, f32::MIN, f32::MIN);
             for corner in &frustum_corners {
@@ -1646,7 +1670,6 @@ impl Renderer {
                 max_p = max_p.max(light_space_p.xyz());
             }
 
-            // Ensure stable shadow mapping by snapping min/max to texel size
             let shadow_res = Self::SHADOW_MAP_CASCADE_SIZE as f32;
             let world_units_per_texel = (max_p - min_p) / shadow_res;
             min_p = (min_p / world_units_per_texel).floor() * world_units_per_texel;
@@ -1660,7 +1683,7 @@ impl Renderer {
                 -max_p.z - 50.0,
                 -min_p.z,
             );
-            light_view_projs[i] = light_proj * light_view;
+            *proj = light_proj * light_view;
         }
 
         let current_frame = self.frame_manager.current_frame;
@@ -1702,16 +1725,6 @@ impl Renderer {
             .cloned()
             .unwrap();
         self.upload_to_buffer(&gb, &[ubo]);
-
-        // 4. Prepare Passes
-        let cf = self.frame_manager.current_frame;
-
-        for pass_node in &self.render_graph.passes {
-            pass_node.pass.prepare(self, cf);
-        }
-
-        self.last_object_count = total_objects;
-        total_objects
     }
 
     /// Returns the raw ash::Device.
