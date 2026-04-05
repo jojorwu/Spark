@@ -51,19 +51,31 @@ Scene (Root)
  └── Light (Node)
 ```
 
-### 2.2 Renderer (Vulkan/Ash)
+### 2.2 Event System (EventBus)
+The engine uses a **Double-Buffered EventBus** to distribute events to systems.
+- **Publishing**: Systems can publish events at any time. They are collected into an internal `incoming` buffer.
+- **Consumption**: At the start of each frame, the buffers are swapped. Systems read from the `active` buffer, which contains all events from the previous frame. This ensures frame-consistent state across all parallel systems.
+
+### 2.3 Command System (Deferred Mutation)
+To maintain thread safety during parallel execution, Spark uses a **Deferred Command Queue**.
+- **Systems** are not allowed to make structural changes (adding/removing nodes) to the `Scene` directly.
+- Instead, they push `Commands` to the `CommandQueue`.
+- The engine executes all queued commands sequentially at the end of the `update_phase`, ensuring a predictable and safe transition to the next state.
+
+### 2.4 Renderer (Vulkan/Ash)
 The renderer is built on top of `ash` for low-level Vulkan access. It uses a **Render Graph** approach to manage dependencies between passes (shadows, G-buffer, lighting, post-processing).
 
 - **Abstraction Layer**: Hides Vulkan verbosity behind a clean API.
 - **Multi-threading**: Command buffers are recorded in parallel using the Task System.
+- **Render Graph**: Automatically handles resource life-cycles, aliasing, and **Vulkan Synchronization2** (automated barriers).
 - **Shader System**: SPIR-V based, with support for hot-reloading.
 
-### 2.3 Scripting Host
+### 2.5 Scripting Host
 Two primary scripting methods:
 1. **Rust Plugins**: Dynamic loading of `.so`/`.dll` files. Uses a stable ABI or `abi_stable` crate to ensure compatibility.
 2. **C# .NET Hosting**: Integrates the .NET Runtime (nethost) to run C# 12+ scripts. High-level C# wrappers call into the Rust engine via FFI.
 
-### 2.4 Multi-threading (Task System)
+### 2.6 Multi-threading (Task System)
 Spark uses a **Global Thread Pool** (likely using `rayon` or a custom implementation for fine-grained control).
 - **Parallel Updates**: Independent nodes can update their logic in parallel.
 - **Async Asset Loading**: Assets are loaded and processed on background threads.

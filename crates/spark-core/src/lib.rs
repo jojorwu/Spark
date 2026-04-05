@@ -137,7 +137,6 @@ pub struct FrameContext<'a> {
     pub resources: &'a crate::resource_container::Resources,
     pub task_system: &'a TaskSystem,
     pub delta: f32,
-    pub event_proxy: crate::systems_events::events::EventProxy<'a>,
     pub input: &'a crate::input::InputManager,
     pub command_queue: &'a crate::command::CommandQueue,
     pub event_bus: &'a crate::event_bus::EventBus,
@@ -157,7 +156,6 @@ impl<'a> FrameContext<'a> {
         resources: &'a crate::resource_container::Resources,
         task_system: &'a TaskSystem,
         delta: f32,
-        event_proxy: crate::systems_events::events::EventProxy<'a>,
         input: &'a crate::input::InputManager,
         command_queue: &'a crate::command::CommandQueue,
         event_bus: &'a crate::event_bus::EventBus,
@@ -171,22 +169,28 @@ impl<'a> FrameContext<'a> {
             resources,
             task_system,
             delta,
-            event_proxy,
             input,
             command_queue,
             event_bus,
         }
     }
 
+    /// Provides read-only access to the scene.
     pub fn scene(&self) -> &Scene {
         unsafe { &*self.scene }
     }
+
+    /// Provides read-only access to the renderer.
     pub fn renderer(&self) -> &Renderer {
         unsafe { &*self.renderer }
     }
+
+    /// Provides read-only access to the resource manager.
     pub fn resource_manager(&self) -> &ResourceManager {
         unsafe { &*self.resource_manager }
     }
+
+    /// Provides read-only access to the asset manager.
     pub fn asset_manager(&self) -> &crate::asset::AssetManager {
         unsafe { &*self.asset_manager }
     }
@@ -197,8 +201,10 @@ impl<'a> FrameContext<'a> {
     ///
     /// The caller must ensure that no other systems or threads are accessing the scene
     /// concurrently. This is typically guaranteed by the `Scheduler` based on declared
-    /// `ResourceAccess`. Direct mutation of the scene tree (adding/removing nodes)
-    /// should be done through the `command_queue` to ensure thread safety.
+    /// `ResourceAccess`.
+    ///
+    /// IMPORTANT: Structural changes to the scene (adding/removing nodes) MUST be
+    /// deferred through the `command_queue` during parallel execution.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn scene_mut(&self) -> &mut Scene {
         &mut *self.scene
@@ -208,7 +214,8 @@ impl<'a> FrameContext<'a> {
     ///
     /// # Safety
     ///
-    /// Caller must ensure no other threads are accessing the renderer concurrently.
+    /// The caller must ensure that no other systems or threads are accessing the renderer
+    /// concurrently. This is typically guaranteed by the `Scheduler`.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn renderer_mut(&self) -> &mut Renderer {
         &mut *self.renderer
@@ -218,7 +225,8 @@ impl<'a> FrameContext<'a> {
     ///
     /// # Safety
     ///
-    /// Caller must ensure no other threads are accessing the resource manager concurrently.
+    /// The caller must ensure that no other systems or threads are accessing the
+    /// resource manager concurrently.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn resource_manager_mut(&self) -> &mut ResourceManager {
         &mut *self.resource_manager
@@ -228,7 +236,8 @@ impl<'a> FrameContext<'a> {
     ///
     /// # Safety
     ///
-    /// Caller must ensure no other threads are accessing the asset manager concurrently.
+    /// The caller must ensure that no other systems or threads are accessing the
+    /// asset manager concurrently.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn asset_manager_mut(&self) -> &mut crate::asset::AssetManager {
         &mut *self.asset_manager
@@ -582,12 +591,13 @@ impl Engine {
     ///
     /// This includes swapping event buffers, updating input state, and executing
     /// all registered systems across multiple parallel stages.
+    /// Processes a single frame's update logic.
+    ///
+    /// This includes swapping event buffers, updating input state, and executing
+    /// all registered systems across multiple parallel stages.
     fn update_phase(&mut self, delta: f32) {
         let events = self.event_bus.read_events::<crate::event::EngineEvent>();
         self.input_manager.update(&events);
-
-        // Clear system events from the previous frame.
-        self.system_events.lock().unwrap().clear();
 
         {
             let mut ctx = FrameContext::new(
@@ -599,10 +609,6 @@ impl Engine {
                 &self.resources,
                 &self.task_system,
                 delta,
-                crate::systems_events::events::EventProxy {
-                    events: &events,
-                    outgoing: &self.system_events,
-                },
                 &self.input_manager,
                 &self.command_queue,
                 &self.event_bus,
