@@ -147,7 +147,7 @@ float calculateShadow(vec3 worldPos, float linearDepth, vec3 N) {
  * Основная функция расчета PBR освещения (Cook-Torrance BRDF).
  * Main PBR lighting calculation using Cook-Torrance BRDF.
  */
-vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metallic, float roughness, vec3 viewPos, float ssao, vec3 ssgi, float depth, LightGrid grid, float shadow) {
+vec3 calculatePBRLighting(vec3 albedo, vec3 normal, vec3 worldPos, float metallic, float roughness, vec3 viewPos, float ssao, vec3 ssgi, LightGrid grid, float shadow) {
     vec3 N = normalize(normal);
     vec3 V = normalize(viewPos - worldPos);
     vec3 F0 = vec3(0.04);
@@ -267,7 +267,7 @@ void main()
         vec2 pbr = subpassLoad(inputPBR, i).rg;
         float linearDepth = (2.0 * push.zNear) / (push.zFar + push.zNear - depth * (push.zFar - push.zNear));
 
-        color += calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, ssgi, linearDepth, grid, shadow);
+        color += calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, ssgi, grid, shadow);
     }
     outColor = vec4(color / float(MSAA_SAMPLES), 1.0);
 #else
@@ -276,8 +276,7 @@ void main()
     float depth = subpassLoad(inputDepth).r;
     vec3 position = worldPosFromDepth(depth, clipXY);
     vec2 pbr = subpassLoad(inputPBR).rg;
-    float linearDepth = (2.0 * push.zNear) / (push.zFar + push.zNear - depth * (push.zFar - push.zNear));
 
-    outColor = vec4(calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, ssgi, linearDepth, grid, shadow), 1.0);
+    outColor = vec4(calculatePBRLighting(albedo, normal, position, pbr.x, pbr.y, viewPos, ssao, ssgi, grid, shadow), 1.0);
 #endif
 }

@@ -967,289 +967,8 @@ impl EditorUI {
                 BottomTab::Materials => {
                     self.draw_materials_tab(ui, asset_manager, resource_manager)
                 }
-                BottomTab::Settings => {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.heading("Post-Processing");
-                        ui.horizontal(|ui| {
-                            ui.label("Manual Exposure:");
-                            ui.add(egui::Slider::new(
-                                &mut renderer.settings.exposure,
-                                0.1..=10.0,
-                            ));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.checkbox(
-                                &mut renderer.settings.enable_auto_exposure,
-                                "Auto Exposure",
-                            );
-                            if renderer.settings.enable_auto_exposure {
-                                ui.label("Min:");
-                                ui.add(
-                                    egui::DragValue::new(&mut renderer.settings.auto_exposure_min)
-                                        .speed(0.1),
-                                );
-                                ui.label("Max:");
-                                ui.add(
-                                    egui::DragValue::new(&mut renderer.settings.auto_exposure_max)
-                                        .speed(0.1),
-                                );
-                                ui.label("Speed:");
-                                ui.add(
-                                    egui::DragValue::new(
-                                        &mut renderer.settings.auto_exposure_speed,
-                                    )
-                                    .speed(0.1),
-                                );
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Gamma:");
-                            ui.add(egui::Slider::new(&mut renderer.settings.gamma, 1.0..=3.0));
-                        });
-                        ui.separator();
-
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut renderer.settings.enable_bloom, "Bloom");
-                            if renderer.settings.enable_bloom {
-                                ui.label("Threshold:");
-                                ui.add(egui::Slider::new(
-                                    &mut renderer.settings.bloom_threshold,
-                                    0.1..=2.0,
-                                ));
-                                ui.label("Intensity:");
-                                ui.add(egui::Slider::new(
-                                    &mut renderer.settings.bloom_intensity,
-                                    0.0..=2.0,
-                                ));
-                            }
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.checkbox(
-                                &mut renderer.settings.enable_color_grading,
-                                "Color Grading",
-                            );
-                            if renderer.settings.enable_color_grading {
-                                ui.label("LUT Index:");
-                                ui.add(
-                                    egui::DragValue::new(&mut renderer.settings.lut_index)
-                                        .clamp_range(-1..=15),
-                                );
-                            }
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.label("Vignette Intensity:");
-                            ui.add(egui::Slider::new(
-                                &mut renderer.settings.vignette_intensity,
-                                0.0..=1.0,
-                            ));
-                            ui.label("Smoothness:");
-                            ui.add(egui::Slider::new(
-                                &mut renderer.settings.vignette_smoothness,
-                                0.0..=1.0,
-                            ));
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.label("Chromatic Aberration:");
-                            ui.add(egui::Slider::new(
-                                &mut renderer.settings.chromatic_aberration,
-                                0.0..=0.01,
-                            ));
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.label("Film Grain:");
-                            ui.add(egui::Slider::new(
-                                &mut renderer.settings.film_grain,
-                                0.0..=0.1,
-                            ));
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut renderer.settings.enable_dof, "Depth of Field");
-                            if renderer.settings.enable_dof {
-                                ui.label("Distance:");
-                                ui.add(egui::Slider::new(
-                                    &mut renderer.settings.dof_focus_distance,
-                                    0.1..=50.0,
-                                ));
-                                ui.label("Range:");
-                                ui.add(egui::Slider::new(
-                                    &mut renderer.settings.dof_focus_range,
-                                    0.1..=20.0,
-                                ));
-                                ui.label("Size:");
-                                ui.add(egui::Slider::new(
-                                    &mut renderer.settings.dof_bokeh_size,
-                                    1.0..=20.0,
-                                ));
-                            }
-                        });
-
-                        ui.separator();
-                        ui.heading("Environmental Effects");
-                        ui.checkbox(&mut renderer.settings.enable_volumetric, "Volumetric Fog");
-                        if renderer.settings.enable_volumetric {
-                            ui.horizontal(|ui| {
-                                ui.label("Fog Color:");
-                                ui.color_edit_button_rgb(&mut renderer.settings.fog_color);
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Density:");
-                                ui.add(egui::Slider::new(
-                                    &mut renderer.settings.fog_density,
-                                    0.0..=0.1,
-                                ));
-                                ui.label("Height Falloff:");
-                                ui.add(egui::Slider::new(
-                                    &mut renderer.settings.fog_height_falloff,
-                                    0.0..=1.0,
-                                ));
-                            });
-                        }
-
-                        ui.separator();
-                        ui.heading("General Features");
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut renderer.settings.enable_shadows, "Shadows");
-                            if renderer.settings.enable_shadows {
-                                ui.label("PCF:");
-                                egui::ComboBox::from_id_source("shadow_pcf")
-                                    .selected_text(if renderer.settings.shadow_pcf_samples == 0 {
-                                        "Hard"
-                                    } else {
-                                        "Soft (3x3)"
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut renderer.settings.shadow_pcf_samples,
-                                            0,
-                                            "Hard",
-                                        );
-                                        ui.selectable_value(
-                                            &mut renderer.settings.shadow_pcf_samples,
-                                            1,
-                                            "Soft (3x3)",
-                                        );
-                                    });
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut renderer.settings.enable_ssao, "SSAO");
-                            if renderer.settings.enable_ssao {
-                                ui.label("Radius:");
-                                ui.add(egui::Slider::new(
-                                    &mut renderer.settings.ssao_radius,
-                                    0.1..=2.0,
-                                ));
-                                ui.label("Strength:");
-                                ui.add(egui::Slider::new(
-                                    &mut renderer.settings.ssao_strength,
-                                    0.1..=5.0,
-                                ));
-                            }
-                        });
-                        ui.checkbox(&mut renderer.settings.enable_taa, "TAA");
-                        ui.checkbox(&mut renderer.settings.enable_grid, "Ground Grid");
-                        ui.checkbox(&mut renderer.settings.enable_ibl, "IBL");
-
-                        ui.separator();
-                        ui.heading("Physics");
-                        ui.horizontal(|ui| {
-                            ui.label("Gravity:");
-                            ui.add(
-                                egui::DragValue::new(&mut project.physics_settings.gravity.x)
-                                    .speed(0.1)
-                                    .prefix("X:"),
-                            );
-                            ui.add(
-                                egui::DragValue::new(&mut project.physics_settings.gravity.y)
-                                    .speed(0.1)
-                                    .prefix("Y:"),
-                            );
-                            ui.add(
-                                egui::DragValue::new(&mut project.physics_settings.gravity.z)
-                                    .speed(0.1)
-                                    .prefix("Z:"),
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Sim Freq (Hz):");
-                            ui.add(egui::Slider::new(
-                                &mut project.physics_settings.simulation_frequency,
-                                10.0..=240.0,
-                            ));
-                        });
-
-                        ui.separator();
-                        ui.heading("Advanced Features");
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut renderer.settings.enable_ssr, "SSR");
-                            if renderer.settings.enable_ssr {
-                                ui.label("Steps:");
-                                ui.add(egui::DragValue::new(&mut renderer.settings.ssr_max_steps));
-                                ui.label("Step:");
-                                ui.add(
-                                    egui::DragValue::new(&mut renderer.settings.ssr_step)
-                                        .speed(0.01),
-                                );
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut renderer.settings.enable_ssgi, "SSGI");
-                            if renderer.settings.enable_ssgi {
-                                ui.label("Intensity:");
-                                ui.add(egui::Slider::new(
-                                    &mut renderer.settings.ssgi_intensity,
-                                    0.0..=2.0,
-                                ));
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut renderer.settings.enable_motion_blur, "Motion Blur");
-                            if renderer.settings.enable_motion_blur {
-                                ui.label("Strength:");
-                                ui.add(egui::Slider::new(
-                                    &mut renderer.settings.motion_blur_strength,
-                                    0.0..=1.0,
-                                ));
-                            }
-                        });
-
-                        ui.separator();
-                        ui.heading("Ray Tracing");
-                        ui.horizontal(|ui| {
-                            ui.checkbox(
-                                &mut renderer.settings.enable_rt_reflections,
-                                "RT Reflections",
-                            );
-                            ui.checkbox(&mut renderer.settings.enable_rt_shadows, "RT Shadows");
-                        });
-                        ui.horizontal(|ui| {
-                            ui.checkbox(
-                                &mut renderer.settings.enable_rt_ao,
-                                "RT Ambient Occlusion",
-                            );
-                            ui.checkbox(
-                                &mut renderer.settings.enable_rt_gi,
-                                "RT Global Illumination",
-                            );
-                        });
-                    });
-                }
-                BottomTab::Statistics => {
-                    ui.horizontal(|ui| {
-                        ui.label("Camera Speed:");
-                        ui.add(egui::Slider::new(&mut self.camera_speed, 0.01..=1.0));
-                    });
-                    ui.separator();
-                    ui.label(format!("FPS: {:.1}", fps));
-                    ui.label(format!("Active Objects: {}", renderer.last_object_count));
-                    ui.label("Draw Calls: TODO");
-                    ui.label("GPU Memory: TODO");
-                }
+                BottomTab::Settings => self.draw_settings_tab(ui, renderer, project),
+                BottomTab::Statistics => self.draw_statistics_tab(ui, renderer, fps),
             }
         });
     }
@@ -1532,6 +1251,283 @@ impl EditorUI {
         None
     }
 
+    fn draw_settings_tab(
+        &mut self,
+        ui: &mut Ui,
+        renderer: &mut spark_renderer::Renderer,
+        project: &mut spark_core::Project,
+    ) {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.heading("Post-Processing");
+            ui.horizontal(|ui| {
+                ui.label("Manual Exposure:");
+                ui.add(egui::Slider::new(
+                    &mut renderer.settings.exposure,
+                    0.1..=10.0,
+                ));
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_auto_exposure, "Auto Exposure");
+                if renderer.settings.enable_auto_exposure {
+                    ui.label("Min:");
+                    ui.add(
+                        egui::DragValue::new(&mut renderer.settings.auto_exposure_min).speed(0.1),
+                    );
+                    ui.label("Max:");
+                    ui.add(
+                        egui::DragValue::new(&mut renderer.settings.auto_exposure_max).speed(0.1),
+                    );
+                    ui.label("Speed:");
+                    ui.add(
+                        egui::DragValue::new(&mut renderer.settings.auto_exposure_speed).speed(0.1),
+                    );
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Gamma:");
+                ui.add(egui::Slider::new(&mut renderer.settings.gamma, 1.0..=3.0));
+            });
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_bloom, "Bloom");
+                if renderer.settings.enable_bloom {
+                    ui.label("Threshold:");
+                    ui.add(egui::Slider::new(
+                        &mut renderer.settings.bloom_threshold,
+                        0.1..=2.0,
+                    ));
+                    ui.label("Intensity:");
+                    ui.add(egui::Slider::new(
+                        &mut renderer.settings.bloom_intensity,
+                        0.0..=2.0,
+                    ));
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_color_grading, "Color Grading");
+                if renderer.settings.enable_color_grading {
+                    ui.label("LUT Index:");
+                    ui.add(
+                        egui::DragValue::new(&mut renderer.settings.lut_index).clamp_range(-1..=15),
+                    );
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("Vignette Intensity:");
+                ui.add(egui::Slider::new(
+                    &mut renderer.settings.vignette_intensity,
+                    0.0..=1.0,
+                ));
+                ui.label("Smoothness:");
+                ui.add(egui::Slider::new(
+                    &mut renderer.settings.vignette_smoothness,
+                    0.0..=1.0,
+                ));
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("Chromatic Aberration:");
+                ui.add(egui::Slider::new(
+                    &mut renderer.settings.chromatic_aberration,
+                    0.0..=0.01,
+                ));
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("Film Grain:");
+                ui.add(egui::Slider::new(
+                    &mut renderer.settings.film_grain,
+                    0.0..=0.1,
+                ));
+            });
+
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_dof, "Depth of Field");
+                if renderer.settings.enable_dof {
+                    ui.label("Distance:");
+                    ui.add(egui::Slider::new(
+                        &mut renderer.settings.dof_focus_distance,
+                        0.1..=50.0,
+                    ));
+                    ui.label("Range:");
+                    ui.add(egui::Slider::new(
+                        &mut renderer.settings.dof_focus_range,
+                        0.1..=20.0,
+                    ));
+                    ui.label("Size:");
+                    ui.add(egui::Slider::new(
+                        &mut renderer.settings.dof_bokeh_size,
+                        1.0..=20.0,
+                    ));
+                }
+            });
+
+            ui.separator();
+            ui.heading("Environmental Effects");
+            ui.checkbox(&mut renderer.settings.enable_volumetric, "Volumetric Fog");
+            if renderer.settings.enable_volumetric {
+                ui.horizontal(|ui| {
+                    ui.label("Fog Color:");
+                    ui.color_edit_button_rgb(&mut renderer.settings.fog_color);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Density:");
+                    ui.add(egui::Slider::new(
+                        &mut renderer.settings.fog_density,
+                        0.0..=0.1,
+                    ));
+                    ui.label("Height Falloff:");
+                    ui.add(egui::Slider::new(
+                        &mut renderer.settings.fog_height_falloff,
+                        0.0..=1.0,
+                    ));
+                });
+            }
+
+            ui.separator();
+            ui.heading("General Features");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_shadows, "Shadows");
+                if renderer.settings.enable_shadows {
+                    ui.label("PCF:");
+                    egui::ComboBox::from_id_source("shadow_pcf")
+                        .selected_text(if renderer.settings.shadow_pcf_samples == 0 {
+                            "Hard"
+                        } else {
+                            "Soft (3x3)"
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut renderer.settings.shadow_pcf_samples,
+                                0,
+                                "Hard",
+                            );
+                            ui.selectable_value(
+                                &mut renderer.settings.shadow_pcf_samples,
+                                1,
+                                "Soft (3x3)",
+                            );
+                        });
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_ssao, "SSAO");
+                if renderer.settings.enable_ssao {
+                    ui.label("Radius:");
+                    ui.add(egui::Slider::new(
+                        &mut renderer.settings.ssao_radius,
+                        0.1..=2.0,
+                    ));
+                    ui.label("Strength:");
+                    ui.add(egui::Slider::new(
+                        &mut renderer.settings.ssao_strength,
+                        0.1..=5.0,
+                    ));
+                }
+            });
+            ui.checkbox(&mut renderer.settings.enable_taa, "TAA");
+            ui.checkbox(&mut renderer.settings.enable_grid, "Ground Grid");
+            ui.checkbox(&mut renderer.settings.enable_ibl, "IBL");
+
+            ui.separator();
+            ui.heading("Physics");
+            ui.horizontal(|ui| {
+                ui.label("Gravity:");
+                ui.add(
+                    egui::DragValue::new(&mut project.physics_settings.gravity.x)
+                        .speed(0.1)
+                        .prefix("X:"),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut project.physics_settings.gravity.y)
+                        .speed(0.1)
+                        .prefix("Y:"),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut project.physics_settings.gravity.z)
+                        .speed(0.1)
+                        .prefix("Z:"),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("Sim Freq (Hz):");
+                ui.add(egui::Slider::new(
+                    &mut project.physics_settings.simulation_frequency,
+                    10.0..=240.0,
+                ));
+            });
+
+            ui.separator();
+            ui.heading("Advanced Features");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_ssr, "SSR");
+                if renderer.settings.enable_ssr {
+                    ui.label("Steps:");
+                    ui.add(egui::DragValue::new(&mut renderer.settings.ssr_max_steps));
+                    ui.label("Step:");
+                    ui.add(egui::DragValue::new(&mut renderer.settings.ssr_step).speed(0.01));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_ssgi, "SSGI");
+                if renderer.settings.enable_ssgi {
+                    ui.label("Intensity:");
+                    ui.add(egui::Slider::new(
+                        &mut renderer.settings.ssgi_intensity,
+                        0.0..=2.0,
+                    ));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_motion_blur, "Motion Blur");
+                if renderer.settings.enable_motion_blur {
+                    ui.label("Strength:");
+                    ui.add(egui::Slider::new(
+                        &mut renderer.settings.motion_blur_strength,
+                        0.0..=1.0,
+                    ));
+                }
+            });
+
+            ui.separator();
+            ui.heading("Ray Tracing");
+            ui.horizontal(|ui| {
+                ui.checkbox(
+                    &mut renderer.settings.enable_rt_reflections,
+                    "RT Reflections",
+                );
+                ui.checkbox(&mut renderer.settings.enable_rt_shadows, "RT Shadows");
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_rt_ao, "RT Ambient Occlusion");
+                ui.checkbox(
+                    &mut renderer.settings.enable_rt_gi,
+                    "RT Global Illumination",
+                );
+            });
+        });
+    }
+
+    fn draw_statistics_tab(
+        &mut self,
+        ui: &mut Ui,
+        renderer: &mut spark_renderer::Renderer,
+        fps: f32,
+    ) {
+        ui.horizontal(|ui| {
+            ui.label("Camera Speed:");
+            ui.add(egui::Slider::new(&mut self.camera_speed, 0.01..=1.0));
+        });
+        ui.separator();
+        ui.label(format!("FPS: {:.1}", fps));
+        ui.label(format!("Active Objects: {}", renderer.last_object_count));
+        ui.label("Draw Calls: TODO");
+        ui.label("GPU Memory: TODO");
+    }
+
     fn draw_component_editor(
         &mut self,
         ui: &mut Ui,
@@ -1540,157 +1536,178 @@ impl EditorUI {
     ) {
         let any = component.as_any_mut();
         if let Some(light) = any.downcast_mut::<spark_core::scene::LightComponent>() {
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Type:");
-                    egui::ComboBox::from_id_source("light_type")
-                        .selected_text(format!("{:?}", light.light_type))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut light.light_type,
-                                spark_core::scene::LightType::Directional,
-                                "Directional",
-                            );
-                            ui.selectable_value(
-                                &mut light.light_type,
-                                spark_core::scene::LightType::Point,
-                                "Point",
-                            );
-                            ui.selectable_value(
-                                &mut light.light_type,
-                                spark_core::scene::LightType::Spot,
-                                "Spot",
-                            );
-                        });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Color:");
-                    ui.color_edit_button_rgb(light.color.as_mut());
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Intensity:");
-                    ui.add(
-                        egui::DragValue::new(&mut light.intensity)
-                            .speed(0.1)
-                            .clamp_range(0.0..=f32::MAX),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Range:");
-                    ui.add(
-                        egui::DragValue::new(&mut light.range)
-                            .speed(0.1)
-                            .clamp_range(0.0..=f32::MAX),
-                    );
-                });
-                if let spark_core::scene::LightType::Spot = light.light_type {
-                    ui.horizontal(|ui| {
-                        ui.label("Inner Angle:");
-                        ui.add(egui::Slider::new(&mut light.spot_inner_angle, 0.0..=180.0));
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Outer Angle:");
-                        ui.add(egui::Slider::new(&mut light.spot_outer_angle, 0.0..=180.0));
-                    });
-                }
-            });
+            self.draw_light_editor(ui, light);
         } else if let Some(mesh) = any.downcast_mut::<spark_core::scene::MeshComponent>() {
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Radius:");
-                    ui.add(egui::DragValue::new(&mut mesh.bounding_radius).speed(0.1));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Material:");
-                    let mat_name = mesh
-                        .material_index
-                        .and_then(|idx| {
-                            asset_manager
-                                .materials
-                                .get(spark_core::resource::Handle::new(idx))
-                                .map(|m| m.name.clone())
-                        })
-                        .unwrap_or_else(|| "None".to_string());
-
-                    egui::ComboBox::from_id_source(format!("mesh_mat_{:?}", mesh as *const _))
-                        .selected_text(mat_name)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut mesh.material_index, None, "None");
-                            for idx in 0..asset_manager.materials.assets_len() {
-                                if let Some(mat) = asset_manager
-                                    .materials
-                                    .get(spark_core::resource::Handle::new(idx as u32))
-                                {
-                                    ui.selectable_value(
-                                        &mut mesh.material_index,
-                                        Some(idx as u32),
-                                        &mat.name,
-                                    );
-                                }
-                            }
-                        });
-                });
-            });
+            self.draw_mesh_editor(ui, mesh, asset_manager);
         } else if let Some(camera) = any.downcast_mut::<spark_core::scene::CameraComponent>() {
-            ui.vertical(|ui| {
-                ui.checkbox(&mut camera.orthographic, "Orthographic");
-                if camera.orthographic {
-                    ui.horizontal(|ui| {
-                        ui.label("Ortho Size:");
-                        ui.add(
-                            egui::DragValue::new(&mut camera.ortho_size)
-                                .speed(0.1)
-                                .clamp_range(0.0..=f32::MAX),
+            self.draw_camera_editor(ui, camera);
+        } else if let Some(sprite) = any.downcast_mut::<spark_core::scene::SpriteComponent>() {
+            self.draw_sprite_editor(ui, sprite);
+        }
+    }
+
+    fn draw_light_editor(&self, ui: &mut Ui, light: &mut spark_core::scene::LightComponent) {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("Type:");
+                egui::ComboBox::from_id_source("light_type")
+                    .selected_text(format!("{:?}", light.light_type))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut light.light_type,
+                            spark_core::scene::LightType::Directional,
+                            "Directional",
+                        );
+                        ui.selectable_value(
+                            &mut light.light_type,
+                            spark_core::scene::LightType::Point,
+                            "Point",
+                        );
+                        ui.selectable_value(
+                            &mut light.light_type,
+                            spark_core::scene::LightType::Spot,
+                            "Spot",
                         );
                     });
-                } else {
-                    ui.horizontal(|ui| {
-                        ui.label("FOV:");
-                        ui.add(egui::Slider::new(&mut camera.fov, 1.0..=179.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Color:");
+                ui.color_edit_button_rgb(light.color.as_mut());
+            });
+            ui.horizontal(|ui| {
+                ui.label("Intensity:");
+                ui.add(
+                    egui::DragValue::new(&mut light.intensity)
+                        .speed(0.1)
+                        .clamp_range(0.0..=f32::MAX),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("Range:");
+                ui.add(
+                    egui::DragValue::new(&mut light.range)
+                        .speed(0.1)
+                        .clamp_range(0.0..=f32::MAX),
+                );
+            });
+            if let spark_core::scene::LightType::Spot = light.light_type {
+                ui.horizontal(|ui| {
+                    ui.label("Inner Angle:");
+                    ui.add(egui::Slider::new(&mut light.spot_inner_angle, 0.0..=180.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Outer Angle:");
+                    ui.add(egui::Slider::new(&mut light.spot_outer_angle, 0.0..=180.0));
+                });
+            }
+        });
+    }
+
+    fn draw_mesh_editor(
+        &self,
+        ui: &mut Ui,
+        mesh: &mut spark_core::scene::MeshComponent,
+        asset_manager: &spark_core::asset::AssetManager,
+    ) {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("Radius:");
+                ui.add(egui::DragValue::new(&mut mesh.bounding_radius).speed(0.1));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Material:");
+                let mat_name = mesh
+                    .material_index
+                    .and_then(|idx| {
+                        asset_manager
+                            .materials
+                            .get(spark_core::resource::Handle::new(idx))
+                            .map(|m| m.name.clone())
+                    })
+                    .unwrap_or_else(|| "None".to_string());
+
+                egui::ComboBox::from_id_source(format!("mesh_mat_{:?}", mesh as *const _))
+                    .selected_text(mat_name)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut mesh.material_index, None, "None");
+                        for idx in 0..asset_manager.materials.assets_len() {
+                            if let Some(mat) = asset_manager
+                                .materials
+                                .get(spark_core::resource::Handle::new(idx as u32))
+                            {
+                                ui.selectable_value(
+                                    &mut mesh.material_index,
+                                    Some(idx as u32),
+                                    &mat.name,
+                                );
+                            }
+                        }
                     });
-                }
+            });
+        });
+    }
+
+    fn draw_camera_editor(&self, ui: &mut Ui, camera: &mut spark_core::scene::CameraComponent) {
+        ui.vertical(|ui| {
+            ui.checkbox(&mut camera.orthographic, "Orthographic");
+            if camera.orthographic {
                 ui.horizontal(|ui| {
-                    ui.label("Near:");
+                    ui.label("Ortho Size:");
                     ui.add(
-                        egui::DragValue::new(&mut camera.near)
-                            .speed(0.01)
+                        egui::DragValue::new(&mut camera.ortho_size)
+                            .speed(0.1)
                             .clamp_range(0.0..=f32::MAX),
                     );
                 });
+            } else {
                 ui.horizontal(|ui| {
-                    ui.label("Far:");
-                    ui.add(
-                        egui::DragValue::new(&mut camera.far)
-                            .speed(1.0)
-                            .clamp_range(0.0..=f32::MAX),
-                    );
+                    ui.label("FOV:");
+                    ui.add(egui::Slider::new(&mut camera.fov, 1.0..=179.0));
                 });
+            }
+            ui.horizontal(|ui| {
+                ui.label("Near:");
+                ui.add(
+                    egui::DragValue::new(&mut camera.near)
+                        .speed(0.01)
+                        .clamp_range(0.0..=f32::MAX),
+                );
             });
-        } else if let Some(sprite) = any.downcast_mut::<spark_core::scene::SpriteComponent>() {
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Color:");
-                    ui.color_edit_button_rgba_unmultiplied(&mut sprite.color);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Size:");
-                    ui.add(
-                        egui::DragValue::new(&mut sprite.size.x)
-                            .speed(0.1)
-                            .prefix("W:"),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut sprite.size.y)
-                            .speed(0.1)
-                            .prefix("H:"),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut sprite.flip_x, "Flip X");
-                    ui.checkbox(&mut sprite.flip_y, "Flip Y");
-                });
+            ui.horizontal(|ui| {
+                ui.label("Far:");
+                ui.add(
+                    egui::DragValue::new(&mut camera.far)
+                        .speed(1.0)
+                        .clamp_range(0.0..=f32::MAX),
+                );
             });
-        }
+        });
+    }
+
+    fn draw_sprite_editor(&self, ui: &mut Ui, sprite: &mut spark_core::scene::SpriteComponent) {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("Color:");
+                ui.color_edit_button_rgba_unmultiplied(&mut sprite.color);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Size:");
+                ui.add(
+                    egui::DragValue::new(&mut sprite.size.x)
+                        .speed(0.1)
+                        .prefix("W:"),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut sprite.size.y)
+                        .speed(0.1)
+                        .prefix("H:"),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut sprite.flip_x, "Flip X");
+                ui.checkbox(&mut sprite.flip_y, "Flip Y");
+            });
+        });
     }
 
     fn draw_node_tree_recursive(
@@ -1701,33 +1718,7 @@ impl EditorUI {
         search: &str,
     ) {
         let (label, children, icon) = if let Some(node) = scene.nodes.get(node_key) {
-            let icon = if node
-                .components
-                .iter()
-                .any(|c| c.as_any().is::<spark_core::scene::CameraComponent>())
-            {
-                "🎥"
-            } else if node
-                .components
-                .iter()
-                .any(|c| c.as_any().is::<spark_core::scene::LightComponent>())
-            {
-                "💡"
-            } else if node
-                .components
-                .iter()
-                .any(|c| c.as_any().is::<spark_core::scene::SpriteComponent>())
-            {
-                "🖼"
-            } else if node
-                .components
-                .iter()
-                .any(|c| c.as_any().is::<spark_core::scene::MeshComponent>())
-            {
-                "📦"
-            } else {
-                "⭕"
-            };
+            let icon = self.get_node_icon(node);
             (node.name.clone(), node.children.clone(), icon)
         } else {
             return;
@@ -1738,99 +1729,7 @@ impl EditorUI {
             search.is_empty() || label.to_lowercase().contains(&search.to_lowercase());
 
         if matches_search {
-            ui.horizontal(|ui| {
-                ui.label(icon);
-
-                let mut visible = true;
-                let mut locked = false;
-                if let Some(node) = scene.nodes.get_mut(node_key) {
-                    visible = node.visible;
-                    locked = node.locked;
-                }
-
-                if ui.button(if visible { "👁" } else { "👓" }).clicked() {
-                    if let Some(node) = scene.nodes.get_mut(node_key) {
-                        node.visible = !node.visible;
-                    }
-                }
-                if ui.button(if locked { "🔒" } else { "🔓" }).clicked() {
-                    if let Some(node) = scene.nodes.get_mut(node_key) {
-                        node.locked = !node.locked;
-                    }
-                }
-
-                let response = ui.selectable_label(is_selected, &label);
-
-                let mut delete_requested = false;
-                response.context_menu(|ui| {
-                    if ui.button("Duplicate").clicked() {
-                        self.node_to_duplicate = Some(node_key);
-                        ui.close_menu();
-                    }
-                    if ui.button("Delete").clicked() {
-                        delete_requested = true;
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Add Child Mesh").clicked() {
-                        self.node_to_add_child = Some((node_key, NodeType::Mesh));
-                        ui.close_menu();
-                    }
-                    if ui.button("Add Child Light").clicked() {
-                        self.node_to_add_child = Some((node_key, NodeType::Light));
-                        ui.close_menu();
-                    }
-                    if ui.button("Add Child Sprite").clicked() {
-                        self.node_to_add_child = Some((node_key, NodeType::Sprite));
-                        ui.close_menu();
-                    }
-                });
-
-                if delete_requested {
-                    self.node_to_delete = Some(node_key);
-                }
-
-                if response.clicked() {
-                    self.selected_node = Some(node_key);
-                }
-
-                response.dnd_set_drag_payload(node_key);
-                if let Some(payload) = response.dnd_hover_payload::<NodeKey>() {
-                    let dragged_key = *payload;
-                    if ui.input(|i| i.pointer.any_released()) && dragged_key != node_key {
-                        // Reparenting logic
-                        let mut can_reparent = true;
-                        // Check for cycles
-                        let mut current = Some(node_key);
-                        while let Some(k) = current {
-                            if k == dragged_key {
-                                can_reparent = false;
-                                break;
-                            }
-                            current = scene.nodes.get(k).and_then(|n| n.parent);
-                        }
-
-                        if can_reparent {
-                            // Remove from old parent
-                            let old_parent = scene.nodes.get(dragged_key).and_then(|n| n.parent);
-                            if let Some(opk) = old_parent {
-                                if let Some(op) = scene.nodes.get_mut(opk) {
-                                    op.children.retain(|&k| k != dragged_key);
-                                }
-                            }
-
-                            // Set new parent
-                            if let Some(n) = scene.nodes.get_mut(dragged_key) {
-                                n.parent = Some(node_key);
-                            }
-                            if let Some(p) = scene.nodes.get_mut(node_key) {
-                                p.children.push(dragged_key);
-                            }
-                            scene.update_all_transforms();
-                        }
-                    }
-                }
-            });
+            self.draw_node_item(ui, scene, node_key, &label, is_selected, icon);
         }
 
         for &child_key in &children {
@@ -1848,6 +1747,139 @@ impl EditorUI {
                 self.draw_node_tree_recursive(ui, scene, child_key, search);
             });
         }
+    }
+
+    fn get_node_icon(&self, node: &Node) -> &'static str {
+        if node
+            .components
+            .iter()
+            .any(|c| c.as_any().is::<spark_core::scene::CameraComponent>())
+        {
+            "🎥"
+        } else if node
+            .components
+            .iter()
+            .any(|c| c.as_any().is::<spark_core::scene::LightComponent>())
+        {
+            "💡"
+        } else if node
+            .components
+            .iter()
+            .any(|c| c.as_any().is::<spark_core::scene::SpriteComponent>())
+        {
+            "🖼"
+        } else if node
+            .components
+            .iter()
+            .any(|c| c.as_any().is::<spark_core::scene::MeshComponent>())
+        {
+            "📦"
+        } else {
+            "⭕"
+        }
+    }
+
+    fn draw_node_item(
+        &mut self,
+        ui: &mut egui::Ui,
+        scene: &mut Scene,
+        node_key: NodeKey,
+        label: &str,
+        is_selected: bool,
+        icon: &str,
+    ) {
+        ui.horizontal(|ui| {
+            ui.label(icon);
+
+            let (visible, locked) = if let Some(node) = scene.nodes.get_mut(node_key) {
+                (node.visible, node.locked)
+            } else {
+                (true, false)
+            };
+
+            if ui.button(if visible { "👁" } else { "👓" }).clicked() {
+                if let Some(node) = scene.nodes.get_mut(node_key) {
+                    node.visible = !node.visible;
+                }
+            }
+            if ui.button(if locked { "🔒" } else { "🔓" }).clicked() {
+                if let Some(node) = scene.nodes.get_mut(node_key) {
+                    node.locked = !node.locked;
+                }
+            }
+
+            let response = ui.selectable_label(is_selected, label);
+
+            let mut delete_requested = false;
+            response.context_menu(|ui| {
+                if ui.button("Duplicate").clicked() {
+                    self.node_to_duplicate = Some(node_key);
+                    ui.close_menu();
+                }
+                if ui.button("Delete").clicked() {
+                    delete_requested = true;
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("Add Child Mesh").clicked() {
+                    self.node_to_add_child = Some((node_key, NodeType::Mesh));
+                    ui.close_menu();
+                }
+                if ui.button("Add Child Light").clicked() {
+                    self.node_to_add_child = Some((node_key, NodeType::Light));
+                    ui.close_menu();
+                }
+                if ui.button("Add Child Sprite").clicked() {
+                    self.node_to_add_child = Some((node_key, NodeType::Sprite));
+                    ui.close_menu();
+                }
+            });
+
+            if delete_requested {
+                self.node_to_delete = Some(node_key);
+            }
+
+            if response.clicked() {
+                self.selected_node = Some(node_key);
+            }
+
+            response.dnd_set_drag_payload(node_key);
+            if let Some(payload) = response.dnd_hover_payload::<NodeKey>() {
+                let dragged_key = *payload;
+                if ui.input(|i| i.pointer.any_released()) && dragged_key != node_key {
+                    // Reparenting logic
+                    let mut can_reparent = true;
+                    // Check for cycles
+                    let mut current = Some(node_key);
+                    while let Some(k) = current {
+                        if k == dragged_key {
+                            can_reparent = false;
+                            break;
+                        }
+                        current = scene.nodes.get(k).and_then(|n| n.parent);
+                    }
+
+                    if can_reparent {
+                        // Remove from old parent
+                        let old_parent = scene.nodes.get(dragged_key).and_then(|n| n.parent);
+                        if let Some(opk) = old_parent {
+                            if let Some(op) = scene.nodes.get_mut(opk) {
+                                op.children.retain(|&k| k != dragged_key);
+                            }
+                        }
+
+                        // Set new parent
+                        if let Some(n) = scene.nodes.get_mut(dragged_key) {
+                            n.parent = Some(node_key);
+                        }
+                        if let Some(p) = scene.nodes.get_mut(node_key) {
+                            p.children.push(dragged_key);
+                        }
+                        scene.update_all_transforms();
+                    }
+                }
+            }
+        });
     }
 
     pub fn draw_viewport(

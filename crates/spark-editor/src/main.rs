@@ -89,6 +89,38 @@ fn main() {
     let _task_system = spark_core::task::TaskSystem::new();
     let compiler = ShaderCompiler::new();
 
+    let mut app = create_app(&compiler, logs.clone());
+
+    setup_renderer_passes(&mut app, &compiler);
+    setup_initial_scene(&mut app);
+
+    let mut ui = EditorUI::new(&app.engine.window, logs);
+    setup_viewport(&mut app, &mut ui);
+
+    let _script_host = ScriptHost::new();
+
+    app.run_with_ui(
+        move |window, event, scene, rm, am, renderer, project, _resources, fps| match event {
+            winit::event::Event::WindowEvent { event, .. } => {
+                (ui.handle_event(window, event), None)
+            }
+            winit::event::Event::AboutToWait => {
+                ui.begin_frame(window);
+                ui.draw_ui(scene, rm, am, renderer, project, fps);
+                ui.draw_viewport(scene, renderer, fps);
+
+                let full_output = ui.end_frame(window);
+                (false, Some((full_output, ui.egui_ctx.clone())))
+            }
+            _ => (false, None),
+        },
+    );
+}
+
+fn create_app(
+    compiler: &ShaderCompiler,
+    logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) -> App {
     let ui_vert_spirv = compiler
         .compile("assets/shaders/ui.vert", shaderc::ShaderKind::Vertex)
         .expect("Failed to compile UI vertex shader");
@@ -97,11 +129,11 @@ fn main() {
         .expect("Failed to compile UI fragment shader");
 
     let mut app = App::with_ui_shaders("Spark Engine Editor", &ui_vert_spirv, &ui_frag_spirv);
+    app = app.add_plugin(EditorPlugin { _logs: logs });
+    app
+}
 
-    app = app.add_plugin(EditorPlugin {
-        _logs: logs.clone(),
-    });
-
+fn setup_renderer_passes(app: &mut App, compiler: &ShaderCompiler) {
     let mut def_options = shaderc::CompileOptions::new().unwrap();
     let msaa_count = match app.engine.renderer.get_msaa_samples() {
         ash::vk::SampleCountFlags::TYPE_1 => 1,
@@ -282,7 +314,9 @@ fn main() {
         .renderer
         .setup_default_passes(shaders)
         .expect("Failed to setup render passes");
+}
 
+fn setup_initial_scene(app: &mut App) {
     use spark_math::{Mat4, Vec2, Vec3};
     use spark_renderer::vertex::Vertex;
 
@@ -366,10 +400,9 @@ fn main() {
     app.engine
         .scene
         .add_node(app.engine.scene.root, _camera_node);
+}
 
-    let _script_host = ScriptHost::new();
-
-    let mut ui = EditorUI::new(&app.engine.window, logs);
+fn setup_viewport(app: &mut App, ui: &mut EditorUI) {
     app.engine.renderer.create_viewport_attachment(1280, 720);
     let viewport_view = app
         .engine
@@ -383,22 +416,5 @@ fn main() {
         app.engine
             .renderer
             .register_egui_texture(viewport_view, viewport_sampler),
-    );
-
-    app.run_with_ui(
-        move |window, event, scene, rm, am, renderer, project, _resources, fps| match event {
-            winit::event::Event::WindowEvent { event, .. } => {
-                (ui.handle_event(window, event), None)
-            }
-            winit::event::Event::AboutToWait => {
-                ui.begin_frame(window);
-                ui.draw_ui(scene, rm, am, renderer, project, fps);
-                ui.draw_viewport(scene, renderer, fps);
-
-                let full_output = ui.end_frame(window);
-                (false, Some((full_output, ui.egui_ctx.clone())))
-            }
-            _ => (false, None),
-        },
     );
 }
