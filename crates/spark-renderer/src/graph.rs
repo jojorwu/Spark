@@ -344,7 +344,9 @@ impl RenderGraph {
         for &idx in &self.sorted_passes {
             let pass_node = &self.passes[idx];
 
-            // Automatic Descriptor Updates
+            // 1. Automatic Descriptor Updates
+            // Only update if resources have actually changed (handled inside update_descriptor_sets or similar logic)
+            // For now, we perform automated binding matching.
             if !pass_node.descriptor_sets.is_empty() {
                 let ds = pass_node.descriptor_sets[ctx.current_frame];
                 let bindings = pass_node.pass.bindings();
@@ -492,7 +494,7 @@ impl RenderGraph {
                 }
             }
 
-            // Automated Barrier Injection
+            // 2. Automated Image Barrier Injection
             for (mut res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_access() {
                 if let Some(alias) = self.aliased_resources.get(&res_name) {
                     res_name = alias.clone();
@@ -548,6 +550,27 @@ impl RenderGraph {
                         .device
                         .device
                         .cmd_execute_commands(ctx.command_buffer, &secondary_commands[idx]);
+                }
+            }
+
+            // 3. Automated Buffer Barrier Injection
+            for (res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_buffer_access() {
+                if let Some(buffer) = renderer.get_resource_buffer(pass_node.pass.name(), &res_name, ctx.current_frame) {
+                    let barrier = vk::BufferMemoryBarrier2::default()
+                        .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                        .src_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
+                        .dst_stage_mask(vk::PipelineStageFlags2::from_raw(dst_stage.as_raw() as u64))
+                        .dst_access_mask(vk::AccessFlags2::from_raw(dst_access.as_raw() as u64))
+                        .buffer(buffer.handle)
+                        .offset(0)
+                        .size(buffer.size);
+
+                    let dependency_info = vk::DependencyInfo::default()
+                        .buffer_memory_barriers(std::slice::from_ref(&barrier));
+
+                    unsafe {
+                        renderer.device.device.cmd_pipeline_barrier2(ctx.command_buffer, &dependency_info);
+                    }
                 }
             }
 

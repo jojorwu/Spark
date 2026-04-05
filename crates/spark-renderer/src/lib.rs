@@ -51,6 +51,7 @@ pub struct Renderer {
     egui_renderer: Option<EguiRenderer>,
     pub viewport_attachment: Option<Attachment>,
     pub ibl_maps: Option<crate::vulkan::ibl::IBLMaps>,
+    /// Global settings for the renderer (Bloom, Shadows, Post-FX, etc.)
     pub settings: RenderSettings,
     pub main_light_view_proj: spark_math::Mat4,
     pub current_view_proj: spark_math::Mat4,
@@ -75,10 +76,11 @@ pub struct GlobalUBO {
 }
 
 impl Renderer {
-    /// Cascaded shadow map texture size.
+    /// Cascaded shadow map texture size. Default is 2048x2048.
     pub const SHADOW_MAP_CASCADE_SIZE: u32 = 2048;
 
     /// Creates a new Renderer instance.
+    /// Initializes Vulkan context, device, swapchain, and core resource managers.
     pub fn new(
         window: &Window,
         ui_shaders: Option<(&[u32], &[u32])>,
@@ -779,6 +781,13 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Executes the full rendering frame.
+    /// Handles synchronization, image acquisition, command recording, and presentation.
+    ///
+    /// # Arguments
+    /// * `window` - The window to render to.
+    /// * `egui_output` - Optional UI data to render on top of the scene.
+    /// * `delta` - Time since last frame for temporal effects (TAA, Blur).
     pub fn draw_frame(
         &mut self,
         window: &Window,
@@ -1496,6 +1505,7 @@ impl Renderer {
         self.scene_view_matrix_for_pos = packet.view_matrix;
 
         // 1. Prepare GPU Indirect and Object buffers in parallel
+        // We use rayon to parallelize the transformation of MeshDraw to GPU-friendly SSBO and Indirect commands.
         let (object_ssbos, indirect_commands): (Vec<_>, Vec<_>) = packet
             .opaque_meshes
             .par_iter()
@@ -1527,6 +1537,7 @@ impl Renderer {
         let total_objects = object_ssbos.len() as u32;
 
         // 1.1 Prepare Transparent buffers (with simple back-to-front sorting)
+        // Transparency requires back-to-front sorting for correct alpha blending.
         let mut transparent_meshes = packet.transparent_meshes.clone();
         let view_pos = packet.view_matrix.inverse().w_axis.xyz();
         transparent_meshes.par_sort_by(|a, b| {

@@ -9,6 +9,15 @@ impl RenderPass for ClusteredPass {
     fn name(&self) -> &str {
         "ClusteredPass"
     }
+
+    fn gpu_resource_buffer_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![
+            ("light_grid".to_string(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::COMPUTE_SHADER),
+            ("index_list".to_string(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::COMPUTE_SHADER),
+            ("Lights".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::COMPUTE_SHADER),
+        ]
+    }
+
     fn prepare(&self, renderer: &Renderer, _current_frame: usize) {
         if let Some(ref lb) =
             renderer.frame_manager.frames[renderer.frame_manager.current_frame].light_buffer

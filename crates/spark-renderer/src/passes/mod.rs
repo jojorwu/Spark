@@ -77,6 +77,11 @@ pub trait RenderPass: Send + Sync {
         Vec::new()
     }
 
+    /// Declarative GPU buffer resource requirements for the pass.
+    fn gpu_resource_buffer_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        Vec::new()
+    }
+
     /// Returns the list of resource bindings required by this pass.
     fn bindings(&self) -> Vec<ResourceBinding> {
         Vec::new()
