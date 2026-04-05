@@ -80,7 +80,10 @@ impl SystemRegistry {
             let mut reverse_before: HashMap<String, Vec<usize>> = HashMap::new();
             for (i, system) in stage_systems.iter().enumerate() {
                 for before in system.run_before() {
-                    reverse_before.entry(before.to_string()).or_default().push(i);
+                    reverse_before
+                        .entry(before.to_string())
+                        .or_default()
+                        .push(i);
                 }
             }
 
@@ -102,14 +105,30 @@ impl SystemRegistry {
                     // 1. Explicit dependencies
                     for dep in systems[idx].dependencies() {
                         if let Some(&dep_idx) = name_to_idx.get(dep) {
-                            visit(dep_idx, systems, name_to_idx, ordered, visited, temp_visited, reverse_before);
+                            visit(
+                                dep_idx,
+                                systems,
+                                name_to_idx,
+                                ordered,
+                                visited,
+                                temp_visited,
+                                reverse_before,
+                            );
                         }
                     }
 
                     // 2. run_after labels
                     for after in systems[idx].run_after() {
                         if let Some(&after_idx) = name_to_idx.get(after) {
-                            visit(after_idx, systems, name_to_idx, ordered, visited, temp_visited, reverse_before);
+                            visit(
+                                after_idx,
+                                systems,
+                                name_to_idx,
+                                ordered,
+                                visited,
+                                temp_visited,
+                                reverse_before,
+                            );
                         }
                     }
 
@@ -119,11 +138,19 @@ impl SystemRegistry {
                         // So if we are visiting A, we need to visit B first.
                         // reverse_before maps A -> [B]
                         for &before_idx in others {
-                             // This is actually wrong in my head. If B runs before A, A depends on B.
-                             // Wait, no. If B says "run_before A", then A should be visited *after* B.
-                             // So A depends on B.
-                             // Correct.
-                             visit(before_idx, systems, name_to_idx, ordered, visited, temp_visited, reverse_before);
+                            // This is actually wrong in my head. If B runs before A, A depends on B.
+                            // Wait, no. If B says "run_before A", then A should be visited *after* B.
+                            // So A depends on B.
+                            // Correct.
+                            visit(
+                                before_idx,
+                                systems,
+                                name_to_idx,
+                                ordered,
+                                visited,
+                                temp_visited,
+                                reverse_before,
+                            );
                         }
                     }
 

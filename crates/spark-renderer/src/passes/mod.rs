@@ -130,7 +130,11 @@ pub trait RenderPass: Send + Sync {
     }
 
     /// Retrieves a specific buffer resource from the pass for cross-pass communication.
-    fn get_resource_buffer(&self, _name: &str, _frame_index: usize) -> Option<crate::resource::Buffer> {
+    fn get_resource_buffer(
+        &self,
+        _name: &str,
+        _frame_index: usize,
+    ) -> Option<crate::resource::Buffer> {
         None
     }
 

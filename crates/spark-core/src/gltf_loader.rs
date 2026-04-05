@@ -1,8 +1,8 @@
-use std::path::{Path, PathBuf};
-use crate::resource::ResourceManager;
 use crate::asset::AssetManager;
+use crate::resource::ResourceManager;
 use crate::scene::Scene;
 use spark_renderer::Renderer;
+use std::path::{Path, PathBuf};
 
 pub struct GltfLoader;
 
@@ -247,7 +247,9 @@ impl GltfLoader {
 
         let key = scene_tree.add_node(parent, spark_node);
         for child in node.children() {
-            Self::process_node(rm, am, child, buffers, scene_tree, key, renderer, parent_dir);
+            Self::process_node(
+                rm, am, child, buffers, scene_tree, key, renderer, parent_dir,
+            );
         }
     }
 }

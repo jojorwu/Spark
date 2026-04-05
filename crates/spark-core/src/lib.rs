@@ -1,9 +1,9 @@
 pub mod asset;
-pub mod gltf_loader;
 pub mod command;
 pub mod event;
 pub mod event_bus;
 pub mod event_mapper;
+pub mod gltf_loader;
 pub mod input;
 pub mod logger;
 pub mod prefab;
@@ -566,7 +566,11 @@ impl Engine {
 
     /// Handles the transition at the start of a frame, including event buffer swapping,
     /// state changes, and update/render execution.
-    fn on_frame_start(&mut self, delta: f32, egui_output: Option<(egui::FullOutput, egui::Context)>) {
+    fn on_frame_start(
+        &mut self,
+        delta: f32,
+        egui_output: Option<(egui::FullOutput, egui::Context)>,
+    ) {
         self.event_bus.swap_buffers();
 
         {
@@ -578,7 +582,10 @@ impl Engine {
                 resources: &mut self.resources,
                 task_system: &self.task_system,
             };
-            crate::systems::Scheduler::apply_state_changes(&mut self.system_registry, &mut init_ctx);
+            crate::systems::Scheduler::apply_state_changes(
+                &mut self.system_registry,
+                &mut init_ctx,
+            );
         }
 
         self.update_phase(delta);
@@ -676,9 +683,11 @@ impl Engine {
         };
 
         // Collect visibility and light data
-        let mut packet = self
-            .scene
-            .collect_frame_packet(frustum_ref, &self.resource_manager, &self.asset_manager);
+        let mut packet = self.scene.collect_frame_packet(
+            frustum_ref,
+            &self.resource_manager,
+            &self.asset_manager,
+        );
         packet.projection_matrix = projection_matrix;
         let total_objects = self.renderer.prepare_frame(packet);
 

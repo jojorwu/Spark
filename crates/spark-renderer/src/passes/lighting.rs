@@ -152,7 +152,6 @@ impl LightingPass {
         );
         self.pipeline = Some(deferred_pipeline.graphics_pipeline);
     }
-
 }
 
 impl RenderPass for LightingPass {

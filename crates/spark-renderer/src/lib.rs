@@ -1120,12 +1120,46 @@ impl Renderer {
         let rgba = img.to_rgba8();
         let pix = rgba.as_raw();
         let sz = pix.len() as u64;
-        let st = self.create_buffer(
-            sz,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        );
-        self.upload_to_buffer(&st, pix);
+
+        let frame_idx = self.frame_manager.current_frame;
+        // Optimization: Calculating capacity without a mutable borrow first to avoid RefCell/Mutex overhead here.
+        let needs_new = {
+            let f = &self.frame_manager.frames[frame_idx];
+            f.texture_staging_buffer.is_none()
+                || f.texture_staging_buffer.as_ref().unwrap().size < sz
+        };
+
+        if needs_new {
+            // This is safe because we're calling from a thread that has access to self
+            // and we're not currently in a parallel loop that could conflict.
+            let self_ptr = self as *const Self as *mut Self;
+            unsafe {
+                let old_buffer = (*self_ptr).frame_manager.frames[frame_idx]
+                    .texture_staging_buffer
+                    .take();
+                if let Some(old) = old_buffer {
+                    (*self_ptr).device.destroy_buffer(old);
+                }
+
+                let new_buffer = (*self_ptr).create_buffer(
+                    sz.max(1024 * 1024), // Min 1MB
+                    vk::BufferUsageFlags::TRANSFER_SRC,
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                );
+                (*self_ptr).frame_manager.frames[frame_idx].texture_staging_buffer =
+                    Some(new_buffer);
+            }
+        }
+
+        let frame = &self.frame_manager.frames[frame_idx];
+        let st = frame.texture_staging_buffer.as_ref().unwrap();
+        let st_ptr = st.ptr;
+        let st_handle = st.handle;
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(pix.as_ptr(), st_ptr as *mut u8, pix.len());
+        }
+
         let (i, m) = self.create_image_basic(&crate::vulkan::device::ImageCreateParams {
             width: w,
             height: h,
@@ -1148,7 +1182,7 @@ impl Renderer {
         unsafe {
             self.device.device.cmd_copy_buffer_to_image(
                 cb,
-                st.handle,
+                st_handle,
                 i,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[vk::BufferImageCopy::default()
@@ -1169,9 +1203,14 @@ impl Renderer {
         self.generate_mipmaps(i, vk::Format::R8G8B8A8_SRGB, w, h, mip);
         let v = self.create_image_view_basic(i, vk::Format::R8G8B8A8_SRGB, mip);
         let s = self.create_texture_sampler(mip);
-        self.destroy_buffer(st);
 
-        let bindless_index = if let Some(idx) = self.gpu_resource_manager.free_bindless_indices.lock().unwrap().pop() {
+        let bindless_index = if let Some(idx) = self
+            .gpu_resource_manager
+            .free_bindless_indices
+            .lock()
+            .unwrap()
+            .pop()
+        {
             idx
         } else {
             let idx = self
@@ -1213,7 +1252,11 @@ impl Renderer {
             .texture_descriptor_sets
             .remove(&t.view);
 
-        self.gpu_resource_manager.free_bindless_indices.lock().unwrap().push(t.bindless_index);
+        self.gpu_resource_manager
+            .free_bindless_indices
+            .lock()
+            .unwrap()
+            .push(t.bindless_index);
 
         unsafe {
             self.device.device.destroy_sampler(t.sampler, None);
@@ -1404,7 +1447,10 @@ impl Renderer {
         resource_name: &str,
         frame_index: usize,
     ) -> Option<vk::ImageView> {
-        let resource_name = self.render_graph.aliased_resources.get(resource_name)
+        let resource_name = self
+            .render_graph
+            .aliased_resources
+            .get(resource_name)
             .map(|s| s.as_str())
             .unwrap_or(resource_name);
 
@@ -1425,12 +1471,19 @@ impl Renderer {
         None
     }
 
-    pub fn get_resource_buffer(&self, _pass_name: &str, resource_name: &str, frame_index: usize) -> Option<Buffer> {
+    pub fn get_resource_buffer(
+        &self,
+        _pass_name: &str,
+        resource_name: &str,
+        frame_index: usize,
+    ) -> Option<Buffer> {
         if resource_name == "light_buffer" || resource_name == "Lights" {
             return self.frame_manager.frames[frame_index].light_buffer.clone();
         }
         if resource_name == "object_data_buffer" || resource_name == "MeshData" {
-            return self.frame_manager.frames[frame_index].object_data_buffer.clone();
+            return self.frame_manager.frames[frame_index]
+                .object_data_buffer
+                .clone();
         }
         if resource_name == "Vertices" {
             return self.gpu_resource_manager.global_vertex_buffer.clone();
@@ -1443,7 +1496,10 @@ impl Renderer {
         }
 
         for pass_node in &self.render_graph.passes {
-            if let Some(buffer) = pass_node.pass.get_resource_buffer(resource_name, frame_index) {
+            if let Some(buffer) = pass_node
+                .pass
+                .get_resource_buffer(resource_name, frame_index)
+            {
                 return Some(buffer);
             }
         }
@@ -1556,66 +1612,224 @@ impl Renderer {
 
     /// Prepares mesh-related buffers (indirect commands, SSBOs).
     fn prepare_mesh_data(&mut self, packet: &crate::resource::FramePacket) -> u32 {
-        // 1. Opaque meshes.
-        let (object_ssbos, indirect_commands): (Vec<_>, Vec<_>) = packet
-            .opaque_meshes
-            .par_iter()
-            .enumerate()
-            .map(|(i, mesh)| {
-                let m = mesh.model.transpose();
-                let ssbo = ObjectDataSSBO {
-                    model_row0: m.row(0),
-                    model_row1: m.row(1),
-                    model_row2: m.row(2),
-                    sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
-                    index_count: mesh.index_count,
-                    first_index: mesh.first_index,
-                    vertex_offset: mesh.vertex_offset,
-                    material_index: mesh.material_index,
-                };
-                let cmd = vk::DrawIndexedIndirectCommand {
-                    index_count: mesh.index_count,
-                    instance_count: 1,
-                    first_index: mesh.first_index,
-                    vertex_offset: mesh.vertex_offset,
-                    first_instance: i as u32,
-                };
-                (ssbo, cmd)
-            })
-            .unzip();
+        let frame_idx = self.frame_manager.current_frame;
 
-        self.update_indirect_buffers(&indirect_commands, &object_ssbos);
+        // 1. Opaque meshes.
+        let opaque_count = packet.opaque_meshes.len() as u32;
+        if opaque_count > 0 {
+            let cmd_sz = (opaque_count as usize
+                * std::mem::size_of::<vk::DrawIndexedIndirectCommand>())
+                as u64;
+            let obj_sz = (opaque_count as usize * std::mem::size_of::<ObjectDataSSBO>()) as u64;
+
+            self.ensure_indirect_buffers_capacity(frame_idx, cmd_sz, obj_sz);
+
+            let frame = &self.frame_manager.frames[frame_idx];
+            let cmd_ptr = frame.indirect_commands_buffer.as_ref().unwrap().ptr as usize;
+            let obj_ptr = frame.object_data_buffer.as_ref().unwrap().ptr as usize;
+
+            packet
+                .opaque_meshes
+                .par_iter()
+                .enumerate()
+                .for_each(|(i, mesh)| {
+                    let m = mesh.model.transpose();
+                    unsafe {
+                        let obj_ptr = obj_ptr as *mut ObjectDataSSBO;
+                        let cmd_ptr = cmd_ptr as *mut vk::DrawIndexedIndirectCommand;
+                        *obj_ptr.add(i) = ObjectDataSSBO {
+                            model_row0: m.row(0),
+                            model_row1: m.row(1),
+                            model_row2: m.row(2),
+                            sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
+                            index_count: mesh.index_count,
+                            first_index: mesh.first_index,
+                            vertex_offset: mesh.vertex_offset,
+                            material_index: mesh.material_index,
+                        };
+                        *cmd_ptr.add(i) = vk::DrawIndexedIndirectCommand {
+                            index_count: mesh.index_count,
+                            instance_count: 1,
+                            first_index: mesh.first_index,
+                            vertex_offset: mesh.vertex_offset,
+                            first_instance: i as u32,
+                        };
+                    }
+                });
+            frame
+                .indirect_commands_buffer
+                .as_ref()
+                .unwrap()
+                .version
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            frame
+                .object_data_buffer
+                .as_ref()
+                .unwrap()
+                .version
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
 
         // 2. Transparent meshes.
-        let (trans_ssbos, trans_cmds): (Vec<_>, Vec<_>) = packet.transparent_meshes
-            .par_iter()
-            .enumerate()
-            .map(|(i, mesh)| {
-                let m = mesh.model.transpose();
-                let ssbo = ObjectDataSSBO {
-                    model_row0: m.row(0),
-                    model_row1: m.row(1),
-                    model_row2: m.row(2),
-                    sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
-                    index_count: mesh.index_count,
-                    first_index: mesh.first_index,
-                    vertex_offset: mesh.vertex_offset,
-                    material_index: mesh.material_index,
-                };
-                let cmd = vk::DrawIndexedIndirectCommand {
-                    index_count: mesh.index_count,
-                    instance_count: 1,
-                    first_index: mesh.first_index,
-                    vertex_offset: mesh.vertex_offset,
-                    first_instance: i as u32,
-                };
-                (ssbo, cmd)
-            })
-            .unzip();
-        self.update_transparent_buffers(&trans_cmds, &trans_ssbos);
-        self.last_transparent_count = trans_ssbos.len() as u32;
+        let trans_count = packet.transparent_meshes.len() as u32;
+        if trans_count > 0 {
+            let cmd_sz = (trans_count as usize
+                * std::mem::size_of::<vk::DrawIndexedIndirectCommand>())
+                as u64;
+            let obj_sz = (trans_count as usize * std::mem::size_of::<ObjectDataSSBO>()) as u64;
 
-        object_ssbos.len() as u32
+            self.ensure_transparent_buffers_capacity(frame_idx, cmd_sz, obj_sz);
+
+            let frame = &self.frame_manager.frames[frame_idx];
+            let cmd_ptr = frame.transparent_indirect_buffer.as_ref().unwrap().ptr as usize;
+            let obj_ptr = frame.transparent_object_buffer.as_ref().unwrap().ptr as usize;
+
+            packet
+                .transparent_meshes
+                .par_iter()
+                .enumerate()
+                .for_each(|(i, mesh)| {
+                    let m = mesh.model.transpose();
+                    unsafe {
+                        let obj_ptr = obj_ptr as *mut ObjectDataSSBO;
+                        let cmd_ptr = cmd_ptr as *mut vk::DrawIndexedIndirectCommand;
+                        *obj_ptr.add(i) = ObjectDataSSBO {
+                            model_row0: m.row(0),
+                            model_row1: m.row(1),
+                            model_row2: m.row(2),
+                            sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
+                            index_count: mesh.index_count,
+                            first_index: mesh.first_index,
+                            vertex_offset: mesh.vertex_offset,
+                            material_index: mesh.material_index,
+                        };
+                        *cmd_ptr.add(i) = vk::DrawIndexedIndirectCommand {
+                            index_count: mesh.index_count,
+                            instance_count: 1,
+                            first_index: mesh.first_index,
+                            vertex_offset: mesh.vertex_offset,
+                            first_instance: i as u32,
+                        };
+                    }
+                });
+            frame
+                .transparent_indirect_buffer
+                .as_ref()
+                .unwrap()
+                .version
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            frame
+                .transparent_object_buffer
+                .as_ref()
+                .unwrap()
+                .version
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.last_transparent_count = trans_count;
+
+        opaque_count
+    }
+
+    fn ensure_indirect_buffers_capacity(&mut self, frame_idx: usize, cmd_sz: u64, obj_sz: u64) {
+        let (has_ic, has_ob, has_dc, ic_sz, ob_sz) = {
+            let f = &self.frame_manager.frames[frame_idx];
+            (
+                f.indirect_commands_buffer.is_some(),
+                f.object_data_buffer.is_some(),
+                f.draw_count_buffer.is_some(),
+                f.indirect_commands_buffer
+                    .as_ref()
+                    .map(|b| b.size)
+                    .unwrap_or(0),
+                f.object_data_buffer.as_ref().map(|b| b.size).unwrap_or(0),
+            )
+        };
+
+        if !has_ic || ic_sz < cmd_sz {
+            if let Some(old) = self.frame_manager.frames[frame_idx]
+                .indirect_commands_buffer
+                .take()
+            {
+                self.device.destroy_buffer(old);
+            }
+            let b = self.create_buffer(
+                cmd_sz.max(1024),
+                vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            self.frame_manager.frames[frame_idx].indirect_commands_buffer = Some(b);
+        }
+        if !has_ob || ob_sz < obj_sz {
+            if let Some(old) = self.frame_manager.frames[frame_idx]
+                .object_data_buffer
+                .take()
+            {
+                self.device.destroy_buffer(old);
+            }
+            let b = self.create_buffer(
+                obj_sz.max(1024),
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            self.frame_manager.frames[frame_idx].object_data_buffer = Some(b);
+        }
+        if !has_dc {
+            let b = self.create_buffer(
+                4,
+                vk::BufferUsageFlags::INDIRECT_BUFFER
+                    | vk::BufferUsageFlags::STORAGE_BUFFER
+                    | vk::BufferUsageFlags::TRANSFER_DST,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            );
+            self.frame_manager.frames[frame_idx].draw_count_buffer = Some(b);
+        }
+    }
+
+    fn ensure_transparent_buffers_capacity(&mut self, frame_idx: usize, cmd_sz: u64, obj_sz: u64) {
+        let (has_tic, has_tob, tic_sz, tob_sz) = {
+            let f = &self.frame_manager.frames[frame_idx];
+            (
+                f.transparent_indirect_buffer.is_some(),
+                f.transparent_object_buffer.is_some(),
+                f.transparent_indirect_buffer
+                    .as_ref()
+                    .map(|b| b.size)
+                    .unwrap_or(0),
+                f.transparent_object_buffer
+                    .as_ref()
+                    .map(|b| b.size)
+                    .unwrap_or(0),
+            )
+        };
+
+        if !has_tic || tic_sz < cmd_sz {
+            if let Some(old) = self.frame_manager.frames[frame_idx]
+                .transparent_indirect_buffer
+                .take()
+            {
+                self.device.destroy_buffer(old);
+            }
+            let b = self.create_buffer(
+                cmd_sz.max(1024),
+                vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            self.frame_manager.frames[frame_idx].transparent_indirect_buffer = Some(b);
+        }
+        if !has_tob || tob_sz < obj_sz {
+            if let Some(old) = self.frame_manager.frames[frame_idx]
+                .transparent_object_buffer
+                .take()
+            {
+                self.device.destroy_buffer(old);
+            }
+            let b = self.create_buffer(
+                obj_sz.max(1024),
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            self.frame_manager.frames[frame_idx].transparent_object_buffer = Some(b);
+        }
     }
 
     /// Updates the global Uniform Buffer, calculates CSM matrices, and handles projection jitter.

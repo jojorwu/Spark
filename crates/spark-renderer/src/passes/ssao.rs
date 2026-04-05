@@ -47,7 +47,11 @@ impl RenderPass for SSAOPass {
         "SSAOPass"
     }
 
-    fn get_resource_buffer(&self, name: &str, frame_index: usize) -> Option<crate::resource::Buffer> {
+    fn get_resource_buffer(
+        &self,
+        name: &str,
+        frame_index: usize,
+    ) -> Option<crate::resource::Buffer> {
         if name == "SSAOParams" {
             Some(self.ssao_params_buffer[frame_index].clone())
         } else {
@@ -160,7 +164,6 @@ impl RenderPass for SSAOPass {
         };
         self.record_commands_impl(&params);
     }
-
 
     fn on_resize(&mut self, _renderer: &mut Renderer, _new_extent: vk::Extent2D) {}
 
@@ -583,7 +586,11 @@ impl SSAOPass {
 
             let ssao_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(renderer.get_pass_resource_view(self.name(), "SSAO_Intermediary", i).unwrap())
+                .image_view(
+                    renderer
+                        .get_pass_resource_view(self.name(), "SSAO_Intermediary", i)
+                        .unwrap(),
+                )
                 .sampler(sampler)];
             let depth_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)

@@ -45,8 +45,8 @@ impl Command for AddNodeCommand {
             let key = scene.add_node(self.parent_key, node);
             self.added_key = Some(key);
         } else if let Some(_key) = self.added_key {
-             // Redo: we need to find a way to re-add exactly the same node if it was removed
-             // For simplicity in this engine, we'll just store the node when it's not in the scene
+            // Redo: we need to find a way to re-add exactly the same node if it was removed
+            // For simplicity in this engine, we'll just store the node when it's not in the scene
         }
     }
     fn undo(&mut self, scene: &mut Scene) {
@@ -77,7 +77,11 @@ impl Command for DeleteNodeCommand {
             self.parent_key = node.parent;
             if let Some(pk) = self.parent_key {
                 if let Some(parent) = scene.nodes.get_mut(pk) {
-                    self.index_in_parent = parent.children.iter().position(|&k| k == self.node_key).unwrap_or(0);
+                    self.index_in_parent = parent
+                        .children
+                        .iter()
+                        .position(|&k| k == self.node_key)
+                        .unwrap_or(0);
                     parent.children.retain(|&k| k != self.node_key);
                 }
             }
@@ -170,7 +174,8 @@ impl EditorUI {
 
         let mut visuals = Visuals::dark();
         visuals.widgets.noninteractive.bg_fill = egui::Color32::from_gray(20);
-        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(180));
+        visuals.widgets.noninteractive.fg_stroke =
+            egui::Stroke::new(1.0, egui::Color32::from_gray(180));
         visuals.widgets.active.bg_fill = egui::Color32::from_rgb(60, 100, 150);
         visuals.widgets.hovered.bg_fill = egui::Color32::from_gray(45);
         visuals.window_rounding = 0.0.into();
@@ -272,7 +277,8 @@ impl EditorUI {
                         (egui::Color32::LIGHT_GRAY, self.log_filter_info)
                     };
 
-                    let matches_search = self.log_search.is_empty() || log.to_lowercase().contains(&self.log_search.to_lowercase());
+                    let matches_search = self.log_search.is_empty()
+                        || log.to_lowercase().contains(&self.log_search.to_lowercase());
 
                     if visible && matches_search {
                         ui.label(egui::RichText::new(log).color(color).monospace());
@@ -319,21 +325,28 @@ impl EditorUI {
                     let label = path.file_name().unwrap().to_string_lossy();
 
                     if !self.asset_search.is_empty()
-                        && !label.to_lowercase().contains(&self.asset_search.to_lowercase())
+                        && !label
+                            .to_lowercase()
+                            .contains(&self.asset_search.to_lowercase())
                     {
                         continue;
                     }
 
                     ui.horizontal(|ui| {
                         if path.is_dir() {
-                            if ui.selectable_label(false, format!("📁 {}", label)).clicked() {
+                            if ui
+                                .selectable_label(false, format!("📁 {}", label))
+                                .clicked()
+                            {
                                 dir_to_set = Some(path.to_path_buf());
                             }
                         } else {
                             let is_gltf = path
                                 .extension()
                                 .is_some_and(|ext| ext == "gltf" || ext == "glb");
-                            let is_img = path.extension().is_some_and(|ext| ext == "png" || ext == "jpg");
+                            let is_img = path
+                                .extension()
+                                .is_some_and(|ext| ext == "png" || ext == "jpg");
                             let icon = if is_gltf {
                                 "📦"
                             } else if is_img {
@@ -342,7 +355,11 @@ impl EditorUI {
                                 "📄"
                             };
 
-                            if ui.selectable_label(false, format!("{} {}", icon, label)).clicked() && is_gltf {
+                            if ui
+                                .selectable_label(false, format!("{} {}", icon, label))
+                                .clicked()
+                                && is_gltf
+                            {
                                 asset_to_load = Some(path.to_path_buf());
                             }
                         }
@@ -359,7 +376,12 @@ impl EditorUI {
         }
     }
 
-    fn draw_materials_tab(&mut self, ui: &mut Ui, asset_manager: &mut spark_core::asset::AssetManager, resource_manager: &mut spark_core::resource::ResourceManager) {
+    fn draw_materials_tab(
+        &mut self,
+        ui: &mut Ui,
+        asset_manager: &mut spark_core::asset::AssetManager,
+        resource_manager: &mut spark_core::resource::ResourceManager,
+    ) {
         ui.horizontal(|ui| {
             ui.label("🔍 Search Materials:");
             ui.text_edit_singleline(&mut self.material_search);
@@ -374,7 +396,10 @@ impl EditorUI {
                 let mut matches = true;
                 if let Some(mat) = asset_manager.materials.get(handle) {
                     if !self.material_search.is_empty()
-                        && !mat.name.to_lowercase().contains(&self.material_search.to_lowercase())
+                        && !mat
+                            .name
+                            .to_lowercase()
+                            .contains(&self.material_search.to_lowercase())
                     {
                         matches = false;
                     }
@@ -386,7 +411,13 @@ impl EditorUI {
                     let mat_name = asset_manager.materials.get(handle).unwrap().name.clone();
                     ui.collapsing(format!("Material: {}", mat_name), |ui| {
                         if let Some(mat) = asset_manager.materials.get_mut(handle) {
-                            Self::draw_material_editor_static(ui, mat, idx, &asset_manager.texture_path_map, resource_manager);
+                            Self::draw_material_editor_static(
+                                ui,
+                                mat,
+                                idx,
+                                &asset_manager.texture_path_map,
+                                resource_manager,
+                            );
                         }
                     });
                 }
@@ -394,7 +425,16 @@ impl EditorUI {
         });
     }
 
-    fn draw_material_editor_static(ui: &mut Ui, mat: &mut spark_core::asset::Material, idx: usize, texture_path_map: &std::collections::HashMap<std::path::PathBuf, spark_core::resource::Handle<spark_renderer::vulkan::texture::Texture>>, resource_manager: &mut spark_core::resource::ResourceManager) {
+    fn draw_material_editor_static(
+        ui: &mut Ui,
+        mat: &mut spark_core::asset::Material,
+        idx: usize,
+        texture_path_map: &std::collections::HashMap<
+            std::path::PathBuf,
+            spark_core::resource::Handle<spark_renderer::vulkan::texture::Texture>,
+        >,
+        resource_manager: &mut spark_core::resource::ResourceManager,
+    ) {
         ui.horizontal(|ui| {
             ui.label("Name:");
             ui.text_edit_singleline(&mut mat.name);
@@ -419,12 +459,16 @@ impl EditorUI {
 
         ui.horizontal(|ui| {
             ui.label("Albedo Texture:");
-            let tex_name = mat.albedo_texture.map(|h| {
-                texture_path_map.iter()
-                    .find(|(_, &handle)| handle == h)
-                    .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
-                    .unwrap_or_else(|| format!("Texture ID: {}", h.id()))
-            }).unwrap_or_else(|| "None".to_string());
+            let tex_name = mat
+                .albedo_texture
+                .map(|h| {
+                    texture_path_map
+                        .iter()
+                        .find(|(_, &handle)| handle == h)
+                        .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+                        .unwrap_or_else(|| format!("Texture ID: {}", h.id()))
+                })
+                .unwrap_or_else(|| "None".to_string());
 
             egui::ComboBox::from_id_source(format!("mat_tex_{}", idx))
                 .selected_text(tex_name)
@@ -432,9 +476,12 @@ impl EditorUI {
                     ui.selectable_value(&mut mat.albedo_texture, None, "None");
                     for t_idx in 0..resource_manager.gpu_textures.assets_len() {
                         let h = spark_core::resource::Handle::new(t_idx as u32);
-                        let name = texture_path_map.iter()
+                        let name = texture_path_map
+                            .iter()
                             .find(|(_, &handle)| handle == h)
-                            .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+                            .map(|(path, _)| {
+                                path.file_name().unwrap().to_string_lossy().into_owned()
+                            })
                             .unwrap_or_else(|| format!("ID: {}", t_idx));
                         ui.selectable_value(&mut mat.albedo_texture, Some(h), name);
                     }
@@ -583,7 +630,14 @@ impl EditorUI {
         self.draw_status_bar(fps);
 
         if self.show_bottom_panel {
-            self.draw_bottom_panel(scene, resource_manager, asset_manager, renderer, project, fps);
+            self.draw_bottom_panel(
+                scene,
+                resource_manager,
+                asset_manager,
+                renderer,
+                project,
+                fps,
+            );
         }
         if self.show_hierarchy {
             self.draw_hierarchy_panel(scene);
@@ -780,9 +834,21 @@ impl EditorUI {
         egui::TopBottomPanel::top("toolbar").show(&ctx, |ui| {
             ui.horizontal(|ui| {
                 // Gizmo Tools
-                ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Translate, "⬈ Move");
-                ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Rotate, "⟲ Rotate");
-                ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Scale, "⤢ Scale");
+                ui.selectable_value(
+                    &mut self.gizmo_mode,
+                    egui_gizmo::GizmoMode::Translate,
+                    "⬈ Move",
+                );
+                ui.selectable_value(
+                    &mut self.gizmo_mode,
+                    egui_gizmo::GizmoMode::Rotate,
+                    "⟲ Rotate",
+                );
+                ui.selectable_value(
+                    &mut self.gizmo_mode,
+                    egui_gizmo::GizmoMode::Scale,
+                    "⤢ Scale",
+                );
 
                 ui.separator();
                 ui.toggle_value(&mut self.gizmo_local, "Local");
@@ -869,10 +935,22 @@ impl EditorUI {
         let ctx = self.egui_ctx.clone();
         egui::TopBottomPanel::bottom("bottom_panel").show(&ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Console, "📝 Console");
+                ui.selectable_value(
+                    &mut self.active_bottom_tab,
+                    BottomTab::Console,
+                    "📝 Console",
+                );
                 ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Assets, "📁 Assets");
-                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Materials, "🎨 Materials");
-                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Settings, "⚙ Settings");
+                ui.selectable_value(
+                    &mut self.active_bottom_tab,
+                    BottomTab::Materials,
+                    "🎨 Materials",
+                );
+                ui.selectable_value(
+                    &mut self.active_bottom_tab,
+                    BottomTab::Settings,
+                    "⚙ Settings",
+                );
                 ui.selectable_value(
                     &mut self.active_bottom_tab,
                     BottomTab::Statistics,
@@ -883,8 +961,12 @@ impl EditorUI {
 
             match self.active_bottom_tab {
                 BottomTab::Console => self.draw_console_tab(ui),
-                BottomTab::Assets => self.draw_assets_tab(ui, scene, resource_manager, renderer, asset_manager),
-                BottomTab::Materials => self.draw_materials_tab(ui, asset_manager, resource_manager),
+                BottomTab::Assets => {
+                    self.draw_assets_tab(ui, scene, resource_manager, renderer, asset_manager)
+                }
+                BottomTab::Materials => {
+                    self.draw_materials_tab(ui, asset_manager, resource_manager)
+                }
                 BottomTab::Settings => {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.heading("Post-Processing");
@@ -1210,15 +1292,10 @@ impl EditorUI {
 
             let search = self.hierarchy_search.clone();
             egui::ScrollArea::vertical().show(ui, |ui| {
-                self.draw_node_tree_recursive(
-                    ui,
-                    scene,
-                    scene.root,
-                    &search,
-                );
+                self.draw_node_tree_recursive(ui, scene, scene.root, &search);
             });
 
-        self.hierarchy_force_state = None;
+            self.hierarchy_force_state = None;
 
             if let Some(selected_key) = self.selected_node {
                 if ui.button("Delete Selected").clicked() {
@@ -1525,17 +1602,30 @@ impl EditorUI {
                 });
                 ui.horizontal(|ui| {
                     ui.label("Material:");
-                    let mat_name = mesh.material_index.and_then(|idx| {
-                        asset_manager.materials.get(spark_core::resource::Handle::new(idx)).map(|m| m.name.clone())
-                    }).unwrap_or_else(|| "None".to_string());
+                    let mat_name = mesh
+                        .material_index
+                        .and_then(|idx| {
+                            asset_manager
+                                .materials
+                                .get(spark_core::resource::Handle::new(idx))
+                                .map(|m| m.name.clone())
+                        })
+                        .unwrap_or_else(|| "None".to_string());
 
                     egui::ComboBox::from_id_source(format!("mesh_mat_{:?}", mesh as *const _))
                         .selected_text(mat_name)
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut mesh.material_index, None, "None");
                             for idx in 0..asset_manager.materials.assets_len() {
-                                if let Some(mat) = asset_manager.materials.get(spark_core::resource::Handle::new(idx as u32)) {
-                                    ui.selectable_value(&mut mesh.material_index, Some(idx as u32), &mat.name);
+                                if let Some(mat) = asset_manager
+                                    .materials
+                                    .get(spark_core::resource::Handle::new(idx as u32))
+                                {
+                                    ui.selectable_value(
+                                        &mut mesh.material_index,
+                                        Some(idx as u32),
+                                        &mat.name,
+                                    );
                                 }
                             }
                         });
@@ -1746,16 +1836,16 @@ impl EditorUI {
         for &child_key in &children {
             let id = ui.make_persistent_id(child_key);
             if let Some(force) = self.hierarchy_force_state {
-                egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, !force).set_open(force);
+                egui::collapsing_header::CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    id,
+                    !force,
+                )
+                .set_open(force);
             }
 
             ui.indent(node_key, |ui| {
-                self.draw_node_tree_recursive(
-                    ui,
-                    scene,
-                    child_key,
-                    search,
-                );
+                self.draw_node_tree_recursive(ui, scene, child_key, search);
             });
         }
     }
@@ -1822,7 +1912,8 @@ impl EditorUI {
                                     self.camera_rot.x.cos() * self.camera_rot.y.cos(),
                                     self.camera_rot.y.sin(),
                                     self.camera_rot.x.sin() * self.camera_rot.y.cos(),
-                                ).normalize();
+                                )
+                                .normalize();
                                 self.camera_pos = pos - forward * 5.0;
                             }
                         }
@@ -1890,7 +1981,10 @@ impl EditorUI {
                                 // Try to find active camera component
                                 for node in scene.nodes.values() {
                                     for comp in &node.components {
-                                        if let Some(cam) = comp.as_any().downcast_ref::<spark_core::scene::CameraComponent>() {
+                                        if let Some(cam) = comp
+                                            .as_any()
+                                            .downcast_ref::<spark_core::scene::CameraComponent>(
+                                        ) {
                                             fov = cam.fov.to_radians();
                                             near = cam.near;
                                             far = cam.far;
@@ -1911,7 +2005,12 @@ impl EditorUI {
                                         far,
                                     )
                                 } else {
-                                    spark_math::Mat4::perspective_rh(fov, size.x / size.y, near, far)
+                                    spark_math::Mat4::perspective_rh(
+                                        fov,
+                                        size.x / size.y,
+                                        near,
+                                        far,
+                                    )
                                 };
                                 let inv_vp = (projection * view).inverse();
 
@@ -1951,7 +2050,10 @@ impl EditorUI {
 
                             for node in scene.nodes.values() {
                                 for comp in &node.components {
-                                    if let Some(cam) = comp.as_any().downcast_ref::<spark_core::scene::CameraComponent>() {
+                                    if let Some(cam) =
+                                        comp.as_any()
+                                            .downcast_ref::<spark_core::scene::CameraComponent>()
+                                    {
                                         fov = cam.fov.to_radians();
                                         near = cam.near;
                                         far = cam.far;

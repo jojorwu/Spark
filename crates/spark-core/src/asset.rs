@@ -1,8 +1,8 @@
-use std::path::{Path, PathBuf};
+use image::DynamicImage;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use serde::{Deserialize, Serialize};
-use image::DynamicImage;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Handle<T> {
@@ -117,7 +117,13 @@ impl AssetManager {
         renderer: &spark_renderer::Renderer,
         resource_manager: &mut crate::resource::ResourceManager,
     ) {
-        crate::gltf_loader::GltfLoader::load_scene(resource_manager, self, path.to_path_buf(), scene, renderer);
+        crate::gltf_loader::GltfLoader::load_scene(
+            resource_manager,
+            self,
+            path.to_path_buf(),
+            scene,
+            renderer,
+        );
     }
 }
 

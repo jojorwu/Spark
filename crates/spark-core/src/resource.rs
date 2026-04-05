@@ -1,6 +1,6 @@
+pub use crate::asset::{AssetStorage, Handle};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-pub use crate::asset::{Handle, AssetStorage};
 
 pub struct ResourceManager {
     pub gpu_textures: AssetStorage<spark_renderer::vulkan::texture::Texture>,
@@ -178,7 +178,9 @@ impl ResourceManager {
         });
         let texture = renderer.create_texture_from_image(&img);
         let handle = self.gpu_textures.add(texture);
-        asset_manager.texture_path_map.insert(path.to_path_buf(), handle);
+        asset_manager
+            .texture_path_map
+            .insert(path.to_path_buf(), handle);
         handle
     }
 }

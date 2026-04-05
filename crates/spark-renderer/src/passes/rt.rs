@@ -207,7 +207,6 @@ impl RayTracingPass {
             );
         }
     }
-
 }
 
 impl RayTracingPass {

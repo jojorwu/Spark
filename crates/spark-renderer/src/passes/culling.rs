@@ -14,9 +14,21 @@ impl RenderPass for CullingPass {
 
     fn gpu_resource_buffer_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
         vec![
-            ("object_data_buffer".to_string(), vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::COMPUTE_SHADER),
-            ("indirect_commands_buffer".to_string(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::COMPUTE_SHADER),
-            ("draw_count_buffer".to_string(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::COMPUTE_SHADER),
+            (
+                "object_data_buffer".to_string(),
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+            ),
+            (
+                "indirect_commands_buffer".to_string(),
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+            ),
+            (
+                "draw_count_buffer".to_string(),
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+            ),
         ]
     }
 

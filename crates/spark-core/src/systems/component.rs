@@ -1,6 +1,24 @@
 use crate::System;
 
-pub struct ComponentSystem;
+pub struct ComponentSystem {
+    cached_keys: Vec<crate::scene::NodeKey>,
+    cached_version: u64,
+}
+
+impl Default for ComponentSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ComponentSystem {
+    pub fn new() -> Self {
+        Self {
+            cached_keys: Vec::new(),
+            cached_version: 0,
+        }
+    }
+}
 
 impl System for ComponentSystem {
     fn name(&self) -> &str {
@@ -25,18 +43,26 @@ impl System for ComponentSystem {
         unsafe {
             let scene = ctx.scene_mut();
 
+            let current_version = scene
+                .nodes_version
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if current_version != self.cached_version {
+                self.cached_keys = scene.nodes.keys().collect();
+                self.cached_version = current_version;
+            }
+
             // Optimization: Avoid par_bridge() which has high overhead due to internal channels.
             // Instead, we collect keys into a temporary buffer. For large scenes,
             // the overhead of this collection is significantly lower than par_bridge.
             // Even better, we use the raw pointer pattern to access nodes in parallel safely
             // because each key is unique.
-            let nodes_ptr = &mut scene.nodes as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node> as usize;
+            let nodes_ptr = &mut scene.nodes
+                as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node>
+                as usize;
 
-            // Pre-collecting keys into a thread-local or reusable buffer could be a further optimization.
-            let keys: Vec<_> = scene.nodes.keys().collect();
-
-            keys.into_par_iter().for_each(|key| {
-                let nodes = &mut *(nodes_ptr as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node>);
+            self.cached_keys.par_iter().for_each(|&key| {
+                let nodes = &mut *(nodes_ptr
+                    as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node>);
                 if let Some(node) = nodes.get_mut(key) {
                     for component in &mut node.components {
                         component.on_update(key, ctx);

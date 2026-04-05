@@ -213,6 +213,7 @@ pub struct RenderFrame {
     pub secondary_command_buffers: Vec<vk::CommandBuffer>,
     pub light_view_projs: [spark_math::Mat4; 4],
     pub scratch_buffers: Vec<Buffer>,
+    pub texture_staging_buffer: Option<Buffer>,
 }
 
 #[repr(C)]

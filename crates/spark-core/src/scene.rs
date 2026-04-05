@@ -114,7 +114,6 @@ pub enum LightType {
     Spot,
 }
 
-
 #[derive(Serialize, Deserialize)]
 pub struct Node {
     pub name: String,
@@ -153,6 +152,8 @@ pub struct Scene {
     pub last_view_matrix: Mat4,
     #[serde(skip)]
     pub component_registry: std::collections::HashMap<std::any::TypeId, Vec<NodeKey>>,
+    #[serde(skip)]
+    pub nodes_version: std::sync::atomic::AtomicU64,
 }
 
 type TextureHandle = crate::resource::Handle<spark_renderer::vulkan::texture::Texture>;
@@ -216,6 +217,7 @@ impl Scene {
             root,
             last_view_matrix: Mat4::IDENTITY,
             component_registry: std::collections::HashMap::new(),
+            nodes_version: std::sync::atomic::AtomicU64::new(1),
         }
     }
 
@@ -346,6 +348,8 @@ impl Scene {
         }
 
         self.nodes.remove(key);
+        self.nodes_version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn add_node(&mut self, parent: NodeKey, mut node: Node) -> NodeKey {
@@ -354,6 +358,9 @@ impl Scene {
         if let Some(parent_node) = self.nodes.get_mut(parent) {
             parent_node.children.push(key);
         }
+
+        self.nodes_version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         // Update registry
         for component in &self.nodes[key].components {
@@ -372,6 +379,9 @@ impl Scene {
         let node_to_clone = self.nodes.get(key)?.clone();
         let parent = node_to_clone.parent;
 
+        self.nodes_version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let new_key = self.nodes.insert(Node {
             name: format!("{} (Copy)", node_to_clone.name),
             visible: node_to_clone.visible,
@@ -381,7 +391,11 @@ impl Scene {
             global_transform: node_to_clone.global_transform,
             parent,
             children: Vec::new(),
-            components: node_to_clone.components.iter().map(|c| c.clone_box()).collect(),
+            components: node_to_clone
+                .components
+                .iter()
+                .map(|c| c.clone_box())
+                .collect(),
         });
 
         if let Some(pk) = parent {
@@ -412,6 +426,9 @@ impl Scene {
     fn duplicate_node_rec(&mut self, key: NodeKey, new_parent: NodeKey) -> Option<NodeKey> {
         let node_to_clone = self.nodes.get(key)?.clone();
 
+        self.nodes_version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let new_key = self.nodes.insert(Node {
             name: node_to_clone.name.clone(),
             visible: node_to_clone.visible,
@@ -421,7 +438,11 @@ impl Scene {
             global_transform: node_to_clone.global_transform,
             parent: Some(new_parent),
             children: Vec::new(),
-            components: node_to_clone.components.iter().map(|c| c.clone_box()).collect(),
+            components: node_to_clone
+                .components
+                .iter()
+                .map(|c| c.clone_box())
+                .collect(),
         });
 
         for component in &self.nodes[new_key].components {
@@ -713,7 +734,8 @@ impl Scene {
                 if let Some(mesh) = any.downcast_ref::<MeshComponent>() {
                     let visible = if let Some(f) = frustum {
                         let gt = node.global_transform;
-                        let translation = spark_math::Vec3::new(gt.w_axis.x, gt.w_axis.y, gt.w_axis.z);
+                        let translation =
+                            spark_math::Vec3::new(gt.w_axis.x, gt.w_axis.y, gt.w_axis.z);
                         f.intersects_sphere(translation, mesh.bounding_radius)
                     } else {
                         true
@@ -758,7 +780,8 @@ impl Scene {
                     ));
                 } else if let Some(sprite) = any.downcast_ref::<SpriteComponent>() {
                     let gt = node.global_transform;
-                    data.sprites.push((gt, sprite.texture_handle, sprite.color, sprite.size));
+                    data.sprites
+                        .push((gt, sprite.texture_handle, sprite.color, sprite.size));
                 }
             }
 

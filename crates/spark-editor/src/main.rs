@@ -72,7 +72,7 @@ impl Plugin for EditorPlugin {
             spark_core::systems::time::TimeSystem,
         );
         app.engine
-            .add_system(spark_core::systems::component::ComponentSystem);
+            .add_system(spark_core::systems::component::ComponentSystem::new());
         app.engine.add_system(spark_core::systems::HierarchySystem);
         app.engine.add_system_to_stage(
             spark_core::systems::CoreStage::Last,
@@ -386,21 +386,19 @@ fn main() {
     );
 
     app.run_with_ui(
-        move |window, event, scene, rm, am, renderer, project, _resources, fps| {
-            match event {
-                winit::event::Event::WindowEvent { event, .. } => {
-                    (ui.handle_event(window, event), None)
-                }
-                winit::event::Event::AboutToWait => {
-                    ui.begin_frame(window);
-                    ui.draw_ui(scene, rm, am, renderer, project, fps);
-                    ui.draw_viewport(scene, renderer, fps);
-
-                    let full_output = ui.end_frame(window);
-                    (false, Some((full_output, ui.egui_ctx.clone())))
-                }
-                _ => (false, None),
+        move |window, event, scene, rm, am, renderer, project, _resources, fps| match event {
+            winit::event::Event::WindowEvent { event, .. } => {
+                (ui.handle_event(window, event), None)
             }
+            winit::event::Event::AboutToWait => {
+                ui.begin_frame(window);
+                ui.draw_ui(scene, rm, am, renderer, project, fps);
+                ui.draw_viewport(scene, renderer, fps);
+
+                let full_output = ui.end_frame(window);
+                (false, Some((full_output, ui.egui_ctx.clone())))
+            }
+            _ => (false, None),
         },
     );
 }
