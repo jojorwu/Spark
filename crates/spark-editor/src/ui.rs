@@ -70,6 +70,10 @@ pub struct EditorUI {
     pub component_to_remove: Option<(NodeKey, usize)>,
     pub sim_state: SimulationState,
     pub scene_snapshot: Option<Scene>,
+    pub show_hierarchy: bool,
+    pub show_inspector: bool,
+    pub show_bottom_panel: bool,
+    pub status_message: String,
 }
 
 pub enum NodeType {
@@ -90,7 +94,14 @@ pub enum BottomTab {
 impl EditorUI {
     pub fn new(window: &Window, logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Self {
         let egui_ctx = Context::default();
-        egui_ctx.set_visuals(Visuals::dark());
+
+        let mut visuals = Visuals::dark();
+        visuals.widgets.noninteractive.bg_fill = egui::Color32::from_gray(20);
+        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(180));
+        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(60, 100, 150);
+        visuals.widgets.hovered.bg_fill = egui::Color32::from_gray(45);
+        visuals.window_rounding = 0.0.into();
+        egui_ctx.set_visuals(visuals);
 
         let egui_state = State::new(
             egui_ctx.clone(),
@@ -130,6 +141,10 @@ impl EditorUI {
             component_to_remove: None,
             sim_state: SimulationState::Stopped,
             scene_snapshot: None,
+            show_hierarchy: true,
+            show_inspector: true,
+            show_bottom_panel: true,
+            status_message: "Ready".to_string(),
         }
     }
 
@@ -180,9 +195,18 @@ impl EditorUI {
         fps: f32,
     ) {
         self.draw_menu_bar(scene, resource_manager, asset_manager, renderer);
-        self.draw_bottom_panel(scene, resource_manager, asset_manager, renderer, project, fps);
-        self.draw_hierarchy_panel(scene);
-        self.draw_inspector_panel(scene, renderer, asset_manager);
+        self.draw_toolbar(scene);
+        self.draw_status_bar(fps);
+
+        if self.show_bottom_panel {
+            self.draw_bottom_panel(scene, resource_manager, asset_manager, renderer, project, fps);
+        }
+        if self.show_hierarchy {
+            self.draw_hierarchy_panel(scene);
+        }
+        if self.show_inspector {
+            self.draw_inspector_panel(scene, renderer, asset_manager);
+        }
 
         if let Some(key) = self.node_to_duplicate.take() {
             if let Some(new_key) = scene.duplicate_node(key) {
@@ -289,7 +313,7 @@ impl EditorUI {
         renderer: &mut spark_renderer::Renderer,
     ) {
         let ctx = self.egui_ctx.clone();
-        egui::TopBottomPanel::top("menu_toolbar").show(&ctx, |ui| {
+        egui::TopBottomPanel::top("menu_bar").show(&ctx, |ui| {
             ui.horizontal(|ui| {
                 egui::menu::bar(ui, |ui| {
                     ui.menu_button("File", |ui| {
@@ -338,52 +362,24 @@ impl EditorUI {
                             ui.close_menu();
                         }
                     });
+                    ui.menu_button("View", |ui| {
+                        ui.checkbox(&mut self.show_hierarchy, "Hierarchy");
+                        ui.checkbox(&mut self.show_inspector, "Inspector");
+                        ui.checkbox(&mut self.show_bottom_panel, "Bottom Panel");
+                    });
                 });
+            });
+        });
+    }
 
-                ui.separator();
-
-                // Simulation Controls
-                ui.horizontal(|ui| {
-                    let (play_label, play_color) = if self.sim_state == SimulationState::Playing {
-                        ("⏸ Pause", egui::Color32::KHAKI)
-                    } else {
-                        ("▶ Play", egui::Color32::LIGHT_GREEN)
-                    };
-
-                    if ui
-                        .button(egui::RichText::new(play_label).color(play_color))
-                        .clicked()
-                    {
-                        if self.sim_state == SimulationState::Stopped {
-                            // Manual cloning to avoid derive issues or missing trait
-                            // Actually, let's just use JSON serialization as a robust clone
-                            let json = serde_json::to_string(scene).unwrap();
-                            self.scene_snapshot = Some(serde_json::from_str(&json).unwrap());
-                        }
-                        self.sim_state = if self.sim_state == SimulationState::Playing {
-                            SimulationState::Paused
-                        } else {
-                            SimulationState::Playing
-                        };
-                    }
-
-                    if ui
-                        .button(egui::RichText::new("⏹ Stop").color(egui::Color32::LIGHT_RED))
-                        .clicked()
-                    {
-                        if let Some(snapshot) = self.scene_snapshot.take() {
-                            *scene = snapshot;
-                        }
-                        self.sim_state = SimulationState::Stopped;
-                    }
-                });
-
-                ui.separator();
-
+    fn draw_toolbar(&mut self, scene: &mut Scene) {
+        let ctx = self.egui_ctx.clone();
+        egui::TopBottomPanel::top("toolbar").show(&ctx, |ui| {
+            ui.horizontal(|ui| {
                 // Gizmo Tools
-                ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Translate, "⬈");
-                ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Rotate, "⟲");
-                ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Scale, "⤢");
+                ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Translate, "⬈ Move");
+                ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Rotate, "⟲ Rotate");
+                ui.selectable_value(&mut self.gizmo_mode, egui_gizmo::GizmoMode::Scale, "⤢ Scale");
 
                 ui.separator();
                 ui.toggle_value(&mut self.gizmo_local, "Local");
@@ -396,6 +392,40 @@ impl EditorUI {
                     );
                 }
 
+                ui.separator();
+
+                // Simulation Controls
+                let (play_label, play_color) = if self.sim_state == SimulationState::Playing {
+                    ("⏸ Pause", egui::Color32::KHAKI)
+                } else {
+                    ("▶ Play", egui::Color32::LIGHT_GREEN)
+                };
+
+                if ui
+                    .button(egui::RichText::new(play_label).color(play_color))
+                    .clicked()
+                {
+                    if self.sim_state == SimulationState::Stopped {
+                        let json = serde_json::to_string(scene).unwrap();
+                        self.scene_snapshot = Some(serde_json::from_str(&json).unwrap());
+                    }
+                    self.sim_state = if self.sim_state == SimulationState::Playing {
+                        SimulationState::Paused
+                    } else {
+                        SimulationState::Playing
+                    };
+                }
+
+                if ui
+                    .button(egui::RichText::new("⏹ Stop").color(egui::Color32::LIGHT_RED))
+                    .clicked()
+                {
+                    if let Some(snapshot) = self.scene_snapshot.take() {
+                        *scene = snapshot;
+                    }
+                    self.sim_state = SimulationState::Stopped;
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("⟳").on_hover_text("Redo").clicked() {
                         self.redo(scene);
@@ -403,6 +433,20 @@ impl EditorUI {
                     if ui.button("⟲").on_hover_text("Undo").clicked() {
                         self.undo(scene);
                     }
+                });
+            });
+        });
+    }
+
+    fn draw_status_bar(&mut self, fps: f32) {
+        let ctx = self.egui_ctx.clone();
+        egui::TopBottomPanel::bottom("status_bar").show(&ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!("Status: {}", self.status_message));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(format!("FPS: {:.1}", fps));
+                    ui.separator();
+                    ui.label("Spark Engine v0.1.0");
                 });
             });
         });
@@ -420,14 +464,14 @@ impl EditorUI {
         let ctx = self.egui_ctx.clone();
         egui::TopBottomPanel::bottom("bottom_panel").show(&ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Console, "Console");
-                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Assets, "Assets");
-                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Materials, "Materials");
-                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Settings, "Settings");
+                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Console, "📝 Console");
+                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Assets, "📁 Assets");
+                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Materials, "🎨 Materials");
+                ui.selectable_value(&mut self.active_bottom_tab, BottomTab::Settings, "⚙ Settings");
                 ui.selectable_value(
                     &mut self.active_bottom_tab,
                     BottomTab::Statistics,
-                    "Statistics",
+                    "📊 Statistics",
                 );
             });
             ui.separator();
@@ -1561,14 +1605,14 @@ impl EditorUI {
         &mut self,
         scene: &mut Scene,
         renderer: &mut spark_renderer::Renderer,
-        fps: f32,
+        _fps: f32,
     ) {
         if let Some(texture_id) = self.viewport_texture_id {
             let ctx = self.egui_ctx.clone();
-            egui::Window::new("Viewport")
-                .default_size([800.0, 600.0])
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none().fill(egui::Color32::BLACK))
                 .show(&ctx, |ui| {
-                    // Performance Overlay
+                    // Performance Overlay (now just extra info)
                     let painter = ui.painter();
                     let rect = ui.max_rect();
                     painter.rect_filled(
@@ -1586,8 +1630,8 @@ impl EditorUI {
                         ),
                         egui::Label::new(
                             egui::RichText::new(format!(
-                                "FPS: {:.1}\nObjects: {}\nTris: TODO\nDraw Calls: TODO",
-                                fps, renderer.last_object_count
+                                "Viewport\nObjects: {}\nTris: TODO\nDraw Calls: TODO",
+                                renderer.last_object_count
                             ))
                             .color(egui::Color32::WHITE)
                             .size(12.0),
