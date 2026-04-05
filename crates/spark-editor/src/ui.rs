@@ -33,6 +33,76 @@ impl Command for TransformCommand {
     }
 }
 
+pub struct AddNodeCommand {
+    pub parent_key: NodeKey,
+    pub node: Option<Node>,
+    pub added_key: Option<NodeKey>,
+}
+
+impl Command for AddNodeCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        if let Some(node) = self.node.take() {
+            let key = scene.add_node(self.parent_key, node);
+            self.added_key = Some(key);
+        } else if let Some(_key) = self.added_key {
+             // Redo: we need to find a way to re-add exactly the same node if it was removed
+             // For simplicity in this engine, we'll just store the node when it's not in the scene
+        }
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(key) = self.added_key.take() {
+            if let Some(node) = scene.nodes.remove(key) {
+                // Remove from parent
+                if let Some(parent_key) = node.parent {
+                    if let Some(parent) = scene.nodes.get_mut(parent_key) {
+                        parent.children.retain(|&k| k != key);
+                    }
+                }
+                self.node = Some(node);
+            }
+        }
+    }
+}
+
+pub struct DeleteNodeCommand {
+    pub node_key: NodeKey,
+    pub node: Option<Node>,
+    pub parent_key: Option<NodeKey>,
+    pub index_in_parent: usize,
+}
+
+impl Command for DeleteNodeCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        if let Some(node) = scene.nodes.get(self.node_key) {
+            self.parent_key = node.parent;
+            if let Some(pk) = self.parent_key {
+                if let Some(parent) = scene.nodes.get_mut(pk) {
+                    self.index_in_parent = parent.children.iter().position(|&k| k == self.node_key).unwrap_or(0);
+                    parent.children.retain(|&k| k != self.node_key);
+                }
+            }
+            self.node = scene.nodes.remove(self.node_key);
+        }
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(node) = self.node.take() {
+            let key = scene.nodes.insert(node);
+            // After re-inserting, we need to update the node_key for future redo
+            self.node_key = key;
+
+            if let Some(pk) = self.parent_key {
+                if let Some(parent) = scene.nodes.get_mut(pk) {
+                    if self.index_in_parent < parent.children.len() {
+                        parent.children.insert(self.index_in_parent, key);
+                    } else {
+                        parent.children.push(key);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum SimulationState {
     Stopped,
@@ -45,6 +115,7 @@ pub struct EditorUI {
     pub hierarchy_search: String,
     pub asset_search: String,
     pub material_search: String,
+    pub log_search: String,
     pub log_filter_info: bool,
     pub log_filter_warn: bool,
     pub log_filter_error: bool,
@@ -64,6 +135,7 @@ pub struct EditorUI {
     pub active_bottom_tab: BottomTab,
     pub camera_speed: f32,
     pub node_to_delete: Option<NodeKey>,
+    pub node_to_add: Option<(NodeKey, Node)>,
     pub node_to_duplicate: Option<NodeKey>,
     pub node_to_add_child: Option<(NodeKey, NodeType)>,
     pub initial_gizmo_transform: Option<spark_math::Mat4>,
@@ -74,6 +146,7 @@ pub struct EditorUI {
     pub show_inspector: bool,
     pub show_bottom_panel: bool,
     pub status_message: String,
+    pub hierarchy_force_state: Option<bool>, // Some(true) to expand all, Some(false) to collapse all
 }
 
 pub enum NodeType {
@@ -114,8 +187,10 @@ impl EditorUI {
         Self {
             asset_current_dir: std::path::PathBuf::from("assets"),
             hierarchy_search: String::new(),
+            node_to_add: None,
             asset_search: String::new(),
             material_search: String::new(),
+            log_search: String::new(),
             log_filter_info: true,
             log_filter_warn: true,
             log_filter_error: true,
@@ -145,6 +220,7 @@ impl EditorUI {
             show_inspector: true,
             show_bottom_panel: true,
             status_message: "Ready".to_string(),
+            hierarchy_force_state: None,
         }
     }
 
@@ -170,9 +246,17 @@ impl EditorUI {
             ui.checkbox(&mut self.log_filter_info, "Info");
             ui.checkbox(&mut self.log_filter_warn, "Warn");
             ui.checkbox(&mut self.log_filter_error, "Error");
-            if ui.button("Clear").clicked() {
-                self.logs.lock().unwrap().clear();
+            ui.separator();
+            ui.label("🔍");
+            ui.text_edit_singleline(&mut self.log_search);
+            if ui.button("✖").clicked() {
+                self.log_search.clear();
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Clear").clicked() {
+                    self.logs.lock().unwrap().clear();
+                }
+            });
         });
         ui.separator();
         egui::ScrollArea::vertical()
@@ -188,7 +272,9 @@ impl EditorUI {
                         (egui::Color32::LIGHT_GRAY, self.log_filter_info)
                     };
 
-                    if visible {
+                    let matches_search = self.log_search.is_empty() || log.to_lowercase().contains(&self.log_search.to_lowercase());
+
+                    if visible && matches_search {
                         ui.label(egui::RichText::new(log).color(color).monospace());
                     }
                 }
@@ -273,7 +359,7 @@ impl EditorUI {
         }
     }
 
-    fn draw_materials_tab(&mut self, ui: &mut Ui, asset_manager: &mut spark_core::asset::AssetManager) {
+    fn draw_materials_tab(&mut self, ui: &mut Ui, asset_manager: &mut spark_core::asset::AssetManager, resource_manager: &mut spark_core::resource::ResourceManager) {
         ui.horizontal(|ui| {
             ui.label("🔍 Search Materials:");
             ui.text_edit_singleline(&mut self.material_search);
@@ -292,30 +378,58 @@ impl EditorUI {
                     }
 
                     ui.collapsing(format!("Material: {}", mat.name), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("Name:");
-                            ui.text_edit_singleline(&mut mat.name);
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Albedo:");
-                            ui.color_edit_button_rgba_unmultiplied(&mut mat.albedo_factor);
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Metallic:");
-                            ui.add(egui::Slider::new(&mut mat.metallic_factor, 0.0..=1.0));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Roughness:");
-                            ui.add(egui::Slider::new(&mut mat.roughness_factor, 0.0..=1.0));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Emissive:");
-                            ui.color_edit_button_rgba_unmultiplied(&mut mat.emissive_factor);
-                        });
-                        ui.checkbox(&mut mat.is_transparent, "Transparent");
+                        self.draw_material_editor(ui, mat, idx, asset_manager, resource_manager);
                     });
                 }
             }
+        });
+    }
+
+    fn draw_material_editor(&mut self, ui: &mut Ui, mat: &mut spark_core::asset::Material, idx: usize, asset_manager: &mut spark_core::asset::AssetManager, resource_manager: &mut spark_core::resource::ResourceManager) {
+        ui.horizontal(|ui| {
+            ui.label("Name:");
+            ui.text_edit_singleline(&mut mat.name);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Albedo:");
+            ui.color_edit_button_rgba_unmultiplied(&mut mat.albedo_factor);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Metallic:");
+            ui.add(egui::Slider::new(&mut mat.metallic_factor, 0.0..=1.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Roughness:");
+            ui.add(egui::Slider::new(&mut mat.roughness_factor, 0.0..=1.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Emissive:");
+            ui.color_edit_button_rgba_unmultiplied(&mut mat.emissive_factor);
+        });
+        ui.checkbox(&mut mat.is_transparent, "Transparent");
+
+        ui.horizontal(|ui| {
+            ui.label("Albedo Texture:");
+            let tex_name = mat.albedo_texture.map(|h| {
+                asset_manager.texture_path_map.iter()
+                    .find(|(_, &handle)| handle == h)
+                    .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("Texture ID: {}", h.id()))
+            }).unwrap_or_else(|| "None".to_string());
+
+            egui::ComboBox::from_id_source(format!("mat_tex_{}", idx))
+                .selected_text(tex_name)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut mat.albedo_texture, None, "None");
+                    for t_idx in 0..resource_manager.gpu_textures.assets_len() {
+                        let h = spark_core::resource::Handle::new(t_idx as u32);
+                        let name = asset_manager.texture_path_map.iter()
+                            .find(|(_, &handle)| handle == h)
+                            .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+                            .unwrap_or_else(|| format!("ID: {}", t_idx));
+                        ui.selectable_value(&mut mat.albedo_texture, Some(h), name);
+                    }
+                });
         });
     }
 
@@ -439,6 +553,18 @@ impl EditorUI {
         project: &mut spark_core::Project,
         fps: f32,
     ) {
+        let ctx = self.egui_ctx.clone();
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
+            if ctx.input(|i| i.modifiers.shift) {
+                self.redo(scene);
+            } else {
+                self.undo(scene);
+            }
+        }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Y)) {
+            self.redo(scene);
+        }
+
         self.draw_menu_bar(scene, resource_manager, asset_manager, renderer);
         self.draw_toolbar(scene);
         self.draw_status_bar(fps);
@@ -484,7 +610,7 @@ impl EditorUI {
                             bounding_radius: 1.0,
                             skin_index: None,
                         }));
-                    scene.add_node(parent, node);
+                    self.node_to_add = Some((parent, node));
                 }
                 NodeType::Light => {
                     let mut node = Node {
@@ -507,7 +633,7 @@ impl EditorUI {
                             spot_inner_angle: 30.0,
                             spot_outer_angle: 45.0,
                         }));
-                    scene.add_node(parent, node);
+                    self.node_to_add = Some((parent, node));
                 }
                 NodeType::Sprite => {
                     let mut node = Node {
@@ -529,16 +655,35 @@ impl EditorUI {
                             flip_y: false,
                             size: spark_math::Vec2::new(1.0, 1.0),
                         }));
-                    scene.add_node(parent, node);
+                    self.node_to_add = Some((parent, node));
                 }
             }
         }
 
         if let Some(key) = self.node_to_delete.take() {
-            self.delete_node(scene, key);
+            self.execute_command(
+                Box::new(DeleteNodeCommand {
+                    node_key: key,
+                    node: None,
+                    parent_key: None,
+                    index_in_parent: 0,
+                }),
+                scene,
+            );
             if self.selected_node == Some(key) {
                 self.selected_node = None;
             }
+        }
+
+        if let Some((parent, node)) = self.node_to_add.take() {
+            self.execute_command(
+                Box::new(AddNodeCommand {
+                    parent_key: parent,
+                    node: Some(node),
+                    added_key: None,
+                }),
+                scene,
+            );
         }
 
         if let Some((node_key, comp_idx)) = self.component_to_remove.take() {
@@ -726,7 +871,7 @@ impl EditorUI {
             match self.active_bottom_tab {
                 BottomTab::Console => self.draw_console_tab(ui),
                 BottomTab::Assets => self.draw_assets_tab(ui, scene, resource_manager, renderer, asset_manager),
-                BottomTab::Materials => self.draw_materials_tab(ui, asset_manager),
+                BottomTab::Materials => self.draw_materials_tab(ui, asset_manager, resource_manager),
                 BottomTab::Settings => {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.heading("Post-Processing");
@@ -1039,20 +1184,28 @@ impl EditorUI {
                 }
             });
 
+            ui.horizontal(|ui| {
+                if ui.button("Expand All").clicked() {
+                    self.hierarchy_force_state = Some(true);
+                }
+                if ui.button("Collapse All").clicked() {
+                    self.hierarchy_force_state = Some(false);
+                }
+            });
+
             ui.separator();
 
+            let search = self.hierarchy_search.clone();
             egui::ScrollArea::vertical().show(ui, |ui| {
-                Self::draw_node_tree(
+                self.draw_node_tree_recursive(
                     ui,
                     scene,
                     scene.root,
-                    &mut self.selected_node,
-                    &mut self.node_to_delete,
-                    &mut self.node_to_duplicate,
-                    &mut self.node_to_add_child,
-                    &self.hierarchy_search,
+                    &search,
                 );
             });
+
+        self.hierarchy_force_state = None;
 
             if let Some(selected_key) = self.selected_node {
                 if ui.button("Delete Selected").clicked() {
@@ -1087,7 +1240,7 @@ impl EditorUI {
                 bounding_radius: 1.0,
                 skin_index: None,
             }));
-        scene.add_node(scene.root, new_node);
+        self.node_to_add = Some((scene.root, new_node));
     }
 
     fn add_default_light(&mut self, scene: &mut Scene) {
@@ -1112,7 +1265,7 @@ impl EditorUI {
                 spot_inner_angle: 30.0,
                 spot_outer_angle: 45.0,
             }));
-        scene.add_node(scene.root, new_node);
+        self.node_to_add = Some((scene.root, new_node));
     }
 
     fn add_default_sprite(&mut self, scene: &mut Scene) {
@@ -1136,7 +1289,7 @@ impl EditorUI {
                 flip_y: false,
                 size: spark_math::Vec2::new(1.0, 1.0),
             }));
-        scene.add_node(scene.root, new_node);
+        self.node_to_add = Some((scene.root, new_node));
     }
 
     fn delete_node(&mut self, scene: &mut Scene, key: NodeKey) {
@@ -1437,14 +1590,11 @@ impl EditorUI {
         }
     }
 
-    fn draw_node_tree(
+    fn draw_node_tree_recursive(
+        &mut self,
         ui: &mut egui::Ui,
         scene: &mut Scene,
         node_key: NodeKey,
-        selected_node: &mut Option<NodeKey>,
-        node_to_delete: &mut Option<NodeKey>,
-        node_to_duplicate: &mut Option<NodeKey>,
-        node_to_add_child: &mut Option<(NodeKey, NodeType)>,
         search: &str,
     ) {
         let (label, children, icon) = if let Some(node) = scene.nodes.get(node_key) {
@@ -1480,7 +1630,7 @@ impl EditorUI {
             return;
         };
 
-        let is_selected = Some(node_key) == *selected_node;
+        let is_selected = Some(node_key) == self.selected_node;
         let matches_search =
             search.is_empty() || label.to_lowercase().contains(&search.to_lowercase());
 
@@ -1511,7 +1661,7 @@ impl EditorUI {
                 let mut delete_requested = false;
                 response.context_menu(|ui| {
                     if ui.button("Duplicate").clicked() {
-                        *node_to_duplicate = Some(node_key);
+                        self.node_to_duplicate = Some(node_key);
                         ui.close_menu();
                     }
                     if ui.button("Delete").clicked() {
@@ -1520,25 +1670,25 @@ impl EditorUI {
                     }
                     ui.separator();
                     if ui.button("Add Child Mesh").clicked() {
-                        *node_to_add_child = Some((node_key, NodeType::Mesh));
+                        self.node_to_add_child = Some((node_key, NodeType::Mesh));
                         ui.close_menu();
                     }
                     if ui.button("Add Child Light").clicked() {
-                        *node_to_add_child = Some((node_key, NodeType::Light));
+                        self.node_to_add_child = Some((node_key, NodeType::Light));
                         ui.close_menu();
                     }
                     if ui.button("Add Child Sprite").clicked() {
-                        *node_to_add_child = Some((node_key, NodeType::Sprite));
+                        self.node_to_add_child = Some((node_key, NodeType::Sprite));
                         ui.close_menu();
                     }
                 });
 
                 if delete_requested {
-                    *node_to_delete = Some(node_key);
+                    self.node_to_delete = Some(node_key);
                 }
 
                 if response.clicked() {
-                    *selected_node = Some(node_key);
+                    self.selected_node = Some(node_key);
                 }
 
                 response.dnd_set_drag_payload(node_key);
@@ -1581,15 +1731,16 @@ impl EditorUI {
         }
 
         for &child_key in &children {
+            let id = ui.make_persistent_id(child_key);
+            if let Some(force) = self.hierarchy_force_state {
+                egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, !force).set_open(force);
+            }
+
             ui.indent(node_key, |ui| {
-                Self::draw_node_tree(
+                self.draw_node_tree_recursive(
                     ui,
                     scene,
                     child_key,
-                    selected_node,
-                    node_to_delete,
-                    node_to_duplicate,
-                    node_to_add_child,
                     search,
                 );
             });

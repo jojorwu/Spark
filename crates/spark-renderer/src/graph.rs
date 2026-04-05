@@ -372,11 +372,7 @@ impl RenderGraph {
                                 .get_pass_resource_view(pass_node.pass.name(), name, ctx.current_frame)
                                 .unwrap_or(renderer.common_shadow_view);
                             img_infos.push(vk::DescriptorImageInfo::default()
-                                .image_layout(if matches!(binding, crate::passes::ResourceBinding::InputAttachment(_, _)) {
-                                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL // Actually usually SHADER_READ_ONLY_OPTIMAL or COLOR_ATTACHMENT_OPTIMAL for inputs
-                                } else {
-                                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-                                })
+                                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                                 .image_view(view)
                                 .sampler(renderer.common_sampler));
                         }

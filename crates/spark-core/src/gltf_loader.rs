@@ -50,6 +50,7 @@ impl GltfLoader {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_node(
         rm: &mut ResourceManager,
         am: &mut AssetManager,

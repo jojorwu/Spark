@@ -137,7 +137,7 @@ impl Clone for Node {
             locked: self.locked,
             is_dirty: self.is_dirty,
             local_transform: self.local_transform,
-            global_transform: self.global_transform.clone(),
+            global_transform: self.global_transform,
             parent: self.parent,
             children: self.children.clone(),
             components: self.components.iter().map(|c| c.clone_box()).collect(),
@@ -798,7 +798,7 @@ impl Scene {
 
     pub fn pick_node_parallel(&self, ray: &spark_math::Ray) -> Option<(NodeKey, f32)> {
         use rayon::prelude::*;
-        let nodes: Vec<_> = self.nodes.iter().map(|(k, v)| (k, v)).collect();
+        let nodes: Vec<_> = self.nodes.iter().collect();
         nodes
             .into_par_iter()
             .filter_map(|(key, node)| {

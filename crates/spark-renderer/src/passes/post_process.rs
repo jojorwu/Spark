@@ -100,7 +100,7 @@ impl RenderPass for PostProcessPass {
 
             for i in 0..self.bloom_mips.len() {
                 let mip = &self.bloom_mips[i];
-                let ds = self.bloom_descriptor_sets[0 * self.bloom_mips.len() + i];
+                let ds = self.bloom_descriptor_sets[ctx.current_frame * self.bloom_mips.len() + i];
 
                 // Update descriptor with current source
                 let img_info = [vk::DescriptorImageInfo::default()
@@ -213,7 +213,7 @@ impl RenderPass for PostProcessPass {
                 let dst_mip = &self.bloom_mips[i];
                 let src_mip = &self.bloom_mips[i + 1];
                 let ds =
-                    self.bloom_descriptor_sets[0 * self.bloom_mips.len() + i + 1]; // Reuse DS for upsampling
+                    self.bloom_descriptor_sets[ctx.current_frame * self.bloom_mips.len() + i + 1]; // Reuse DS for upsampling
 
                 let img_info = [vk::DescriptorImageInfo::default()
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
