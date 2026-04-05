@@ -63,6 +63,9 @@ impl<T> AssetStorage<T> {
     pub fn get_mut(&mut self, handle: Handle<T>) -> Option<&mut T> {
         self.assets.get_mut(handle.id as usize)
     }
+    pub fn assets_len(&self) -> usize {
+        self.assets.len()
+    }
 }
 
 impl<T> Default for AssetStorage<T> {

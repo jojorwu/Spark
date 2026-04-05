@@ -368,6 +368,80 @@ impl Scene {
         key
     }
 
+    pub fn duplicate_node(&mut self, key: NodeKey) -> Option<NodeKey> {
+        let node_to_clone = self.nodes.get(key)?.clone();
+        let parent = node_to_clone.parent;
+
+        let new_key = self.nodes.insert(Node {
+            name: format!("{} (Copy)", node_to_clone.name),
+            visible: node_to_clone.visible,
+            locked: node_to_clone.locked,
+            is_dirty: true,
+            local_transform: node_to_clone.local_transform,
+            global_transform: node_to_clone.global_transform,
+            parent,
+            children: Vec::new(),
+            components: node_to_clone.components.iter().map(|c| c.clone_box()).collect(),
+        });
+
+        if let Some(pk) = parent {
+            if let Some(p_node) = self.nodes.get_mut(pk) {
+                p_node.children.push(new_key);
+            }
+        }
+
+        for component in &self.nodes[new_key].components {
+            let type_id = component.as_any().type_id();
+            self.component_registry
+                .entry(type_id)
+                .or_default()
+                .push(new_key);
+        }
+
+        let children_to_clone = node_to_clone.children.clone();
+        for child_key in children_to_clone {
+            if let Some(new_child_key) = self.duplicate_node_rec(child_key, new_key) {
+                self.nodes[new_key].children.push(new_child_key);
+            }
+        }
+
+        self.update_all_transforms();
+        Some(new_key)
+    }
+
+    fn duplicate_node_rec(&mut self, key: NodeKey, new_parent: NodeKey) -> Option<NodeKey> {
+        let node_to_clone = self.nodes.get(key)?.clone();
+
+        let new_key = self.nodes.insert(Node {
+            name: node_to_clone.name.clone(),
+            visible: node_to_clone.visible,
+            locked: node_to_clone.locked,
+            is_dirty: true,
+            local_transform: node_to_clone.local_transform,
+            global_transform: node_to_clone.global_transform,
+            parent: Some(new_parent),
+            children: Vec::new(),
+            components: node_to_clone.components.iter().map(|c| c.clone_box()).collect(),
+        });
+
+        for component in &self.nodes[new_key].components {
+            let type_id = component.as_any().type_id();
+            self.component_registry
+                .entry(type_id)
+                .or_default()
+                .push(new_key);
+        }
+
+        let children_to_clone = node_to_clone.children.clone();
+        for child_key in children_to_clone {
+            if let Some(new_child_key) = self.duplicate_node_rec(child_key, new_key) {
+                self.nodes[new_key].children.push(new_child_key);
+            }
+        }
+
+        Some(new_key)
+    }
+
     pub fn update_all_transforms(&mut self) {
         use rayon::prelude::*;
         let mut layers = Vec::new();
