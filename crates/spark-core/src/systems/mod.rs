@@ -262,6 +262,18 @@ impl Scheduler {
         }
     }
 
+    /// Executes all registered systems according to their stages and dependencies.
+    ///
+    /// The scheduler processes systems in a predefined sequence of stages. Within each stage,
+    /// systems are executed in parallel batches. A batch consists of systems that have
+    /// no mutual dependencies and no conflicting resource requirements.
+    ///
+    /// # Safety and Multithreading
+    ///
+    /// Execution within a batch uses `rayon` for high-performance parallel dispatch.
+    /// To bypass Rust's strict mutable aliasing rules for the context and system array,
+    /// raw pointer optimization is employed. The batch construction logic guarantees that
+    /// no two systems in the same batch will attempt conflicting access to shared resources.
     pub fn run(registry: &mut SystemRegistry, ctx: &mut FrameContext) {
         let stages = [
             CoreStage::First,
@@ -270,12 +282,17 @@ impl Scheduler {
             CoreStage::PostUpdate,
             CoreStage::Last,
         ];
+
         for stage in stages {
             if let Some(batches) = registry.sorted_indices.get(&stage) {
                 let systems = registry.systems.get_mut(&stage).unwrap();
                 for batch in batches {
                     use rayon::prelude::*;
+
+                    // Optimization: Use parallel iteration only for batches with multiple systems.
                     if batch.len() > 1 {
+                        // Cast to raw pointers to allow closure capture for parallel execution.
+                        // Safe because batches are pre-calculated to be disjoint in resource access.
                         let systems_ptr = systems.as_ptr() as usize;
                         let ctx_ptr = ctx as *const FrameContext as usize;
                         let active_state = registry.active_state.clone();
@@ -283,6 +300,8 @@ impl Scheduler {
                         batch.par_iter().for_each(|&idx| unsafe {
                             let systems_ptr = systems_ptr as *const Box<dyn crate::System>;
                             let system = &*systems_ptr.add(idx);
+
+                            // Check state constraints before updating.
                             if let Some(active) = &active_state {
                                 let allowed = system.run_in_states();
                                 if !allowed.is_empty() && !allowed.contains(active) {
@@ -296,16 +315,19 @@ impl Scheduler {
                             system_mut.update(ctx);
                         });
                     } else if let Some(&idx) = batch.first() {
-                        let system = &systems[idx];
+                        // Sequential execution for single-system batches to avoid Rayon overhead.
+                        let system = &mut systems[idx];
                         let mut should_run = true;
+
                         if let Some(active) = &registry.active_state {
                             let allowed = system.run_in_states();
                             if !allowed.is_empty() && !allowed.contains(active) {
                                 should_run = false;
                             }
                         }
+
                         if should_run {
-                            systems[idx].update(ctx);
+                            system.update(ctx);
                         }
                     }
                 }

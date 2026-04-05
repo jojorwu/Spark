@@ -124,6 +124,10 @@ pub struct InitContext<'a> {
 }
 
 /// Context passed to systems during the update phase.
+///
+/// `FrameContext` provides access to core engine subsystems. It encapsulates raw pointers
+/// to ensure that systems can be executed in parallel while maintaining controlled access
+/// to mutable state.
 pub struct FrameContext<'a> {
     scene: *mut Scene,
     renderer: *mut Renderer,
@@ -191,7 +195,10 @@ impl<'a> FrameContext<'a> {
     ///
     /// # Safety
     ///
-    /// Caller must ensure no other threads are accessing the scene concurrently.
+    /// The caller must ensure that no other systems or threads are accessing the scene
+    /// concurrently. This is typically guaranteed by the `Scheduler` based on declared
+    /// `ResourceAccess`. Direct mutation of the scene tree (adding/removing nodes)
+    /// should be done through the `command_queue` to ensure thread safety.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn scene_mut(&self) -> &mut Scene {
         &mut *self.scene
@@ -571,11 +578,16 @@ impl Engine {
             .expect("Event loop failed");
     }
 
+    /// Processes a single frame's update logic.
+    ///
+    /// This includes swapping event buffers, updating input state, and executing
+    /// all registered systems across multiple parallel stages.
     fn update_phase(&mut self, delta: f32) {
         let events = self.event_bus.read_events::<crate::event::EngineEvent>();
         self.input_manager.update(&events);
 
-        self.system_events.lock().unwrap().clear(); // Reset for this frame
+        // Clear system events from the previous frame.
+        self.system_events.lock().unwrap().clear();
 
         {
             let mut ctx = FrameContext::new(
