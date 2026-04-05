@@ -271,9 +271,24 @@ impl Scheduler {
     /// # Safety and Multithreading
     ///
     /// Execution within a batch uses `rayon` for high-performance parallel dispatch.
-    /// To bypass Rust's strict mutable aliasing rules for the context and system array,
-    /// raw pointer optimization is employed. The batch construction logic guarantees that
-    /// no two systems in the same batch will attempt conflicting access to shared resources.
+    ///
+    /// ## The Safety Contract (Raw Pointer Optimization)
+    ///
+    /// To maximize performance and bypass standard borrow checker restrictions during parallel
+    /// execution, we employ a raw pointer optimization pattern:
+    ///
+    /// 1. **Context/System Capture**: The `FrameContext` and the system slice are converted
+    ///    to raw pointers (represented as `usize`) to allow them to be captured by the
+    ///    `Send + Sync` closures required by Rayon.
+    /// 2. **Guaranteed Disjoint Access**: The engine's architecture ensures safety through
+    ///    **System Batching**. During `sort_systems`, the engine analyzes the `ResourceAccess`
+    ///    declarations of every system. Systems are only grouped into the same parallel batch
+    ///    if their resource requirements are mutually compatible (e.g., multiple readers,
+    ///    or a single writer with no other readers/writers of that specific resource).
+    /// 3. **Controlled Mutation**: Since no two systems in a batch access the same mutable
+    ///    data, they can safely execute in parallel despite the use of `unsafe` pointers.
+    /// 4. **Sequential Consistency**: Stages themselves (First -> Last) are always executed
+    ///    sequentially, providing synchronization points between groups of systems.
     pub fn run(registry: &mut SystemRegistry, ctx: &mut FrameContext) {
         let stages = [
             CoreStage::First,
@@ -286,25 +301,24 @@ impl Scheduler {
         for stage in stages {
             if let Some(batches) = registry.sorted_indices.get(&stage) {
                 let systems = registry.systems.get_mut(&stage).unwrap();
+                let active_state = registry.active_state.as_deref();
+
                 for batch in batches {
                     use rayon::prelude::*;
 
                     // Optimization: Use parallel iteration only for batches with multiple systems.
                     if batch.len() > 1 {
-                        // Cast to raw pointers to allow closure capture for parallel execution.
-                        // Safe because batches are pre-calculated to be disjoint in resource access.
                         let systems_ptr = systems.as_ptr() as usize;
                         let ctx_ptr = ctx as *const FrameContext as usize;
-                        let active_state = registry.active_state.clone();
 
                         batch.par_iter().for_each(|&idx| unsafe {
                             let systems_ptr = systems_ptr as *const Box<dyn crate::System>;
                             let system = &*systems_ptr.add(idx);
 
-                            // Check state constraints before updating.
-                            if let Some(active) = &active_state {
+                            // Check state constraints.
+                            if let Some(active) = active_state {
                                 let allowed = system.run_in_states();
-                                if !allowed.is_empty() && !allowed.contains(active) {
+                                if !allowed.is_empty() && !allowed.contains(&active.to_string()) {
                                     return;
                                 }
                             }
@@ -319,9 +333,9 @@ impl Scheduler {
                         let system = &mut systems[idx];
                         let mut should_run = true;
 
-                        if let Some(active) = &registry.active_state {
+                        if let Some(active) = active_state {
                             let allowed = system.run_in_states();
-                            if !allowed.is_empty() && !allowed.contains(active) {
+                            if !allowed.is_empty() && !allowed.contains(&active.to_string()) {
                                 should_run = false;
                             }
                         }

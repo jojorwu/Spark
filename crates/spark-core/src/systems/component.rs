@@ -31,7 +31,7 @@ impl System for ComponentSystem {
             // we use the established raw pointer pattern for high performance.
             let nodes_ptr = &mut scene.nodes as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node> as usize;
 
-            scene.nodes.keys().collect::<Vec<_>>().into_par_iter().for_each(|key| {
+            scene.nodes.keys().par_bridge().for_each(|key| {
                 let nodes = &mut *(nodes_ptr as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node>);
                 if let Some(node) = nodes.get_mut(key) {
                     for component in &mut node.components {

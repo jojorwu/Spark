@@ -552,44 +552,55 @@ impl Engine {
                         self.last_frame_time = now;
                         self.current_fps = 0.9 * self.current_fps + 0.1 * (1.0 / delta.max(0.001));
 
-                        self.event_bus.swap_buffers();
-
-                        {
-                            let mut init_ctx = InitContext {
-                                scene: &mut self.scene,
-                                renderer: &mut self.renderer,
-                                resource_manager: &mut self.resource_manager,
-                                asset_manager: &mut self.asset_manager,
-                                resources: &mut self.resources,
-                                task_system: &self.task_system,
-                            };
-                            crate::systems::Scheduler::apply_state_changes(&mut self.system_registry, &mut init_ctx);
-                        }
-
-                        self.update_phase(delta);
-                        self.render_phase(egui_output, delta);
+                        self.on_frame_start(delta, egui_output);
                     }
                     _ => (),
                 }
 
                 if elwt.exiting() {
-                    let mut init_ctx = InitContext {
-                        scene: &mut self.scene,
-                        renderer: &mut self.renderer,
-                        resource_manager: &mut self.resource_manager,
-                        asset_manager: &mut self.asset_manager,
-                        resources: &mut self.resources,
-                        task_system: &self.task_system,
-                    };
-                    crate::systems::Scheduler::shutdown(&mut self.system_registry, &mut init_ctx);
+                    self.on_shutdown();
                 }
             })
             .expect("Event loop failed");
     }
 
+    /// Handles the transition at the start of a frame, including event buffer swapping,
+    /// state changes, and update/render execution.
+    fn on_frame_start(&mut self, delta: f32, egui_output: Option<(egui::FullOutput, egui::Context)>) {
+        self.event_bus.swap_buffers();
+
+        {
+            let mut init_ctx = InitContext {
+                scene: &mut self.scene,
+                renderer: &mut self.renderer,
+                resource_manager: &mut self.resource_manager,
+                asset_manager: &mut self.asset_manager,
+                resources: &mut self.resources,
+                task_system: &self.task_system,
+            };
+            crate::systems::Scheduler::apply_state_changes(&mut self.system_registry, &mut init_ctx);
+        }
+
+        self.update_phase(delta);
+        self.render_phase(egui_output, delta);
+    }
+
+    /// Handles engine shutdown logic and system cleanup.
+    fn on_shutdown(&mut self) {
+        let mut init_ctx = InitContext {
+            scene: &mut self.scene,
+            renderer: &mut self.renderer,
+            resource_manager: &mut self.resource_manager,
+            asset_manager: &mut self.asset_manager,
+            resources: &mut self.resources,
+            task_system: &self.task_system,
+        };
+        crate::systems::Scheduler::shutdown(&mut self.system_registry, &mut init_ctx);
+    }
+
     /// Processes a single frame's update logic.
     ///
-    /// This includes swapping event buffers, updating input state, and executing
+    /// This includes updating input state from the event bus and executing
     /// all registered systems across multiple parallel stages.
     fn update_phase(&mut self, delta: f32) {
         let events = self.event_bus.read_events::<crate::event::EngineEvent>();
