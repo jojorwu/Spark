@@ -28,6 +28,7 @@ pub struct RenderGraphPassNode {
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
     pub descriptor_sets: Vec<vk::DescriptorSet>,
+    pub resource_versions: Vec<std::sync::Mutex<HashMap<String, u64>>>,
 }
 
 /// Граф рендеринга, управляющий зависимостями между проходами и ресурсами.
@@ -65,11 +66,17 @@ impl RenderGraph {
         inputs: &[&str],
         outputs: &[&str],
     ) {
+        let mut resource_versions = Vec::with_capacity(crate::MAX_FRAMES_IN_FLIGHT);
+        for _ in 0..crate::MAX_FRAMES_IN_FLIGHT {
+            resource_versions.push(std::sync::Mutex::new(HashMap::new()));
+        }
+
         self.passes.push(RenderGraphPassNode {
             pass: Box::new(pass),
             inputs: inputs.iter().map(|&s| s.to_string()).collect(),
             outputs: outputs.iter().map(|&s| s.to_string()).collect(),
             descriptor_sets: Vec::new(),
+            resource_versions,
         });
     }
 
@@ -353,13 +360,48 @@ impl RenderGraph {
             let pass_node = &self.passes[idx];
 
             // 1. Automatic Descriptor Updates
-            // Only update if resources have actually changed (handled inside update_descriptor_sets or similar logic)
-            // For now, we perform automated binding matching.
+            // Only update if resources have actually changed.
             if !pass_node.descriptor_sets.is_empty() {
                 let ds = pass_node.descriptor_sets[ctx.current_frame];
                 let bindings = pass_node.pass.bindings();
 
-                let mut img_infos = Vec::new();
+                let mut needs_update = false;
+                let mut current_versions = HashMap::new();
+
+                for binding in &bindings {
+                    let name = match binding {
+                        crate::passes::ResourceBinding::SampledImage(_, n) => n,
+                        crate::passes::ResourceBinding::InputAttachment(_, n) => n,
+                        crate::passes::ResourceBinding::StorageImage(_, n) => n,
+                        crate::passes::ResourceBinding::StorageBuffer(_, n) => n,
+                        crate::passes::ResourceBinding::UniformBuffer(_, n) => n,
+                        crate::passes::ResourceBinding::AccelerationStructure(_, n) => n,
+                    };
+
+                    let version = if let Some(attachments) = self.physical_attachments.get(name)
+                        .or_else(|| self.transient_attachments.get(name))
+                    {
+                        attachments[ctx.current_frame].version.load(std::sync::atomic::Ordering::Relaxed)
+                    } else if let Some(buffer) = renderer.get_resource_buffer(pass_node.pass.name(), name, ctx.current_frame) {
+                        buffer.version.load(std::sync::atomic::Ordering::Relaxed)
+                    } else {
+                        0
+                    };
+
+                    current_versions.insert(name.clone(), version);
+                    if pass_node.resource_versions[ctx.current_frame].lock().unwrap().get(name) != Some(&version) {
+                        needs_update = true;
+                    }
+                }
+
+                if !needs_update {
+                    // Skip update if versions match
+                    // But we still need to record barriers and pass commands
+                } else {
+                    // Perform update
+                    *pass_node.resource_versions[ctx.current_frame].lock().unwrap() = current_versions;
+
+                    let mut img_infos = Vec::new();
                 let mut buf_infos = Vec::new();
                 let mut as_infos = Vec::new();
                 let mut as_handles = Vec::new();
@@ -495,6 +537,7 @@ impl RenderGraph {
                              as_idx_2 += 1;
                         }
                     }
+                }
                 }
             }
 

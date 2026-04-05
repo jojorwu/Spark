@@ -557,7 +557,8 @@ impl Scene {
         asset_manager: &crate::asset::AssetManager,
     ) -> spark_renderer::resource::FramePacket {
         use rayon::prelude::*;
-        let data = self.collect_data_recursive(self.root, frustum);
+        let mut data = SceneDataCollector::new();
+        self.collect_data_recursive(self.root, frustum, &mut data);
 
         // Pre-calculate transparency to avoid repeat resource_manager lookups
         let (mut opaque_meshes, mut transparent_meshes): (Vec<_>, Vec<_>) = rayon::join(
@@ -704,8 +705,8 @@ impl Scene {
         &self,
         node_key: NodeKey,
         frustum: Option<&spark_math::Frustum>,
-    ) -> SceneDataCollector {
-        let mut data = SceneDataCollector::new();
+        data: &mut SceneDataCollector,
+    ) {
         if let Some(node) = self.nodes.get(node_key) {
             for component in &node.components {
                 let any = component.as_any();
@@ -767,12 +768,11 @@ impl Scene {
                     data.merge(self.collect_data_parallel(&node.children, frustum));
                 } else {
                     for &child_key in &node.children {
-                        data.merge(self.collect_data_recursive(child_key, frustum));
+                        self.collect_data_recursive(child_key, frustum, data);
                     }
                 }
             }
         }
-        data
     }
 
     fn collect_data_parallel(
@@ -781,7 +781,9 @@ impl Scene {
         frustum: Option<&spark_math::Frustum>,
     ) -> SceneDataCollector {
         if children.len() <= 1 {
-            return self.collect_data_recursive(children[0], frustum);
+            let mut data = SceneDataCollector::new();
+            self.collect_data_recursive(children[0], frustum, &mut data);
+            return data;
         }
 
         let mid = children.len() / 2;

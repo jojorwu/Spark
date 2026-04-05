@@ -562,6 +562,7 @@ impl Renderer {
     pub fn update_lights_from_draw(&mut self, lights: &[crate::resource::LightDraw]) {
         let count = lights.len();
         if count == 0 {
+            self.light_count = 0;
             return;
         }
         self.light_count = count as u32;
@@ -641,6 +642,10 @@ impl Renderer {
         object_data: &[ObjectDataSSBO],
     ) {
         let frame_idx = self.frame_manager.current_frame;
+        if commands.is_empty() {
+            return;
+        }
+
         let cmd_sz = std::mem::size_of_val(commands) as u64;
 
         let mut buffer = self.frame_manager.frames[frame_idx]
@@ -660,9 +665,7 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].transparent_indirect_buffer = buffer.clone();
         }
-        if !commands.is_empty() {
-            self.upload_to_buffer(&buffer.unwrap(), commands);
-        }
+        self.upload_to_buffer(&buffer.unwrap(), commands);
 
         let obj_sz = std::mem::size_of_val(object_data) as u64;
         let mut obj_buffer = self.frame_manager.frames[frame_idx]
@@ -682,9 +685,7 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].transparent_object_buffer = obj_buffer.clone();
         }
-        if !object_data.is_empty() {
-            self.upload_to_buffer(&obj_buffer.unwrap(), object_data);
-        }
+        self.upload_to_buffer(&obj_buffer.unwrap(), object_data);
     }
 
     pub fn update_indirect_buffers(
@@ -693,6 +694,10 @@ impl Renderer {
         object_data: &[ObjectDataSSBO],
     ) {
         let frame_idx = self.frame_manager.current_frame;
+        if commands.is_empty() {
+            return;
+        }
+
         let cmd_sz = std::mem::size_of_val(commands) as u64;
 
         let mut buffer = self.frame_manager.frames[frame_idx]
@@ -1159,13 +1164,18 @@ impl Renderer {
         let s = self.create_texture_sampler(mip);
         self.destroy_buffer(st);
 
-        let bindless_index = self
-            .gpu_resource_manager
-            .next_bindless_index
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if bindless_index >= 10000 {
-            panic!("Exceeded maximum bindless texture count (10000)");
-        }
+        let bindless_index = if let Some(idx) = self.gpu_resource_manager.free_bindless_indices.lock().unwrap().pop() {
+            idx
+        } else {
+            let idx = self
+                .gpu_resource_manager
+                .next_bindless_index
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if idx >= 10000 {
+                panic!("Exceeded maximum bindless texture count (10000)");
+            }
+            idx
+        };
 
         let img_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -1195,6 +1205,9 @@ impl Renderer {
         self.gpu_resource_manager
             .texture_descriptor_sets
             .remove(&t.view);
+
+        self.gpu_resource_manager.free_bindless_indices.lock().unwrap().push(t.bindless_index);
+
         unsafe {
             self.device.device.destroy_sampler(t.sampler, None);
             self.device.device.destroy_image_view(t.view, None);

@@ -370,22 +370,31 @@ impl EditorUI {
             let mat_indices: Vec<_> = (0..asset_manager.materials.assets_len()).collect();
             for idx in mat_indices {
                 let handle = spark_core::resource::Handle::new(idx as u32);
-                if let Some(mat) = asset_manager.materials.get_mut(handle) {
+
+                let mut matches = true;
+                if let Some(mat) = asset_manager.materials.get(handle) {
                     if !self.material_search.is_empty()
                         && !mat.name.to_lowercase().contains(&self.material_search.to_lowercase())
                     {
-                        continue;
+                        matches = false;
                     }
+                } else {
+                    matches = false;
+                }
 
-                    ui.collapsing(format!("Material: {}", mat.name), |ui| {
-                        self.draw_material_editor(ui, mat, idx, asset_manager, resource_manager);
+                if matches {
+                    let mat_name = asset_manager.materials.get(handle).unwrap().name.clone();
+                    ui.collapsing(format!("Material: {}", mat_name), |ui| {
+                        if let Some(mat) = asset_manager.materials.get_mut(handle) {
+                            Self::draw_material_editor_static(ui, mat, idx, &asset_manager.texture_path_map, resource_manager);
+                        }
                     });
                 }
             }
         });
     }
 
-    fn draw_material_editor(&mut self, ui: &mut Ui, mat: &mut spark_core::asset::Material, idx: usize, asset_manager: &mut spark_core::asset::AssetManager, resource_manager: &mut spark_core::resource::ResourceManager) {
+    fn draw_material_editor_static(ui: &mut Ui, mat: &mut spark_core::asset::Material, idx: usize, texture_path_map: &std::collections::HashMap<std::path::PathBuf, spark_core::resource::Handle<spark_renderer::vulkan::texture::Texture>>, resource_manager: &mut spark_core::resource::ResourceManager) {
         ui.horizontal(|ui| {
             ui.label("Name:");
             ui.text_edit_singleline(&mut mat.name);
@@ -411,7 +420,7 @@ impl EditorUI {
         ui.horizontal(|ui| {
             ui.label("Albedo Texture:");
             let tex_name = mat.albedo_texture.map(|h| {
-                asset_manager.texture_path_map.iter()
+                texture_path_map.iter()
                     .find(|(_, &handle)| handle == h)
                     .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
                     .unwrap_or_else(|| format!("Texture ID: {}", h.id()))
@@ -423,7 +432,7 @@ impl EditorUI {
                     ui.selectable_value(&mut mat.albedo_texture, None, "None");
                     for t_idx in 0..resource_manager.gpu_textures.assets_len() {
                         let h = spark_core::resource::Handle::new(t_idx as u32);
-                        let name = asset_manager.texture_path_map.iter()
+                        let name = texture_path_map.iter()
                             .find(|(_, &handle)| handle == h)
                             .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
                             .unwrap_or_else(|| format!("ID: {}", t_idx));
@@ -554,16 +563,20 @@ impl EditorUI {
         fps: f32,
     ) {
         let ctx = self.egui_ctx.clone();
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
-            if ctx.input(|i| i.modifiers.shift) {
-                self.redo(scene);
-            } else {
-                self.undo(scene);
+
+        // Handle global hotkeys
+        ctx.input(|i| {
+            if i.modifiers.command && i.key_pressed(egui::Key::Z) {
+                if i.modifiers.shift {
+                    self.redo(scene);
+                } else {
+                    self.undo(scene);
+                }
             }
-        }
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Y)) {
-            self.redo(scene);
-        }
+            if i.modifiers.command && i.key_pressed(egui::Key::Y) {
+                self.redo(scene);
+            }
+        });
 
         self.draw_menu_bar(scene, resource_manager, asset_manager, renderer);
         self.draw_toolbar(scene);

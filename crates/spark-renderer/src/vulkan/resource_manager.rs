@@ -4,6 +4,7 @@ use crate::vulkan::texture::Texture;
 use ash::vk;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU32;
+use std::sync::Mutex;
 
 pub struct GpuResourceManager {
     pub descriptor_pool: vk::DescriptorPool,
@@ -16,6 +17,7 @@ pub struct GpuResourceManager {
     pub bindless_descriptor_set_layout: vk::DescriptorSetLayout,
     pub bindless_descriptor_set: vk::DescriptorSet,
     pub next_bindless_index: AtomicU32,
+    pub free_bindless_indices: Mutex<Vec<u32>>,
     pub default_texture: Option<Texture>,
 }
 
@@ -64,6 +66,7 @@ impl GpuResourceManager {
             bindless_descriptor_set_layout,
             bindless_descriptor_set,
             next_bindless_index: AtomicU32::new(0),
+            free_bindless_indices: Mutex::new(Vec::new()),
             default_texture: None,
         })
     }

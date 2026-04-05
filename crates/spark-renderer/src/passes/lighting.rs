@@ -220,6 +220,8 @@ impl RenderPass for LightingPass {
             height: f32,
             ssgi_intensity: f32,
             shadow_pcf: u32,
+            z_near: f32,
+            z_far: f32,
             object_buffer_address: u64,
             prev_view_proj: spark_math::Mat4,
         }
@@ -235,6 +237,8 @@ impl RenderPass for LightingPass {
                 0.0
             },
             shadow_pcf: renderer.settings.shadow_pcf_samples,
+            z_near: 0.1, // TODO: Get from active camera
+            z_far: 100.0,
             object_buffer_address: renderer.frame_manager.frames[current_frame]
                 .object_data_buffer
                 .as_ref()
