@@ -47,7 +47,11 @@ impl RenderPass for SSAOPass {
         "SSAOPass"
     }
 
-    fn get_resource_buffer(&self, name: &str, frame_index: usize) -> Option<crate::resource::Buffer> {
+    fn get_resource_buffer(
+        &self,
+        name: &str,
+        frame_index: usize,
+    ) -> Option<crate::resource::Buffer> {
         if name == "SSAOParams" {
             Some(self.ssao_params_buffer[frame_index].clone())
         } else {
@@ -161,8 +165,9 @@ impl RenderPass for SSAOPass {
         self.record_commands_impl(&params);
     }
 
-
-    fn on_resize(&mut self, _renderer: &mut Renderer, _new_extent: vk::Extent2D) {}
+    fn on_resize(&mut self, renderer: &Renderer, _new_extent: vk::Extent2D) {
+        let _ = renderer;
+    }
 
     fn destroy(&mut self, renderer: &mut Renderer) {
         let device = &renderer.device.device;
@@ -227,7 +232,8 @@ impl SSAOPass {
             image::Rgba32FImage::from_raw(4, 4, bytemuck::cast_slice(&ssao_noise).to_vec())
                 .unwrap(),
         );
-        let noise_texture = renderer.create_texture_from_image(&noise_img);
+        let renderer_ptr = renderer as *const Renderer as *mut Renderer;
+        let noise_texture = unsafe { (*renderer_ptr).create_texture_from_image(&noise_img) };
 
         // 3. Create Buffers
         let mut ssao_params_buffer = Vec::new();
@@ -583,7 +589,11 @@ impl SSAOPass {
 
             let ssao_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(renderer.get_pass_resource_view(self.name(), "SSAO_Intermediary", i).unwrap())
+                .image_view(
+                    renderer
+                        .get_pass_resource_view(self.name(), "SSAO_Intermediary", i)
+                        .unwrap(),
+                )
                 .sampler(sampler)];
             let depth_info = [vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)

@@ -100,7 +100,7 @@ impl RenderPass for PostProcessPass {
 
             for i in 0..self.bloom_mips.len() {
                 let mip = &self.bloom_mips[i];
-                let ds = self.bloom_descriptor_sets[0 * self.bloom_mips.len() + i];
+                let ds = self.bloom_descriptor_sets[ctx.current_frame * self.bloom_mips.len() + i];
 
                 // Update descriptor with current source
                 let img_info = [vk::DescriptorImageInfo::default()
@@ -213,7 +213,7 @@ impl RenderPass for PostProcessPass {
                 let dst_mip = &self.bloom_mips[i];
                 let src_mip = &self.bloom_mips[i + 1];
                 let ds =
-                    self.bloom_descriptor_sets[0 * self.bloom_mips.len() + i + 1]; // Reuse DS for upsampling
+                    self.bloom_descriptor_sets[ctx.current_frame * self.bloom_mips.len() + i + 1]; // Reuse DS for upsampling
 
                 let img_info = [vk::DescriptorImageInfo::default()
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -371,7 +371,7 @@ impl RenderPass for PostProcessPass {
                 self.layout,
                 0,
                 &[
-                    renderer.gpu_resource_manager.bindless_descriptor_set,
+                    renderer.gpu_resource_manager.bindless.set,
                     self.descriptor_sets[0],
                 ],
                 &[],
@@ -484,7 +484,7 @@ impl RenderPass for PostProcessPass {
         }
     }
 
-    fn on_resize(&mut self, renderer: &mut Renderer, new_extent: vk::Extent2D) {
+    fn on_resize(&mut self, renderer: &Renderer, new_extent: vk::Extent2D) {
         let device = &renderer.device;
         for mip in self.bloom_mips.drain(..) {
             mip.destroy(&device.device, &device.allocator);
@@ -586,10 +586,7 @@ impl PostProcessPass {
         let layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(&[
-                        renderer.gpu_resource_manager.bindless_descriptor_set_layout,
-                        ds_layout,
-                    ])
+                    .set_layouts(&[renderer.gpu_resource_manager.bindless.layout, ds_layout])
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,

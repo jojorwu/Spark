@@ -22,6 +22,10 @@ impl Resources {
         self.storage.get(&TypeId::of::<T>()).cloned()
     }
 
+    pub fn get_by_id(&self, id: TypeId) -> Option<Arc<RwLock<Box<dyn Any + Send + Sync>>>> {
+        self.storage.get(&id).cloned()
+    }
+
     pub fn remove<T: 'static>(&mut self) {
         self.storage.remove(&TypeId::of::<T>());
     }

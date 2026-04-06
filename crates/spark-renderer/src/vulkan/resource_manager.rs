@@ -1,9 +1,9 @@
 use crate::resource::Buffer;
+use crate::vulkan::bindless::BindlessManager;
 use crate::vulkan::device::VulkanDevice;
 use crate::vulkan::texture::Texture;
 use ash::vk;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU32;
 
 pub struct GpuResourceManager {
     pub descriptor_pool: vk::DescriptorPool,
@@ -13,46 +13,15 @@ pub struct GpuResourceManager {
     pub global_material_buffer: Option<Buffer>,
     pub vertex_buffers: Vec<Buffer>,
     pub index_buffer: Option<Buffer>,
-    pub bindless_descriptor_set_layout: vk::DescriptorSetLayout,
-    pub bindless_descriptor_set: vk::DescriptorSet,
-    pub next_bindless_index: AtomicU32,
+    pub bindless: BindlessManager,
     pub default_texture: Option<Texture>,
 }
 
 impl GpuResourceManager {
     pub fn new(device: &VulkanDevice) -> Result<Self, crate::error::RendererError> {
         let descriptor_pool = Self::create_descriptor_pool(&device.device);
-        let bindless_descriptor_set_layout = unsafe {
-            let bindings = [vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(10000)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
-            let flags = [vk::DescriptorBindingFlags::PARTIALLY_BOUND
-                | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND];
-            let mut binding_flags =
-                vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&flags);
-            device
-                .device
-                .create_descriptor_set_layout(
-                    &vk::DescriptorSetLayoutCreateInfo::default()
-                        .bindings(&bindings)
-                        .flags(vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
-                        .push_next(&mut binding_flags),
-                    None,
-                )
-                .map_err(|_| crate::error::RendererError::NoSuitableDevice)?
-        };
-        let bindless_descriptor_set = unsafe {
-            device
-                .device
-                .allocate_descriptor_sets(
-                    &vk::DescriptorSetAllocateInfo::default()
-                        .descriptor_pool(descriptor_pool)
-                        .set_layouts(&[bindless_descriptor_set_layout]),
-                )
-                .map_err(|_| crate::error::RendererError::NoSuitableDevice)?[0]
-        };
+        let bindless = BindlessManager::new(device, descriptor_pool, 10000)?;
+
         Ok(Self {
             descriptor_pool,
             texture_descriptor_sets: HashMap::new(),
@@ -61,9 +30,7 @@ impl GpuResourceManager {
             global_material_buffer: None,
             vertex_buffers: Vec::new(),
             index_buffer: None,
-            bindless_descriptor_set_layout,
-            bindless_descriptor_set,
-            next_bindless_index: AtomicU32::new(0),
+            bindless,
             default_texture: None,
         })
     }
@@ -80,6 +47,9 @@ impl GpuResourceManager {
                 .descriptor_count(100),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(100),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                 .descriptor_count(100),
         ];
         unsafe {
@@ -114,9 +84,7 @@ impl GpuResourceManager {
             device
                 .device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
-            device
-                .device
-                .destroy_descriptor_set_layout(self.bindless_descriptor_set_layout, None);
+            self.bindless.destroy(&device.device);
         }
     }
 }

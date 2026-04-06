@@ -11,6 +11,27 @@ impl RenderPass for CullingPass {
     fn dependencies(&self) -> Vec<&'static str> {
         vec!["HiZPass"]
     }
+
+    fn gpu_resource_buffer_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![
+            (
+                "object_data_buffer".to_string(),
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+            ),
+            (
+                "indirect_commands_buffer".to_string(),
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+            ),
+            (
+                "draw_count_buffer".to_string(),
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+            ),
+        ]
+    }
+
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
         let current_frame = ctx.current_frame;
@@ -27,21 +48,13 @@ impl RenderPass for CullingPass {
                 .draw_count_buffer
                 .as_ref(),
         ) {
-            let compute_cb = renderer.device.create_command_buffer(
-                renderer.device.compute_command_pool,
-                vk::CommandBufferLevel::PRIMARY,
-            );
-            unsafe {
-                renderer
-                    .device
-                    .device
-                    .begin_command_buffer(compute_cb, &vk::CommandBufferBeginInfo::default())
-                    .unwrap();
-            }
+            // Reusing the main command buffer instead of allocating a separate compute one
+            // This simplifies synchronization via the RenderGraph's barriers.
+            let cb = ctx.command_buffer;
 
             let params = CullingRecordParams {
                 device: &renderer.device.device,
-                command_buffer: compute_cb,
+                command_buffer: cb,
                 object_count: renderer.last_object_count,
                 global_ds,
                 indirect_buffer: ind_buf,
@@ -49,22 +62,6 @@ impl RenderPass for CullingPass {
                 renderer_ref_for_pc_extract: renderer,
             };
             self.record_commands_impl(&params);
-
-            unsafe {
-                renderer
-                    .device
-                    .device
-                    .end_command_buffer(compute_cb)
-                    .unwrap();
-            }
-
-            renderer.device.submit_commands(
-                renderer.device.compute_queue,
-                compute_cb,
-                &[],
-                &[renderer.frame_manager.culling_finished_semaphores[current_frame]],
-                vk::Fence::null(),
-            );
         }
     }
 

@@ -100,26 +100,40 @@ vec3 calculateLighting(vec3 hitPos, vec3 normal, vec3 albedo, vec3 viewDir, floa
     return color;
 }
 
+/**
+ * Точка входа для гибридной трассировки лучей.
+ * Entry point for hybrid ray tracing.
+ */
 void main()
 {
+    // Координаты текущего пикселя.
+    // Current pixel coordinates.
     const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
     const vec2 inUV = pixelCenter/vec2(gl_LaunchSizeEXT.xy);
 
+    // Выборка глубины из G-Buffer. Если глубина максимальна (фон), пропускаем.
+    // Depth sampling from G-Buffer. Skip if it's the background.
     float depth = texture(gBufferDepth, inUV).r;
     if (depth == 1.0) {
         imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(0.01, 0.01, 0.05, 1.0));
         return;
     }
 
+    // Извлечение физических свойств поверхности из G-Buffer.
+    // Extraction of physical surface properties from the G-Buffer.
     vec3 normal = texture(gBufferNormal, inUV).xyz * 2.0 - 1.0;
     vec3 albedo = texture(gBufferAlbedo, inUV).rgb;
     vec4 pbr = texture(gBufferPBR, inUV);
 
+    // Реконструкция мировой позиции из глубины (Hybrid approach).
+    // World position reconstruction from depth (Hybrid approach).
     vec4 clipPos = vec4(inUV * 2.0 - 1.0, depth, 1.0);
     vec4 worldPos = ubo.inv_vp * clipPos;
     worldPos /= worldPos.w;
     vec3 hitPos = worldPos.xyz;
 
+    // Инициализация генератора случайных чисел для эффектов трассировки.
+    // Initialize random seed for tracing effects.
     seed = uint(gl_LaunchIDEXT.y * gl_LaunchSizeEXT.x + gl_LaunchIDEXT.x);
     vec3 viewDir = normalize(ubo.camera_pos.xyz - hitPos);
 
@@ -129,9 +143,11 @@ void main()
 
     vec3 finalColor = calculateLighting(hitPos, normal, albedo, viewDir, roughness, metallic, emissive);
 
+    // Ambient Occlusion через трассировку (Ray-Traced AO).
+    // Ray-Traced Ambient Occlusion.
     if (pc.ao_enabled > 0.5) {
         float ao = 0.0;
-        const int aoSamples = 4;
+        const int aoSamples = 4; // Количество лучей для AO. Rays per pixel for AO.
         for (int i = 0; i < aoSamples; i++) {
             vec3 aoDir = randomHemispherePoint(normal);
             uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
@@ -144,9 +160,12 @@ void main()
         finalColor *= (0.3 + 0.7 * ao);
     }
 
+    // Зеркальные отражения (Ray-Traced Reflections).
+    // Hardware Ray-Traced Reflections.
     if (pc.reflections_enabled > 0.5) {
         vec3 reflectDir = reflect(-viewDir, normal);
         payload.hit = 0;
+        // Трассировка вторичного луча для отражения. Trace secondary ray for reflection.
         traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, reflectDir, 1000.0, 0);
         if (payload.hit == 1) {
             vec3 rHitPos = hitPos + reflectDir * payload.dist;

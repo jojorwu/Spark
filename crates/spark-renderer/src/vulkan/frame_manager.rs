@@ -38,6 +38,7 @@ impl FrameManager {
                     secondary_command_buffers: Vec::new(),
                     light_view_projs: [spark_math::Mat4::IDENTITY; 4],
                     scratch_buffers: Vec::new(),
+                    texture_staging_buffer: None,
                 }
             })
             .collect::<Vec<_>>()
@@ -122,6 +123,9 @@ impl FrameManager {
                 }
                 if let Some(dc) = frame.draw_count_buffer.take() {
                     device.destroy_buffer(dc);
+                }
+                if let Some(ts) = frame.texture_staging_buffer.take() {
+                    device.destroy_buffer(ts);
                 }
                 device.device.destroy_semaphore(frame.image_available, None);
                 device.device.destroy_semaphore(frame.render_finished, None);

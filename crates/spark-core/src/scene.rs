@@ -114,7 +114,6 @@ pub enum LightType {
     Spot,
 }
 
-
 #[derive(Serialize, Deserialize)]
 pub struct Node {
     pub name: String,
@@ -137,10 +136,26 @@ impl Clone for Node {
             locked: self.locked,
             is_dirty: self.is_dirty,
             local_transform: self.local_transform,
-            global_transform: self.global_transform.clone(),
+            global_transform: self.global_transform,
             parent: self.parent,
             children: self.children.clone(),
             components: self.components.iter().map(|c| c.clone_box()).collect(),
+        }
+    }
+}
+
+impl Default for Node {
+    fn default() -> Self {
+        Self {
+            name: "New Node".to_string(),
+            visible: true,
+            locked: false,
+            is_dirty: true,
+            local_transform: Mat4::IDENTITY,
+            global_transform: Mat4::IDENTITY,
+            parent: None,
+            children: Vec::new(),
+            components: Vec::new(),
         }
     }
 }
@@ -153,6 +168,8 @@ pub struct Scene {
     pub last_view_matrix: Mat4,
     #[serde(skip)]
     pub component_registry: std::collections::HashMap<std::any::TypeId, Vec<NodeKey>>,
+    #[serde(skip)]
+    pub nodes_version: std::sync::atomic::AtomicU64,
 }
 
 type TextureHandle = crate::resource::Handle<spark_renderer::vulkan::texture::Texture>;
@@ -216,6 +233,7 @@ impl Scene {
             root,
             last_view_matrix: Mat4::IDENTITY,
             component_registry: std::collections::HashMap::new(),
+            nodes_version: std::sync::atomic::AtomicU64::new(1),
         }
     }
 
@@ -239,12 +257,57 @@ impl Default for Scene {
     }
 }
 
+impl spark_renderer::RenderableScene for Scene {
+    fn get_active_camera_matrices(
+        &self,
+        extent: spark_renderer::ash::vk::Extent2D,
+    ) -> Option<(spark_math::Mat4, spark_math::Mat4, f32, f32)> {
+        for node in self.nodes.values() {
+            for component in &node.components {
+                if let Some(camera) = component.as_any().downcast_ref::<CameraComponent>() {
+                    let view = node.global_transform.inverse();
+                    let projection = if camera.orthographic {
+                        let aspect = extent.width as f32 / extent.height as f32;
+                        let size = camera.ortho_size;
+                        spark_math::Mat4::orthographic_rh(
+                            -size * aspect,
+                            size * aspect,
+                            -size,
+                            size,
+                            camera.near,
+                            camera.far,
+                        )
+                    } else {
+                        spark_math::Mat4::perspective_rh(
+                            camera.fov.to_radians(),
+                            extent.width as f32 / extent.height as f32,
+                            camera.near,
+                            camera.far,
+                        )
+                    };
+                    return Some((view, projection, camera.near, camera.far));
+                }
+            }
+        }
+        None
+    }
+
+    fn collect_frame_packet(
+        &self,
+        frustum: Option<&spark_math::Frustum>,
+        asset_manager: &dyn spark_renderer::RenderableAssetManager,
+    ) -> spark_renderer::resource::FramePacket {
+        self.collect_frame_packet_internal(frustum, asset_manager)
+    }
+}
+
 pub struct Query<'a> {
     scene: &'a Scene,
     matches: Option<std::collections::HashSet<NodeKey>>,
 }
 
 impl<'a> Query<'a> {
+    /// Filters the query to only include nodes that have component `T`.
     pub fn with<T: 'static>(mut self) -> Self {
         let tid = std::any::TypeId::of::<T>();
         if let Some(nodes) = self.scene.component_registry.get(&tid) {
@@ -260,6 +323,7 @@ impl<'a> Query<'a> {
         self
     }
 
+    /// Filters the query to exclude nodes that have component `T`.
     pub fn without<T: 'static>(mut self) -> Self {
         let tid = std::any::TypeId::of::<T>();
         if let Some(nodes) = self.scene.component_registry.get(&tid) {
@@ -278,7 +342,8 @@ impl<'a> Query<'a> {
         self
     }
 
-    pub fn build(self) -> Vec<NodeKey> {
+    /// Executes the query and returns the matching node keys.
+    pub fn execute(self) -> Vec<NodeKey> {
         self.matches
             .map(|m| m.into_iter().collect())
             .unwrap_or_else(|| self.scene.nodes.keys().collect())
@@ -346,6 +411,8 @@ impl Scene {
         }
 
         self.nodes.remove(key);
+        self.nodes_version
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
     pub fn add_node(&mut self, parent: NodeKey, mut node: Node) -> NodeKey {
@@ -354,6 +421,9 @@ impl Scene {
         if let Some(parent_node) = self.nodes.get_mut(parent) {
             parent_node.children.push(key);
         }
+
+        self.nodes_version
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
 
         // Update registry
         for component in &self.nodes[key].components {
@@ -368,6 +438,126 @@ impl Scene {
         key
     }
 
+    /// Adds a component to a specific node.
+    pub fn add_component<T: Component + 'static>(&mut self, node_key: NodeKey, component: T) {
+        if let Some(node) = self.nodes.get_mut(node_key) {
+            let type_id = std::any::TypeId::of::<T>();
+            node.components.push(Box::new(component));
+            self.component_registry
+                .entry(type_id)
+                .or_default()
+                .push(node_key);
+            self.nodes_version
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    /// Removes all components of type `T` from a specific node.
+    pub fn remove_components<T: 'static>(&mut self, node_key: NodeKey) {
+        if let Some(node) = self.nodes.get_mut(node_key) {
+            let type_id = std::any::TypeId::of::<T>();
+            node.components.retain(|c| c.as_any().type_id() != type_id);
+            if let Some(list) = self.component_registry.get_mut(&type_id) {
+                list.retain(|&k| k != node_key);
+            }
+            self.nodes_version
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    pub fn duplicate_node(&mut self, key: NodeKey) -> Option<NodeKey> {
+        let node_to_clone = self.nodes.get(key)?.clone();
+        let parent = node_to_clone.parent;
+
+        self.nodes_version
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+
+        let new_key = self.nodes.insert(Node {
+            name: format!("{} (Copy)", node_to_clone.name),
+            visible: node_to_clone.visible,
+            locked: node_to_clone.locked,
+            is_dirty: true,
+            local_transform: node_to_clone.local_transform,
+            global_transform: node_to_clone.global_transform,
+            parent,
+            children: Vec::new(),
+            components: node_to_clone
+                .components
+                .iter()
+                .map(|c| c.clone_box())
+                .collect(),
+        });
+
+        if let Some(pk) = parent {
+            if let Some(p_node) = self.nodes.get_mut(pk) {
+                p_node.children.push(new_key);
+            }
+        }
+
+        for component in &self.nodes[new_key].components {
+            let type_id = component.as_any().type_id();
+            self.component_registry
+                .entry(type_id)
+                .or_default()
+                .push(new_key);
+        }
+
+        let children_to_clone = node_to_clone.children.clone();
+        for child_key in children_to_clone {
+            if let Some(new_child_key) = self.duplicate_node_rec(child_key, new_key) {
+                self.nodes[new_key].children.push(new_child_key);
+            }
+        }
+
+        self.update_all_transforms();
+        Some(new_key)
+    }
+
+    fn duplicate_node_rec(&mut self, key: NodeKey, new_parent: NodeKey) -> Option<NodeKey> {
+        let node_to_clone = self.nodes.get(key)?.clone();
+
+        self.nodes_version
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+
+        let new_key = self.nodes.insert(Node {
+            name: node_to_clone.name.clone(),
+            visible: node_to_clone.visible,
+            locked: node_to_clone.locked,
+            is_dirty: true,
+            local_transform: node_to_clone.local_transform,
+            global_transform: node_to_clone.global_transform,
+            parent: Some(new_parent),
+            children: Vec::new(),
+            components: node_to_clone
+                .components
+                .iter()
+                .map(|c| c.clone_box())
+                .collect(),
+        });
+
+        for component in &self.nodes[new_key].components {
+            let type_id = component.as_any().type_id();
+            self.component_registry
+                .entry(type_id)
+                .or_default()
+                .push(new_key);
+        }
+
+        let children_to_clone = node_to_clone.children.clone();
+        for child_key in children_to_clone {
+            if let Some(new_child_key) = self.duplicate_node_rec(child_key, new_key) {
+                self.nodes[new_key].children.push(new_child_key);
+            }
+        }
+
+        Some(new_key)
+    }
+
+    /// Обновляет глобальные трансформации для всех узлов сцены.
+    /// Использует поуровневый параллелизм для корректного распространения изменений.
+    ///
+    /// Updates all global transforms in the scene.
+    /// Uses level-based parallelism to ensure correct parent-child propagation.
     pub fn update_all_transforms(&mut self) {
         use rayon::prelude::*;
         let mut layers = Vec::new();
@@ -384,6 +574,8 @@ impl Scene {
             current_layer = next_layer;
         }
 
+        // Итерация по уровням иерархии (от корня к листьям).
+        // Iterate through hierarchy levels (root to leaves).
         for layer in layers {
             let nodes_ptr = &self.nodes as *const SlotMap<NodeKey, Node> as usize;
             layer.into_par_iter().for_each(|key| unsafe {
@@ -472,11 +664,19 @@ impl Scene {
     pub fn collect_frame_packet(
         &self,
         frustum: Option<&spark_math::Frustum>,
-        _resource_manager: &crate::resource::ResourceManager,
         asset_manager: &crate::asset::AssetManager,
     ) -> spark_renderer::resource::FramePacket {
+        self.collect_frame_packet_internal(frustum, asset_manager)
+    }
+
+    fn collect_frame_packet_internal(
+        &self,
+        frustum: Option<&spark_math::Frustum>,
+        asset_manager: &dyn spark_renderer::RenderableAssetManager,
+    ) -> spark_renderer::resource::FramePacket {
         use rayon::prelude::*;
-        let data = self.collect_data_recursive(self.root, frustum);
+        let mut data = SceneDataCollector::new();
+        self.collect_data_recursive(self.root, frustum, &mut data);
 
         // Pre-calculate transparency to avoid repeat resource_manager lookups
         let (mut opaque_meshes, mut transparent_meshes): (Vec<_>, Vec<_>) = rayon::join(
@@ -485,10 +685,7 @@ impl Scene {
                     .par_iter()
                     .filter_map(|r| {
                         let mat_idx = r.6.unwrap_or(0);
-                        let is_transparent = asset_manager
-                            .materials
-                            .get(crate::resource::Handle::new(mat_idx))
-                            .is_some_and(|m| m.is_transparent);
+                        let is_transparent = asset_manager.is_material_transparent(mat_idx);
                         if !is_transparent {
                             Some(spark_renderer::resource::MeshDraw {
                                 model: r.0,
@@ -511,10 +708,7 @@ impl Scene {
                     .par_iter()
                     .filter_map(|r| {
                         let mat_idx = r.6.unwrap_or(0);
-                        let is_transparent = asset_manager
-                            .materials
-                            .get(crate::resource::Handle::new(mat_idx))
-                            .is_some_and(|m| m.is_transparent);
+                        let is_transparent = asset_manager.is_material_transparent(mat_idx);
                         if is_transparent {
                             Some(spark_renderer::resource::MeshDraw {
                                 model: r.0,
@@ -541,10 +735,7 @@ impl Scene {
             .map(|((ic, fi, vo, _tex, mat_idx, br_bits), transforms)| {
                 let br = f32::from_bits(*br_bits);
                 let midx = mat_idx.unwrap_or(0);
-                let is_transparent = asset_manager
-                    .materials
-                    .get(crate::resource::Handle::new(midx))
-                    .is_some_and(|m| m.is_transparent);
+                let is_transparent = asset_manager.is_material_transparent(midx);
 
                 transforms
                     .iter()
@@ -623,15 +814,16 @@ impl Scene {
         &self,
         node_key: NodeKey,
         frustum: Option<&spark_math::Frustum>,
-    ) -> SceneDataCollector {
-        let mut data = SceneDataCollector::new();
+        data: &mut SceneDataCollector,
+    ) {
         if let Some(node) = self.nodes.get(node_key) {
             for component in &node.components {
                 let any = component.as_any();
                 if let Some(mesh) = any.downcast_ref::<MeshComponent>() {
                     let visible = if let Some(f) = frustum {
                         let gt = node.global_transform;
-                        let translation = spark_math::Vec3::new(gt.w_axis.x, gt.w_axis.y, gt.w_axis.z);
+                        let translation =
+                            spark_math::Vec3::new(gt.w_axis.x, gt.w_axis.y, gt.w_axis.z);
                         f.intersects_sphere(translation, mesh.bounding_radius)
                     } else {
                         true
@@ -676,7 +868,8 @@ impl Scene {
                     ));
                 } else if let Some(sprite) = any.downcast_ref::<SpriteComponent>() {
                     let gt = node.global_transform;
-                    data.sprites.push((gt, sprite.texture_handle, sprite.color, sprite.size));
+                    data.sprites
+                        .push((gt, sprite.texture_handle, sprite.color, sprite.size));
                 }
             }
 
@@ -686,12 +879,11 @@ impl Scene {
                     data.merge(self.collect_data_parallel(&node.children, frustum));
                 } else {
                     for &child_key in &node.children {
-                        data.merge(self.collect_data_recursive(child_key, frustum));
+                        self.collect_data_recursive(child_key, frustum, data);
                     }
                 }
             }
         }
-        data
     }
 
     fn collect_data_parallel(
@@ -700,7 +892,9 @@ impl Scene {
         frustum: Option<&spark_math::Frustum>,
     ) -> SceneDataCollector {
         if children.len() <= 1 {
-            return self.collect_data_recursive(children[0], frustum);
+            let mut data = SceneDataCollector::new();
+            self.collect_data_recursive(children[0], frustum, &mut data);
+            return data;
         }
 
         let mid = children.len() / 2;
@@ -717,7 +911,7 @@ impl Scene {
 
     pub fn pick_node_parallel(&self, ray: &spark_math::Ray) -> Option<(NodeKey, f32)> {
         use rayon::prelude::*;
-        let nodes: Vec<_> = self.nodes.iter().map(|(k, v)| (k, v)).collect();
+        let nodes: Vec<_> = self.nodes.iter().collect();
         nodes
             .into_par_iter()
             .filter_map(|(key, node)| {

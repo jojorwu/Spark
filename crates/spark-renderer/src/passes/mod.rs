@@ -77,6 +77,11 @@ pub trait RenderPass: Send + Sync {
         Vec::new()
     }
 
+    /// Declarative GPU buffer resource requirements for the pass.
+    fn gpu_resource_buffer_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        Vec::new()
+    }
+
     /// Returns the list of resource bindings required by this pass.
     fn bindings(&self) -> Vec<ResourceBinding> {
         Vec::new()
@@ -114,23 +119,22 @@ pub trait RenderPass: Send + Sync {
     /// Records Vulkan commands for this pass into the provided command buffer.
     fn record_commands(&self, ctx: &RenderContext);
 
-    /// Records commands into secondary command buffers for parallel execution.
-    fn record_secondary_commands(&self, _ctx: &RenderContext) -> Vec<vk::CommandBuffer> {
-        Vec::new()
-    }
-
     /// Retrieves a specific image resource view from the pass for cross-pass communication.
     fn get_resource_view(&self, _name: &str, _frame_index: usize) -> Option<vk::ImageView> {
         None
     }
 
     /// Retrieves a specific buffer resource from the pass for cross-pass communication.
-    fn get_resource_buffer(&self, _name: &str, _frame_index: usize) -> Option<crate::resource::Buffer> {
+    fn get_resource_buffer(
+        &self,
+        _name: &str,
+        _frame_index: usize,
+    ) -> Option<crate::resource::Buffer> {
         None
     }
 
     /// Notifies the pass that the viewport or swapchain has been resized.
-    fn on_resize(&mut self, _renderer: &mut Renderer, _new_extent: vk::Extent2D) {}
+    fn on_resize(&mut self, _renderer: &Renderer, _new_extent: vk::Extent2D) {}
 
     /// Returns the dependencies of this pass.
     fn dependencies(&self) -> Vec<&'static str> {
@@ -138,7 +142,7 @@ pub trait RenderPass: Send + Sync {
     }
 
     /// Cleans up resources managed by this pass.
-    fn destroy(&mut self, _renderer: &mut Renderer) {}
+    fn destroy(&mut self, renderer: &mut Renderer);
 
     /// Returns the input resource names for this pass.
     fn inputs(&self) -> Vec<&'static str> {

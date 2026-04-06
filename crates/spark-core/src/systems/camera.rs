@@ -13,9 +13,8 @@ impl System for CameraSystem {
             .with_renderer(crate::Access::Write)
     }
 
-    fn update(&mut self, ctx: &crate::FrameContext) {
-        let _scene = ctx.scene();
-        // The engine main loop already finds the active camera and updates the renderer.
-        // This system could be used for more advanced camera logic, like following targets.
+    fn update(&mut self, _ctx: &crate::FrameContext) {
+        // The engine main loop currently handles active camera detection and view-projection updates.
+        // This system is a placeholder for future camera-specific behaviors (e.g., lerping, shake, path following).
     }
 }

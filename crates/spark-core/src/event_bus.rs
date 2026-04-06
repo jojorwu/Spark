@@ -10,6 +10,13 @@ use std::sync::RwLock;
 type EventHandler = Box<dyn Fn(&dyn Any) + Send + Sync>;
 type EventMap = HashMap<TypeId, Vec<Arc<dyn Any + Send + Sync>>>;
 
+/// A high-performance, double-buffered event distribution system.
+///
+/// The `EventBus` allows for thread-safe event publishing and consumption. It uses two buffers:
+/// 1. **Incoming**: Where new events are collected during the frame.
+/// 2. **Active**: Where events from the previous frame are stored for systems to read.
+///
+/// Buffers are swapped at the beginning of each frame.
 pub struct EventBus {
     handlers: RwLock<HashMap<TypeId, Vec<EventHandler>>>,
     incoming_events: Mutex<EventMap>,

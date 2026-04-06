@@ -51,7 +51,7 @@ impl Renderer {
         let pool = self.gpu_resource_manager.descriptor_pool;
         let layout = self.global_descriptor_set_layout;
         let msaa = self.get_msaa_samples();
-        let bindless_layout = self.gpu_resource_manager.bindless_descriptor_set_layout;
+        let bindless_layout = self.gpu_resource_manager.bindless.layout;
 
         let hiz_pass = crate::passes::hiz::HiZPass::new(
             &self.device,
@@ -207,12 +207,27 @@ impl Renderer {
         );
         self.add_render_pass(forward_pass, &["GBuffer"], &["ForwardColor"]);
         self.add_render_pass(particle_pass, &["GBuffer"], &["ParticleColor"]);
-        self.add_render_pass(ssr_pass, &["GBuffer", "HDRColor", "HiZ"], &["SSR"]);
+        self.add_render_pass(
+            ssr_pass,
+            &[
+                "GBufferAlbedo",
+                "GBufferNormal",
+                "GBufferDepth",
+                "GBufferPBR",
+                "HDRColor",
+                "HiZ",
+            ],
+            &["SSR"],
+        );
         self.add_render_pass(luminance_pass, &["HDRColor"], &["Luminance"]);
-        self.add_render_pass(taa_pass, &["HDRColor", "GBuffer"], &["TAAColor"]);
-        self.add_render_pass(dof_pass, &["HDRColor", "GBuffer"], &["DoF"]);
+        self.add_render_pass(taa_pass, &["HDRColor", "GBufferDepth"], &["TAAColor"]);
+        self.add_render_pass(dof_pass, &["HDRColor", "GBufferDepth"], &["DoF"]);
         self.add_render_pass(point_shadow_pass, &[], &["PointShadowMap"]);
-        self.add_render_pass(ssgi_pass, &["GBuffer", "HDRColor"], &["SSGI"]);
+        self.add_render_pass(
+            ssgi_pass,
+            &["GBufferAlbedo", "GBufferNormal", "GBufferDepth", "HDRColor"],
+            &["SSGI"],
+        );
         self.add_render_pass(as_build_pass, &[], &["SceneTLAS"]);
         self.add_render_pass(
             rt_pass,
@@ -225,7 +240,7 @@ impl Renderer {
             ],
             &["RTOutput"],
         );
-        self.add_render_pass(sprite_pass, &["GBuffer"], &["SpriteColor"]);
+        self.add_render_pass(sprite_pass, &["GBufferDepth"], &["SpriteColor"]);
         self.add_render_pass(
             post_process_pass,
             &[
@@ -235,6 +250,8 @@ impl Renderer {
                 "DoF",
                 "SSGI",
                 "RTOutput",
+                "GBufferHDR",
+                "GBufferVelocity",
             ],
             &["FinalColor"],
         );

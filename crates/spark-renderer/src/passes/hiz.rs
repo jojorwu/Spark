@@ -82,7 +82,7 @@ impl RenderPass for HiZPass {
         }
     }
 
-    fn on_resize(&mut self, renderer: &mut Renderer, new_extent: vk::Extent2D) {
+    fn on_resize(&mut self, renderer: &Renderer, new_extent: vk::Extent2D) {
         let device = &renderer.device;
 
         // Destroy old

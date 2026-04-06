@@ -1,6 +1,6 @@
+pub use crate::asset::{AssetStorage, Handle};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-pub use crate::asset::{Handle, AssetStorage};
 
 pub struct ResourceManager {
     pub gpu_textures: AssetStorage<spark_renderer::vulkan::texture::Texture>,
@@ -34,6 +34,8 @@ impl Default for ResourceManager {
         Self::new()
     }
 }
+
+impl spark_renderer::RenderableResourceManager for ResourceManager {}
 
 impl ResourceManager {
     pub fn upload_global_buffers(&mut self, renderer: &mut spark_renderer::Renderer) {
@@ -149,25 +151,28 @@ impl ResourceManager {
         &mut self,
         path: PathBuf,
         scene_tree: &mut crate::scene::Scene,
-        renderer: &spark_renderer::Renderer,
+        renderer: &mut spark_renderer::Renderer,
         asset_manager: &mut crate::asset::AssetManager,
-    ) {
+    ) -> Result<(), Box<dyn std::error::Error>> {
         self.all_vertices.clear();
         self.all_indices.clear();
         self.all_materials_ssbo.clear();
-        crate::gltf_loader::GltfLoader::load_scene(self, asset_manager, path, scene_tree, renderer);
+        crate::gltf_loader::GltfLoader::load_scene(self, asset_manager, path, scene_tree, renderer)
     }
 
+    /// Loads a texture from disk and uploads it to the GPU.
+    /// Returns a handle to the newly created GPU resource.
     pub fn upload_texture(
         &mut self,
         path: &Path,
-        renderer: &spark_renderer::Renderer,
+        renderer: &mut spark_renderer::Renderer,
         asset_manager: &mut crate::asset::AssetManager,
     ) -> Handle<spark_renderer::vulkan::texture::Texture> {
         if let Some(&handle) = asset_manager.texture_path_map.get(path) {
             return handle;
         }
-        log::info!("Loading and uploading texture: {:?}", path);
+
+        log::debug!("Loading texture from disk: {:?}", path);
         let img = image::open(path).unwrap_or_else(|e| {
             log::warn!("Failed to load texture {:?}: {}. Using fallback.", path, e);
             image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
@@ -176,9 +181,12 @@ impl ResourceManager {
                 image::Rgba([255, 0, 255, 255]),
             ))
         });
+
         let texture = renderer.create_texture_from_image(&img);
         let handle = self.gpu_textures.add(texture);
-        asset_manager.texture_path_map.insert(path.to_path_buf(), handle);
+        asset_manager
+            .texture_path_map
+            .insert(path.to_path_buf(), handle);
         handle
     }
 }

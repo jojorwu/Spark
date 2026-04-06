@@ -26,6 +26,23 @@ use rayon::prelude::*;
 use spark_math::Vec4Swizzles;
 use winit::window::Window;
 
+pub trait RenderableScene {
+    fn get_active_camera_matrices(
+        &self,
+        extent: vk::Extent2D,
+    ) -> Option<(spark_math::Mat4, spark_math::Mat4, f32, f32)>;
+    fn collect_frame_packet(
+        &self,
+        frustum: Option<&spark_math::Frustum>,
+        asset_manager: &dyn RenderableAssetManager,
+    ) -> crate::resource::FramePacket;
+}
+
+pub trait RenderableResourceManager {}
+pub trait RenderableAssetManager: Send + Sync {
+    fn is_material_transparent(&self, material_index: u32) -> bool;
+}
+
 /// The main renderer of the Spark Engine, responsible for managing the Vulkan context,
 /// swapchain, and executing the rendering pipeline through a modular pass system.
 pub struct Renderer {
@@ -51,16 +68,21 @@ pub struct Renderer {
     egui_renderer: Option<EguiRenderer>,
     pub viewport_attachment: Option<Attachment>,
     pub ibl_maps: Option<crate::vulkan::ibl::IBLMaps>,
+    /// Global settings for the renderer (Bloom, Shadows, Post-FX, etc.)
     pub settings: RenderSettings,
     pub main_light_view_proj: spark_math::Mat4,
     pub current_view_proj: spark_math::Mat4,
     pub last_object_count: u32,
     pub last_transparent_count: u32,
+    pub last_draw_calls: std::sync::atomic::AtomicU32,
+    pub last_triangle_count: std::sync::atomic::AtomicU32,
     pub current_image_index: u32,
     pub pass_descriptor_versions:
         Vec<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
     pub dummy_buffer: Buffer,
     pub current_packet: Option<crate::resource::FramePacket>,
+    pub current_znear: f32,
+    pub current_zfar: f32,
 }
 
 #[repr(C)]
@@ -75,10 +97,16 @@ pub struct GlobalUBO {
 }
 
 impl Renderer {
-    /// Cascaded shadow map texture size.
+    /// Cascaded shadow map texture size. Default is 2048x2048.
     pub const SHADOW_MAP_CASCADE_SIZE: u32 = 2048;
 
+    /// Returns the active view-projection matrix used in the current frame.
+    pub fn get_current_view_proj(&self) -> spark_math::Mat4 {
+        self.current_view_proj
+    }
+
     /// Creates a new Renderer instance.
+    /// Initializes Vulkan context, device, swapchain, and core resource managers.
     pub fn new(
         window: &Window,
         ui_shaders: Option<(&[u32], &[u32])>,
@@ -230,6 +258,8 @@ impl Renderer {
             current_view_proj: spark_math::Mat4::IDENTITY,
             last_object_count: 0,
             last_transparent_count: 0,
+            last_draw_calls: std::sync::atomic::AtomicU32::new(0),
+            last_triangle_count: std::sync::atomic::AtomicU32::new(0),
             current_image_index: 0,
             pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT)
                 .map(|_| {
@@ -241,6 +271,8 @@ impl Renderer {
                 crate::vulkan::as_manager::AccelerationStructureManager::new(),
             )),
             current_packet: None,
+            current_znear: 0.1,
+            current_zfar: 100.0,
         };
 
         renderer
@@ -269,18 +301,10 @@ impl Renderer {
             .insert("GBufferDepth".to_string(), gbuffer.depth);
 
         renderer.init_default_resources();
-        renderer.common_shadow_view = renderer
-            .gpu_resource_manager
-            .default_texture
-            .as_ref()
-            .unwrap()
-            .view;
-        renderer.hiz_view = renderer
-            .gpu_resource_manager
-            .default_texture
-            .as_ref()
-            .unwrap()
-            .view;
+        if let Some(ref tex) = renderer.gpu_resource_manager.default_texture {
+            renderer.common_shadow_view = tex.view;
+            renderer.hiz_view = tex.view;
+        }
 
         Ok(renderer)
     }
@@ -314,18 +338,11 @@ impl Renderer {
             self.gpu_resource_manager.default_texture = Some(tex);
         }
 
-        let view = self
-            .gpu_resource_manager
-            .default_texture
-            .as_ref()
-            .unwrap()
-            .view;
-        let sampler = self
-            .gpu_resource_manager
-            .default_texture
-            .as_ref()
-            .unwrap()
-            .sampler;
+        let (view, sampler) = if let Some(ref tex) = self.gpu_resource_manager.default_texture {
+            (tex.view, tex.sampler)
+        } else {
+            return;
+        };
 
         let pipeline_layout = if let Some(pipeline) = &self.pipeline {
             pipeline.descriptor_set_layout
@@ -367,7 +384,9 @@ impl Renderer {
 
     pub fn update_all_descriptor_sets(&mut self) {
         for pass_node in &self.render_graph.passes {
-            pass_node.pass.update_descriptor_sets(self);
+            if pass_node.pass.is_enabled(self) {
+                pass_node.pass.update_descriptor_sets(self);
+            }
         }
         self.ensure_global_descriptor_set();
     }
@@ -375,7 +394,9 @@ impl Renderer {
     pub fn update_pass_descriptors_if_needed(&mut self, current_frame: usize) {
         let mut passes_to_update = Vec::new();
         for (i, pass_node) in self.render_graph.passes.iter().enumerate() {
-            if pass_node.pass.needs_descriptor_update(self, current_frame) {
+            if pass_node.pass.is_enabled(self)
+                && pass_node.pass.needs_descriptor_update(self, current_frame)
+            {
                 passes_to_update.push(i);
             }
         }
@@ -560,6 +581,7 @@ impl Renderer {
     pub fn update_lights_from_draw(&mut self, lights: &[crate::resource::LightDraw]) {
         let count = lights.len();
         if count == 0 {
+            self.light_count = 0;
             return;
         }
         self.light_count = count as u32;
@@ -618,7 +640,7 @@ impl Renderer {
             .light_buffer
             .as_ref()
             .cloned()
-            .unwrap();
+            .expect("Light buffer was not initialized before upload");
         self.upload_to_buffer(&lb, &ld);
     }
 
@@ -639,6 +661,10 @@ impl Renderer {
         object_data: &[ObjectDataSSBO],
     ) {
         let frame_idx = self.frame_manager.current_frame;
+        if commands.is_empty() {
+            return;
+        }
+
         let cmd_sz = std::mem::size_of_val(commands) as u64;
 
         let mut buffer = self.frame_manager.frames[frame_idx]
@@ -658,9 +684,7 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].transparent_indirect_buffer = buffer.clone();
         }
-        if !commands.is_empty() {
-            self.upload_to_buffer(&buffer.unwrap(), commands);
-        }
+        self.upload_to_buffer(&buffer.unwrap(), commands);
 
         let obj_sz = std::mem::size_of_val(object_data) as u64;
         let mut obj_buffer = self.frame_manager.frames[frame_idx]
@@ -680,9 +704,7 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].transparent_object_buffer = obj_buffer.clone();
         }
-        if !object_data.is_empty() {
-            self.upload_to_buffer(&obj_buffer.unwrap(), object_data);
-        }
+        self.upload_to_buffer(&obj_buffer.unwrap(), object_data);
     }
 
     pub fn update_indirect_buffers(
@@ -691,6 +713,10 @@ impl Renderer {
         object_data: &[ObjectDataSSBO],
     ) {
         let frame_idx = self.frame_manager.current_frame;
+        if commands.is_empty() {
+            return;
+        }
+
         let cmd_sz = std::mem::size_of_val(commands) as u64;
 
         let mut buffer = self.frame_manager.frames[frame_idx]
@@ -779,6 +805,14 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Executes the full rendering frame.
+    /// Основная функция отрисовки кадра. Управляет синхронизацией, получением изображения
+    /// из swapchain, записью команд и выводом на экран.
+    ///
+    /// # Arguments
+    /// * `window` - The window to render to.
+    /// * `egui_output` - Optional UI data to render on top of the scene.
+    /// * `delta` - Time since last frame for temporal effects (TAA, Blur).
     pub fn draw_frame(
         &mut self,
         window: &Window,
@@ -801,10 +835,15 @@ impl Renderer {
         };
 
         unsafe {
+            // Ожидание завершения предыдущего кадра, использующего те же ресурсы.
+            // Wait for the previous frame using these resources to finish.
             self.device
                 .device
                 .wait_for_fences(&[in_flight], true, u64::MAX)
                 .expect("Failed to wait for fence");
+            // Получение индекса следующего доступного изображения из swapchain.
+            // Acquire the next available image from the swapchain.
+            log::trace!("Acquiring next swapchain image");
             let result = self.swapchain.loader.acquire_next_image(
                 self.swapchain.handle,
                 u64::MAX,
@@ -856,6 +895,8 @@ impl Renderer {
                 .wait_dst_stage_mask(&w_stages)
                 .command_buffers(&c_buffers)
                 .signal_semaphores(&s_finished);
+            // Отправка командного буфера в очередь графики.
+            // Submit the command buffer to the graphics queue.
             self.device
                 .device
                 .queue_submit(self.device.graphics_queue, &[submit_info], in_flight)
@@ -898,10 +939,12 @@ impl Renderer {
         egui_output: Option<(egui::FullOutput, egui::Context)>,
         delta: f32,
     ) {
-        use rayon::prelude::*;
         let command_buffer =
             self.frame_manager.frames[self.frame_manager.current_frame].command_buffer;
         let cf = self.frame_manager.current_frame;
+
+        self.last_draw_calls
+            .store(0, std::sync::atomic::Ordering::Relaxed);
 
         unsafe {
             self.device
@@ -919,16 +962,8 @@ impl Renderer {
                 delta,
             };
 
-            // 1. Record secondary command buffers in parallel
-            let pass_secondary_commands: Vec<Vec<vk::CommandBuffer>> = self
-                .render_graph
-                .passes
-                .par_iter()
-                .map(|pass_node| pass_node.pass.record_secondary_commands(&ctx))
-                .collect();
-
-            // 2. Execute RenderGraph
-            self.render_graph.execute(&ctx, &pass_secondary_commands);
+            // 1. Execute RenderGraph
+            self.render_graph.execute(&ctx, &[]);
 
             if let Some((output, egui_ctx)) = egui_output {
                 let ext = self.swapchain.extent;
@@ -1093,18 +1128,49 @@ impl Renderer {
         }
     }
 
-    pub fn create_texture_from_image(&self, img: &image::DynamicImage) -> Texture {
+    /// Creates a GPU-resident texture from a CPU-side image.
+    ///
+    /// This handles automatic mipmap generation and bindless descriptor registration.
+    pub fn create_texture_from_image(&mut self, img: &image::DynamicImage) -> Texture {
         let (w, h) = (img.width(), img.height());
         let mip = (((w.max(h) as f32).log2().floor()) as u32) + 1;
         let rgba = img.to_rgba8();
         let pix = rgba.as_raw();
         let sz = pix.len() as u64;
-        let st = self.create_buffer(
-            sz,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        );
-        self.upload_to_buffer(&st, pix);
+
+        let frame_idx = self.frame_manager.current_frame;
+        let needs_new = {
+            let f = &self.frame_manager.frames[frame_idx];
+            f.texture_staging_buffer
+                .as_ref()
+                .is_none_or(|b| b.size < sz)
+        };
+
+        if needs_new {
+            let old_buffer = self.frame_manager.frames[frame_idx]
+                .texture_staging_buffer
+                .take();
+            if let Some(old) = old_buffer {
+                self.device.destroy_buffer(old);
+            }
+
+            let new_buffer = self.create_buffer(
+                sz.max(1024 * 1024), // Min 1MB
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            self.frame_manager.frames[frame_idx].texture_staging_buffer = Some(new_buffer);
+        }
+
+        let frame = &self.frame_manager.frames[frame_idx];
+        let st = frame.texture_staging_buffer.as_ref().unwrap();
+        let st_ptr = st.ptr;
+        let st_handle = st.handle;
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(pix.as_ptr(), st_ptr as *mut u8, pix.len());
+        }
+
         let (i, m) = self.create_image_basic(&crate::vulkan::device::ImageCreateParams {
             width: w,
             height: h,
@@ -1127,7 +1193,7 @@ impl Renderer {
         unsafe {
             self.device.device.cmd_copy_buffer_to_image(
                 cb,
-                st.handle,
+                st_handle,
                 i,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[vk::BufferImageCopy::default()
@@ -1148,29 +1214,14 @@ impl Renderer {
         self.generate_mipmaps(i, vk::Format::R8G8B8A8_SRGB, w, h, mip);
         let v = self.create_image_view_basic(i, vk::Format::R8G8B8A8_SRGB, mip);
         let s = self.create_texture_sampler(mip);
-        self.destroy_buffer(st);
 
-        let bindless_index = self
-            .gpu_resource_manager
-            .next_bindless_index
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if bindless_index >= 10000 {
-            panic!("Exceeded maximum bindless texture count (10000)");
-        }
-
-        let img_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(v)
-            .sampler(s)];
-        let writes = [vk::WriteDescriptorSet::default()
-            .dst_set(self.gpu_resource_manager.bindless_descriptor_set)
-            .dst_binding(0)
-            .dst_array_element(bindless_index)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .image_info(&img_info)];
-        unsafe {
-            self.device.device.update_descriptor_sets(&writes, &[]);
-        }
+        let bindless_index = self.gpu_resource_manager.bindless.allocate_index();
+        self.gpu_resource_manager.bindless.update_texture(
+            &self.device.device,
+            bindless_index,
+            v,
+            s,
+        );
 
         Texture {
             image: i,
@@ -1186,6 +1237,11 @@ impl Renderer {
         self.gpu_resource_manager
             .texture_descriptor_sets
             .remove(&t.view);
+
+        self.gpu_resource_manager
+            .bindless
+            .deallocate_index(t.bindless_index);
+
         unsafe {
             self.device.device.destroy_sampler(t.sampler, None);
             self.device.device.destroy_image_view(t.view, None);
@@ -1375,7 +1431,10 @@ impl Renderer {
         resource_name: &str,
         frame_index: usize,
     ) -> Option<vk::ImageView> {
-        let resource_name = self.render_graph.aliased_resources.get(resource_name)
+        let resource_name = self
+            .render_graph
+            .aliased_resources
+            .get(resource_name)
             .map(|s| s.as_str())
             .unwrap_or(resource_name);
 
@@ -1396,12 +1455,19 @@ impl Renderer {
         None
     }
 
-    pub fn get_resource_buffer(&self, _pass_name: &str, resource_name: &str, frame_index: usize) -> Option<Buffer> {
+    pub fn get_resource_buffer(
+        &self,
+        _pass_name: &str,
+        resource_name: &str,
+        frame_index: usize,
+    ) -> Option<Buffer> {
         if resource_name == "light_buffer" || resource_name == "Lights" {
             return self.frame_manager.frames[frame_index].light_buffer.clone();
         }
         if resource_name == "object_data_buffer" || resource_name == "MeshData" {
-            return self.frame_manager.frames[frame_index].object_data_buffer.clone();
+            return self.frame_manager.frames[frame_index]
+                .object_data_buffer
+                .clone();
         }
         if resource_name == "Vertices" {
             return self.gpu_resource_manager.global_vertex_buffer.clone();
@@ -1414,7 +1480,10 @@ impl Renderer {
         }
 
         for pass_node in &self.render_graph.passes {
-            if let Some(buffer) = pass_node.pass.get_resource_buffer(resource_name, frame_index) {
+            if let Some(buffer) = pass_node
+                .pass
+                .get_resource_buffer(resource_name, frame_index)
+            {
                 return Some(buffer);
             }
         }
@@ -1467,6 +1536,7 @@ impl Renderer {
     }
 
     /// Calculates the six frustum planes from a view-projection matrix.
+    /// Used for basic GPU-side culling and visibility testing.
     fn calculate_frustum_planes(view_proj: spark_math::Mat4) -> [spark_math::Vec4; 6] {
         let mut frustum = [spark_math::Vec4::ZERO; 6];
         let m = view_proj.transpose();
@@ -1491,88 +1561,315 @@ impl Renderer {
     ///
     /// # Returns
     /// * The total number of opaque objects to be rendered.
-    pub fn prepare_frame(&mut self, packet: crate::resource::FramePacket) -> u32 {
-        self.current_packet = Some(packet.clone());
+    /// Prepares the engine for rendering the current frame by collecting scene data,
+    /// updating GPU buffers, and performing frustum culling.
+    pub fn prepare_frame(
+        &mut self,
+        scene: &impl RenderableScene,
+        _resource_manager: &impl RenderableResourceManager,
+        asset_manager: &impl RenderableAssetManager,
+    ) -> u32 {
+        let extent = self.get_extent();
+        let (_view_matrix, projection_matrix, frustum) = self.calculate_view_constants(scene, extent);
+
+        let mut packet = scene.collect_frame_packet(frustum.as_ref(), asset_manager);
+        packet.projection_matrix = projection_matrix;
+        self.sort_transparent_meshes(&mut packet);
+
         self.scene_view_matrix_for_pos = packet.view_matrix;
+        self.update_statistics(&packet);
 
-        // 1. Prepare GPU Indirect and Object buffers in parallel
-        let (object_ssbos, indirect_commands): (Vec<_>, Vec<_>) = packet
-            .opaque_meshes
-            .par_iter()
-            .enumerate()
-            .map(|(i, mesh)| {
-                let m = mesh.model.transpose();
-                let ssbo = ObjectDataSSBO {
-                    model_row0: m.row(0),
-                    model_row1: m.row(1),
-                    model_row2: m.row(2),
-                    sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
-                    index_count: mesh.index_count,
-                    first_index: mesh.first_index,
-                    vertex_offset: mesh.vertex_offset,
-                    material_index: mesh.material_index,
-                };
-                let cmd = vk::DrawIndexedIndirectCommand {
-                    index_count: mesh.index_count,
-                    instance_count: 1,
-                    first_index: mesh.first_index,
-                    vertex_offset: mesh.vertex_offset,
-                    first_instance: i as u32,
-                };
-                (ssbo, cmd)
-            })
-            .unzip();
+        let total_objects = self.prepare_mesh_data(&packet);
+        self.update_lights_from_draw(&packet.lights);
+        self.update_global_ubo(&packet);
 
-        self.update_indirect_buffers(&indirect_commands, &object_ssbos);
-        let total_objects = object_ssbos.len() as u32;
+        self.current_packet = Some(packet);
+        self.prepare_passes();
 
-        // 1.1 Prepare Transparent buffers (with simple back-to-front sorting)
-        let mut transparent_meshes = packet.transparent_meshes.clone();
+        self.last_object_count = total_objects;
+        total_objects
+    }
+
+    fn calculate_view_constants(
+        &mut self,
+        scene: &impl RenderableScene,
+        extent: vk::Extent2D,
+    ) -> (spark_math::Mat4, spark_math::Mat4, Option<spark_math::Frustum>) {
+        if let Some((view, proj, near, far)) = scene.get_active_camera_matrices(extent) {
+            self.current_znear = near;
+            self.current_zfar = far;
+            let camera_matrix = proj * view;
+            return (view, proj, Some(spark_math::Frustum::from_matrix(camera_matrix)));
+        }
+        (spark_math::Mat4::IDENTITY, spark_math::Mat4::IDENTITY, None)
+    }
+
+    fn sort_transparent_meshes(&self, packet: &mut crate::resource::FramePacket) {
         let view_pos = packet.view_matrix.inverse().w_axis.xyz();
-        transparent_meshes.par_sort_by(|a, b| {
+        packet.transparent_meshes.par_sort_by(|a, b| {
             let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
             let dist_b = (b.model.w_axis.xyz() - view_pos).length_squared();
             dist_b
                 .partial_cmp(&dist_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+    }
 
-        let (trans_ssbos, trans_cmds): (Vec<_>, Vec<_>) = transparent_meshes
-            .par_iter()
-            .enumerate()
-            .map(|(i, mesh)| {
-                let m = mesh.model.transpose();
-                let ssbo = ObjectDataSSBO {
-                    model_row0: m.row(0),
-                    model_row1: m.row(1),
-                    model_row2: m.row(2),
-                    sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
-                    index_count: mesh.index_count,
-                    first_index: mesh.first_index,
-                    vertex_offset: mesh.vertex_offset,
-                    material_index: mesh.material_index,
-                };
-                let cmd = vk::DrawIndexedIndirectCommand {
-                    index_count: mesh.index_count,
-                    instance_count: 1,
-                    first_index: mesh.first_index,
-                    vertex_offset: mesh.vertex_offset,
-                    first_instance: i as u32,
-                };
-                (ssbo, cmd)
-            })
-            .unzip();
-        self.update_transparent_buffers(&trans_cmds, &trans_ssbos);
-        self.last_transparent_count = trans_ssbos.len() as u32;
+    fn update_statistics(&self, packet: &crate::resource::FramePacket) {
+        let triangle_count: u32 = packet
+            .opaque_meshes
+            .iter()
+            .map(|m| m.index_count / 3)
+            .sum::<u32>()
+            + packet
+                .transparent_meshes
+                .iter()
+                .map(|m| m.index_count / 3)
+                .sum::<u32>();
+        self.last_triangle_count
+            .store(triangle_count, std::sync::atomic::Ordering::Relaxed);
+    }
 
-        // 2. Update Lights
-        self.update_lights_from_draw(&packet.lights);
+    fn prepare_passes(&mut self) {
+        let cf = self.frame_manager.current_frame;
+        for i in 0..self.render_graph.passes.len() {
+            if self.render_graph.passes[i].pass.is_enabled(self) {
+                // We use a little unsafe here because we know prepare doesn't mutate the pass list itself
+                let pass_ptr = &self.render_graph.passes[i].pass as *const Box<dyn crate::passes::RenderPass>;
+                unsafe {
+                    (*pass_ptr).prepare(self, cf);
+                }
+            }
+        }
+    }
 
-        // 3. Update Global UBO
+    /// Prepares mesh-related buffers (indirect commands, SSBOs).
+    fn prepare_mesh_data(&mut self, packet: &crate::resource::FramePacket) -> u32 {
+        let frame_idx = self.frame_manager.current_frame;
+
+        // 1. Opaque meshes.
+        let opaque_count = packet.opaque_meshes.len() as u32;
+        if opaque_count > 0 {
+            let cmd_sz = (opaque_count as usize
+                * std::mem::size_of::<vk::DrawIndexedIndirectCommand>())
+                as u64;
+            let obj_sz = (opaque_count as usize * std::mem::size_of::<ObjectDataSSBO>()) as u64;
+
+            self.ensure_indirect_buffers_capacity(frame_idx, cmd_sz, obj_sz);
+
+            let frame = &self.frame_manager.frames[frame_idx];
+            let cmd_ptr = frame.indirect_commands_buffer.as_ref().unwrap().ptr as usize;
+            let obj_ptr = frame.object_data_buffer.as_ref().unwrap().ptr as usize;
+
+            packet
+                .opaque_meshes
+                .par_iter()
+                .enumerate()
+                .for_each(|(i, mesh)| {
+                    let m = mesh.model.transpose();
+                    unsafe {
+                        let obj_ptr = obj_ptr as *mut ObjectDataSSBO;
+                        let cmd_ptr = cmd_ptr as *mut vk::DrawIndexedIndirectCommand;
+                        *obj_ptr.add(i) = ObjectDataSSBO {
+                            model_row0: m.row(0),
+                            model_row1: m.row(1),
+                            model_row2: m.row(2),
+                            sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
+                            index_count: mesh.index_count,
+                            first_index: mesh.first_index,
+                            vertex_offset: mesh.vertex_offset,
+                            material_index: mesh.material_index,
+                        };
+                        *cmd_ptr.add(i) = vk::DrawIndexedIndirectCommand {
+                            index_count: mesh.index_count,
+                            instance_count: 1,
+                            first_index: mesh.first_index,
+                            vertex_offset: mesh.vertex_offset,
+                            first_instance: i as u32,
+                        };
+                    }
+                });
+            frame
+                .indirect_commands_buffer
+                .as_ref()
+                .unwrap()
+                .version
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            frame
+                .object_data_buffer
+                .as_ref()
+                .unwrap()
+                .version
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        // 2. Transparent meshes.
+        let trans_count = packet.transparent_meshes.len() as u32;
+        if trans_count > 0 {
+            let cmd_sz = (trans_count as usize
+                * std::mem::size_of::<vk::DrawIndexedIndirectCommand>())
+                as u64;
+            let obj_sz = (trans_count as usize * std::mem::size_of::<ObjectDataSSBO>()) as u64;
+
+            self.ensure_transparent_buffers_capacity(frame_idx, cmd_sz, obj_sz);
+
+            let frame = &self.frame_manager.frames[frame_idx];
+            let cmd_ptr = frame.transparent_indirect_buffer.as_ref().unwrap().ptr as usize;
+            let obj_ptr = frame.transparent_object_buffer.as_ref().unwrap().ptr as usize;
+
+            packet
+                .transparent_meshes
+                .par_iter()
+                .enumerate()
+                .for_each(|(i, mesh)| {
+                    let m = mesh.model.transpose();
+                    unsafe {
+                        let obj_ptr = obj_ptr as *mut ObjectDataSSBO;
+                        let cmd_ptr = cmd_ptr as *mut vk::DrawIndexedIndirectCommand;
+                        *obj_ptr.add(i) = ObjectDataSSBO {
+                            model_row0: m.row(0),
+                            model_row1: m.row(1),
+                            model_row2: m.row(2),
+                            sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
+                            index_count: mesh.index_count,
+                            first_index: mesh.first_index,
+                            vertex_offset: mesh.vertex_offset,
+                            material_index: mesh.material_index,
+                        };
+                        *cmd_ptr.add(i) = vk::DrawIndexedIndirectCommand {
+                            index_count: mesh.index_count,
+                            instance_count: 1,
+                            first_index: mesh.first_index,
+                            vertex_offset: mesh.vertex_offset,
+                            first_instance: i as u32,
+                        };
+                    }
+                });
+            frame
+                .transparent_indirect_buffer
+                .as_ref()
+                .unwrap()
+                .version
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            frame
+                .transparent_object_buffer
+                .as_ref()
+                .unwrap()
+                .version
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.last_transparent_count = trans_count;
+
+        opaque_count
+    }
+
+    fn ensure_indirect_buffers_capacity(&mut self, frame_idx: usize, cmd_sz: u64, obj_sz: u64) {
+        let (has_ic, has_ob, has_dc, ic_sz, ob_sz) = {
+            let f = &self.frame_manager.frames[frame_idx];
+            (
+                f.indirect_commands_buffer.is_some(),
+                f.object_data_buffer.is_some(),
+                f.draw_count_buffer.is_some(),
+                f.indirect_commands_buffer
+                    .as_ref()
+                    .map(|b| b.size)
+                    .unwrap_or(0),
+                f.object_data_buffer.as_ref().map(|b| b.size).unwrap_or(0),
+            )
+        };
+
+        if !has_ic || ic_sz < cmd_sz {
+            if let Some(old) = self.frame_manager.frames[frame_idx]
+                .indirect_commands_buffer
+                .take()
+            {
+                self.device.destroy_buffer(old);
+            }
+            let b = self.create_buffer(
+                cmd_sz.max(1024),
+                vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            self.frame_manager.frames[frame_idx].indirect_commands_buffer = Some(b);
+        }
+        if !has_ob || ob_sz < obj_sz {
+            if let Some(old) = self.frame_manager.frames[frame_idx]
+                .object_data_buffer
+                .take()
+            {
+                self.device.destroy_buffer(old);
+            }
+            let b = self.create_buffer(
+                obj_sz.max(1024),
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            self.frame_manager.frames[frame_idx].object_data_buffer = Some(b);
+        }
+        if !has_dc {
+            let b = self.create_buffer(
+                4,
+                vk::BufferUsageFlags::INDIRECT_BUFFER
+                    | vk::BufferUsageFlags::STORAGE_BUFFER
+                    | vk::BufferUsageFlags::TRANSFER_DST,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            );
+            self.frame_manager.frames[frame_idx].draw_count_buffer = Some(b);
+        }
+    }
+
+    fn ensure_transparent_buffers_capacity(&mut self, frame_idx: usize, cmd_sz: u64, obj_sz: u64) {
+        let (has_tic, has_tob, tic_sz, tob_sz) = {
+            let f = &self.frame_manager.frames[frame_idx];
+            (
+                f.transparent_indirect_buffer.is_some(),
+                f.transparent_object_buffer.is_some(),
+                f.transparent_indirect_buffer
+                    .as_ref()
+                    .map(|b| b.size)
+                    .unwrap_or(0),
+                f.transparent_object_buffer
+                    .as_ref()
+                    .map(|b| b.size)
+                    .unwrap_or(0),
+            )
+        };
+
+        if !has_tic || tic_sz < cmd_sz {
+            if let Some(old) = self.frame_manager.frames[frame_idx]
+                .transparent_indirect_buffer
+                .take()
+            {
+                self.device.destroy_buffer(old);
+            }
+            let b = self.create_buffer(
+                cmd_sz.max(1024),
+                vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            self.frame_manager.frames[frame_idx].transparent_indirect_buffer = Some(b);
+        }
+        if !has_tob || tob_sz < obj_sz {
+            if let Some(old) = self.frame_manager.frames[frame_idx]
+                .transparent_object_buffer
+                .take()
+            {
+                self.device.destroy_buffer(old);
+            }
+            let b = self.create_buffer(
+                obj_sz.max(1024),
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            self.frame_manager.frames[frame_idx].transparent_object_buffer = Some(b);
+        }
+    }
+
+    /// Updates the global Uniform Buffer, calculates CSM matrices, and handles projection jitter.
+    fn update_global_ubo(&mut self, packet: &crate::resource::FramePacket) {
         let extent = self.get_extent();
         let jitter = self.get_jitter();
 
-        // Use camera projection from packet if available, otherwise default.
         let mut projection = if packet.projection_matrix != spark_math::Mat4::IDENTITY {
             packet.projection_matrix
         } else {
@@ -1599,8 +1896,7 @@ impl Renderer {
         );
 
         let inv_vp = view_proj.inverse();
-        for i in 0..4 {
-            let _split = cascade_splits[i];
+        for proj in &mut light_view_projs {
             let mut frustum_corners = [spark_math::Vec3::ZERO; 8];
             let mut idx = 0;
             for x in &[-1.0, 1.0] {
@@ -1613,7 +1909,6 @@ impl Renderer {
                 }
             }
 
-            // Simple approximation of tight-fitting light frustum for the cascade
             let mut min_p = spark_math::Vec3::new(f32::MAX, f32::MAX, f32::MAX);
             let mut max_p = spark_math::Vec3::new(f32::MIN, f32::MIN, f32::MIN);
             for corner in &frustum_corners {
@@ -1622,7 +1917,6 @@ impl Renderer {
                 max_p = max_p.max(light_space_p.xyz());
             }
 
-            // Ensure stable shadow mapping by snapping min/max to texel size
             let shadow_res = Self::SHADOW_MAP_CASCADE_SIZE as f32;
             let world_units_per_texel = (max_p - min_p) / shadow_res;
             min_p = (min_p / world_units_per_texel).floor() * world_units_per_texel;
@@ -1636,7 +1930,7 @@ impl Renderer {
                 -max_p.z - 50.0,
                 -min_p.z,
             );
-            light_view_projs[i] = light_proj * light_view;
+            *proj = light_proj * light_view;
         }
 
         let current_frame = self.frame_manager.current_frame;
@@ -1676,18 +1970,8 @@ impl Renderer {
             .global_buffer
             .as_ref()
             .cloned()
-            .unwrap();
+            .expect("Global UBO buffer was not initialized before upload");
         self.upload_to_buffer(&gb, &[ubo]);
-
-        // 4. Prepare Passes
-        let cf = self.frame_manager.current_frame;
-
-        for pass_node in &self.render_graph.passes {
-            pass_node.pass.prepare(self, cf);
-        }
-
-        self.last_object_count = total_objects;
-        total_objects
     }
 
     /// Returns the raw ash::Device.
@@ -1789,6 +2073,9 @@ impl Drop for Renderer {
             for mut pass_node in std::mem::take(&mut self.render_graph.passes) {
                 pass_node.pass.destroy(self);
             }
+
+            self.render_graph
+                .destroy_resources(&self.device.device, &self.device.allocator);
 
             self.cleanup_swapchain();
             self.frame_manager.destroy(&self.device);

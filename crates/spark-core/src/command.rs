@@ -2,6 +2,10 @@ use crate::resource::ResourceManager;
 use crate::scene::Scene;
 use crate::scene::{Component, Node, NodeKey};
 
+/// A trait for commands that modify the engine's global state.
+///
+/// Commands are used to defer state changes (especially structural scene changes)
+/// to a safe point in the frame, ensuring thread safety during parallel execution.
 pub trait Command: Send + Sync {
     fn apply(&mut self, scene: &mut Scene, resource_manager: &mut ResourceManager);
 }
@@ -68,6 +72,10 @@ impl Command for AddComponentCommand {
 
 use std::sync::Mutex;
 
+/// A thread-safe queue for deferring engine commands.
+///
+/// The `CommandQueue` allows parallel systems to request changes to the scene structure
+/// without needing exclusive access to the `Scene` during their update phase.
 pub struct CommandQueue {
     commands: Mutex<Vec<Box<dyn Command>>>,
 }

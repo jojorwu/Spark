@@ -146,6 +146,7 @@ pub struct Attachment {
     pub allocation: Arc<Mutex<Option<gpu_allocator::vulkan::Allocation>>>,
     pub view: vk::ImageView,
     pub extent: vk::Extent2D,
+    pub format: vk::Format,
     pub version: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -156,6 +157,7 @@ impl Clone for Attachment {
             allocation: self.allocation.clone(),
             view: self.view,
             extent: self.extent,
+            format: self.format,
             version: self.version.clone(),
         }
     }
@@ -213,6 +215,7 @@ pub struct RenderFrame {
     pub secondary_command_buffers: Vec<vk::CommandBuffer>,
     pub light_view_projs: [spark_math::Mat4; 4],
     pub scratch_buffers: Vec<Buffer>,
+    pub texture_staging_buffer: Option<Buffer>,
 }
 
 #[repr(C)]
@@ -276,6 +279,10 @@ impl ResourceTracker {
         }
     }
 
+    /// Transitions an image from its current layout to a new layout.
+    ///
+    /// This method automatically tracks the previous layout and injects the appropriate
+    /// `vk::ImageMemoryBarrier2` into the command buffer.
     #[allow(clippy::too_many_arguments)]
     pub fn transition_image(
         &self,
@@ -361,6 +368,7 @@ impl Attachment {
             allocation: Arc::new(Mutex::new(Some(allocation))),
             view,
             extent: vk::Extent2D { width, height },
+            format,
             version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }

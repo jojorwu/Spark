@@ -182,10 +182,7 @@ impl GBufferPass {
                         vk::PipelineBindPoint::GRAPHICS,
                         pipeline.layout,
                         0,
-                        &[
-                            global_ds,
-                            renderer.gpu_resource_manager.bindless_descriptor_set,
-                        ],
+                        &[global_ds, renderer.gpu_resource_manager.bindless.set],
                         &[],
                     );
 
@@ -201,6 +198,14 @@ impl GBufferPass {
                     if let Some(ref count_buffer) =
                         renderer.frame_manager.frames[current_frame].draw_count_buffer
                     {
+                        renderer.last_draw_calls.fetch_add(
+                            renderer.last_object_count,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        // Approximate triangle count (this is very rough as we don't know the actual index counts without reading the buffer)
+                        // In a real engine, we'd sum this up during packet collection or use pipeline statistics queries.
+                        // For now, let's just use a heuristic or sum it up in prepare_frame.
+
                         device.cmd_draw_indexed_indirect_count(
                             command_buffer,
                             indirect_buffer.handle,
@@ -211,6 +216,10 @@ impl GBufferPass {
                             std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
                         );
                     } else {
+                        renderer.last_draw_calls.fetch_add(
+                            renderer.last_object_count,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
                         device.cmd_draw_indexed_indirect(
                             command_buffer,
                             indirect_buffer.handle,
@@ -231,136 +240,59 @@ impl RenderPass for GBufferPass {
     fn name(&self) -> &str {
         "GBufferPass"
     }
-    fn dependencies(&self) -> Vec<&'static str> {
-        vec!["CullingPass"]
+
+    fn outputs(&self) -> Vec<&'static str> {
+        vec![
+            "GBufferAlbedo",
+            "GBufferNormal",
+            "GBufferPBR",
+            "GBufferVelocity",
+            "GBufferDepth",
+        ]
     }
 
-    fn record_secondary_commands(&self, ctx: &RenderContext) -> Vec<vk::CommandBuffer> {
-        let renderer = ctx.renderer;
-        let device = &renderer.device.device;
-        let cf = ctx.current_frame;
+    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![
+            (
+                "GBufferAlbedo".to_string(),
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            ),
+            (
+                "GBufferNormal".to_string(),
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            ),
+            (
+                "GBufferPBR".to_string(),
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            ),
+            (
+                "GBufferVelocity".to_string(),
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            ),
+            (
+                "GBufferDepth".to_string(),
+                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+            ),
+        ]
+    }
 
-        let cb = renderer.allocate_secondary_command_buffer();
-
-        let color_formats = [
-            vk::Format::R8G8B8A8_UNORM,
-            vk::Format::A2B10G10R10_UNORM_PACK32,
-            vk::Format::R8G8B8A8_UNORM,
-            vk::Format::R16G16_SFLOAT,
-        ];
-        let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::default()
-            .color_attachment_formats(&color_formats)
-            .depth_attachment_format(vk::Format::D32_SFLOAT);
-
-        let inheritance =
-            vk::CommandBufferInheritanceInfo::default().push_next(&mut rendering_info);
-        let begin = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE)
-            .inheritance_info(&inheritance);
-
-        unsafe {
-            device.begin_command_buffer(cb, &begin).unwrap();
-            self.record_gbuffer_commands(device, cb, renderer, cf);
-            device.end_command_buffer(cb).unwrap();
-        }
-
-        vec![cb]
+    fn destroy(&mut self, _renderer: &mut Renderer) {}
+    fn dependencies(&self) -> Vec<&'static str> {
+        vec!["CullingPass"]
     }
 
     fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
         let command_buffer = ctx.command_buffer;
         let current_frame = ctx.current_frame;
+        let device = &renderer.device.device;
 
-        // Note: record_gbuffer_commands is called via record_secondary_commands.
-        // We only add barriers here.
-
-        // Barrier: G-Buffer to SHADER_READ_ONLY_OPTIMAL
-        let gbuffer_barriers = [
-            vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(
-                    renderer
-                        .render_graph
-                        .physical_attachments
-                        .get("GBufferAlbedo")
-                        .unwrap()[current_frame]
-                        .image,
-                )
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                }),
-            vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(
-                    renderer
-                        .render_graph
-                        .physical_attachments
-                        .get("GBufferNormal")
-                        .unwrap()[current_frame]
-                        .image,
-                )
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                }),
-            vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(
-                    renderer
-                        .render_graph
-                        .physical_attachments
-                        .get("GBufferPBR")
-                        .unwrap()[current_frame]
-                        .image,
-                )
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                }),
-            vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(
-                    renderer
-                        .render_graph
-                        .physical_attachments
-                        .get("GBufferDepth")
-                        .unwrap()[current_frame]
-                        .image,
-                )
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::DEPTH,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                }),
-        ];
-        unsafe {
-            renderer.device.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &gbuffer_barriers,
-            );
-        }
+        self.record_gbuffer_commands(device, command_buffer, renderer, current_frame);
     }
 }

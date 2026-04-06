@@ -1,91 +1,55 @@
 # Spark Engine Architecture
 
-Spark is a high-performance, multi-threaded, modular game engine written in Rust. It draws inspiration from Godot (Scene Tree) and Unity (Ease of use) while leveraging Rust's safety and performance.
+Spark is a high-performance, multi-threaded, modular game engine written in Rust. It leverages a data-driven approach with a stage-based execution model.
 
-## 1. High-Level Overview
+## 1. Core Principles
 
-```ascii
-+-------------------------------------------------------------+
-|                        SPARK EDITOR                         |
-|  (UI, Asset Browser, Scene Inspector, Script Editor, etc.)  |
-+------------------------------+------------------------------+
-                               |
-                               v
-+-------------------------------------------------------------+
-|                        SPARK ENGINE                         |
-+-------------------------------------------------------------+
-|  +-----------------------+       +-----------------------+  |
-|  |       SCENE TREE      | <---> |    SCRIPTING HOST     |  |
-|  | (Nodes, Hierarchy)    |       | (Rust .dll / C# .NET) |  |
-|  +-----------+-----------+       +-----------+-----------+  |
-|              |                               |              |
-|              v                               v              |
-|  +-----------------------+       +-----------------------+  |
-|  |    RENDERER (ASH)     | <---> |   TASK SYSTEM (POOL)  |  |
-|  | (Vulkan, Pipelines)   |       | (Parallel Processing) |  |
-|  +-----------+-----------+       +-----------+-----------+  |
-|              |                               |              |
-+--------------|-------------------------------|--------------+
-               |                               |
-               v                               v
-+---------------------------+    +---------------------------+
-|      GRAPHICS DRIVER      |    |        OS THREADS         |
-|         (VULKAN)          |    |  (Windows/Linux/Android)  |
-+---------------------------+    +---------------------------+
-```
+- **Thread Safety by Design**: Access to core resources (Scene, Renderer, AssetManager) is mediated through a `FrameContext` and a `Scheduler` that guarantees disjoint access for parallel systems.
+- **Deferred Mutation**: Structural changes to the engine state (e.g., adding/removing nodes) are deferred using a `CommandQueue` to avoid data races during parallel updates.
+- **Event-Driven consistency**: A double-buffered `EventBus` ensures that all systems see a consistent view of events for the entire duration of a frame.
 
-## 2. Core Components
+## 2. Main Loop Lifecycle
 
-### 2.1 Scene Tree (Godot-style)
-The engine uses a node-based hierarchy. Since Rust has strict ownership rules, nodes are managed via a **Handle System** (e.g., `slotmap` or unique IDs) rather than direct pointers.
+The engine's main loop (found in `crates/spark-core/src/lib.rs`) follows these phases:
 
-- **Node**: Base unit of the scene.
-- **Transform**: Built-in component for spatial nodes.
-- **Resource System**: Handles loading and caching of textures, meshes, and materials.
+1.  **Frame Start**:
+    - Swap event buffers.
+    - Update frame timing and FPS metrics.
+    - Apply pending engine state changes (e.g., loading a new scene or switching editor modes).
+2.  **Update Phase**:
+    - Process input events and update `InputManager`.
+    - Execute systems registered in `CoreStage::First` through `CoreStage::Last`.
+    - **Parallel Execution**: Within each stage, systems are executed in parallel batches if they don't have resource conflicts.
+3.  **Deferred Execution**:
+    - Execute all commands in the `CommandQueue` (e.g., applying physics transforms, spawning objects).
+4.  **Render Phase**:
+    - Find the active camera and calculate frustum planes.
+    - Collect visible objects and light data from the `Scene` hierarchy.
+    - Prepare GPU buffers and execute the `RenderGraph`.
 
-```ascii
-Scene (Root)
- ├── Camera3D (Node)
- ├── Player (Node + Rust/C# Script)
- │    └── MeshInstance (Node)
- └── Light (Node)
-```
+## 3. Systems and Scheduling
 
-### 2.2 Renderer (Vulkan/Ash)
-The renderer is built on top of `ash` for low-level Vulkan access. It uses a **Render Graph** approach to manage dependencies between passes (shadows, G-buffer, lighting, post-processing).
+All logic in Spark is implemented as a `System`.
 
-- **Abstraction Layer**: Hides Vulkan verbosity behind a clean API.
-- **Multi-threading**: Command buffers are recorded in parallel using the Task System.
-- **Shader System**: SPIR-V based, with support for hot-reloading.
+- **ResourceAccess**: Systems declare which resources they need (Read or Write). The `Scheduler` uses this to build an execution graph.
+- **Stages**:
+    - `First`: Logic that must run before anything else (e.g., timer updates).
+    - `PreUpdate`: Early logic.
+    - `Update`: Main gameplay and component logic.
+    - `PostUpdate`: Logic that depends on the results of the update.
+    - `Last`: Final cleanup and preparation for rendering.
 
-### 2.3 Scripting Host
-Two primary scripting methods:
-1. **Rust Plugins**: Dynamic loading of `.so`/`.dll` files. Uses a stable ABI or `abi_stable` crate to ensure compatibility.
-2. **C# .NET Hosting**: Integrates the .NET Runtime (nethost) to run C# 12+ scripts. High-level C# wrappers call into the Rust engine via FFI.
+## 4. Rendering Architecture
 
-### 2.4 Multi-threading (Task System)
-Spark uses a **Global Thread Pool** (likely using `rayon` or a custom implementation for fine-grained control).
-- **Parallel Updates**: Independent nodes can update their logic in parallel.
-- **Async Asset Loading**: Assets are loaded and processed on background threads.
-- **Physics**: Runs on a separate fixed-step thread or parallelized via the task system.
+Spark uses a **Render Graph** to manage the complexity of its hybrid rendering pipeline.
 
-## 3. Project Structure (Cargo Workspace)
+- **Hybrid Rendering**: Combines traditional rasterization (G-Buffer) with hardware-accelerated ray tracing for secondary effects (reflections, AO, GI).
+- **Clustered Shading**: Lighting is performed in a deferred pass using a cluster grid to efficiently handle thousands of light sources.
+- **Bindless Textures**: Most textures are bound globally to a single descriptor set, allowing materials to index them dynamically without changing descriptor sets between draw calls.
 
-```ascii
-spark/
-├── Cargo.toml          # Workspace root
-├── crates/
-│   ├── spark-core/     # Main loop, Scene Tree, Event handling
-│   ├── spark-renderer/ # Vulkan implementation (ash)
-│   ├── spark-math/     # Vector, Matrix, Quaternions
-│   ├── spark-script/   # Rust dynamic loading & .NET hosting
-│   └── spark-editor/   # The GUI editor (built on spark-core)
-├── plugins/            # Sample Rust plugins
-└── examples/           # Demo projects
-```
+## 5. Directory Structure
 
-## 4. Scalability and Modularity
-The engine is designed as a **Micro-Kernel**. The `spark-core` only contains essential logic. Everything else (Physics, Audio, Networking) is a module that can be added or removed.
-
-- **Traits for Modules**: Modules implement standard traits like `on_init`, `on_update`, `on_render`.
-- **Hot Reloading**: Rust plugins and C# scripts can be reloaded without restarting the engine.
+- `crates/spark-core/`: Core engine logic, ECS-like system, scene tree, and main loop.
+- `crates/spark-renderer/`: Vulkan implementation using `ash`.
+- `crates/spark-math/`: Optimized math library based on `glam`.
+- `crates/spark-editor/`: Built-in editor interface using `egui`.

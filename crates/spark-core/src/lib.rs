@@ -1,9 +1,9 @@
 pub mod asset;
-pub mod gltf_loader;
 pub mod command;
 pub mod event;
 pub mod event_bus;
 pub mod event_mapper;
+pub mod gltf_loader;
 pub mod input;
 pub mod logger;
 pub mod prefab;
@@ -124,6 +124,25 @@ pub struct InitContext<'a> {
 }
 
 /// Context passed to systems during the update phase.
+///
+/// `FrameContext` provides high-performance, shared access to core engine subsystems.
+/// It encapsulates raw pointers to bypass standard borrow checker restrictions during
+/// parallel system execution.
+///
+/// ### Thread Safety and the Multi-threading Contract
+///
+/// While `FrameContext` uses `unsafe` pointers internally, its usage is safe when
+/// orchestrated by the engine's `Scheduler`. The safety is guaranteed through:
+///
+/// 1.  **System Batching**: The `Scheduler` analyzes the `ResourceAccess` of every system
+///     before execution. Systems are grouped into parallel batches only if their
+///     resource requirements are mutually compatible (e.g., multiple readers, or
+///     one writer with no other readers/writers).
+/// 2.  **Disjoint Access**: Within a parallel batch, no two systems will attempt to
+///     mutably access the same resource simultaneously.
+/// 3.  **Deferred Mutation**: Structural changes to shared resources (like adding/removing
+///     nodes in the `Scene`) must be deferred using the provided `command_queue`
+///     during the parallel update phase to avoid data races.
 pub struct FrameContext<'a> {
     scene: *mut Scene,
     renderer: *mut Renderer,
@@ -133,7 +152,6 @@ pub struct FrameContext<'a> {
     pub resources: &'a crate::resource_container::Resources,
     pub task_system: &'a TaskSystem,
     pub delta: f32,
-    pub event_proxy: crate::systems_events::events::EventProxy<'a>,
     pub input: &'a crate::input::InputManager,
     pub command_queue: &'a crate::command::CommandQueue,
     pub event_bus: &'a crate::event_bus::EventBus,
@@ -153,7 +171,6 @@ impl<'a> FrameContext<'a> {
         resources: &'a crate::resource_container::Resources,
         task_system: &'a TaskSystem,
         delta: f32,
-        event_proxy: crate::systems_events::events::EventProxy<'a>,
         input: &'a crate::input::InputManager,
         command_queue: &'a crate::command::CommandQueue,
         event_bus: &'a crate::event_bus::EventBus,
@@ -167,22 +184,28 @@ impl<'a> FrameContext<'a> {
             resources,
             task_system,
             delta,
-            event_proxy,
             input,
             command_queue,
             event_bus,
         }
     }
 
+    /// Provides read-only access to the scene.
     pub fn scene(&self) -> &Scene {
         unsafe { &*self.scene }
     }
+
+    /// Provides read-only access to the renderer.
     pub fn renderer(&self) -> &Renderer {
         unsafe { &*self.renderer }
     }
+
+    /// Provides read-only access to the resource manager.
     pub fn resource_manager(&self) -> &ResourceManager {
         unsafe { &*self.resource_manager }
     }
+
+    /// Provides read-only access to the asset manager.
     pub fn asset_manager(&self) -> &crate::asset::AssetManager {
         unsafe { &*self.asset_manager }
     }
@@ -191,7 +214,15 @@ impl<'a> FrameContext<'a> {
     ///
     /// # Safety
     ///
-    /// Caller must ensure no other threads are accessing the scene concurrently.
+    /// The caller must ensure that the current system has declared `Access::Write`
+    /// for the `Scene` resource. This ensures the `Scheduler` has placed this
+    /// system in a batch where it has exclusive mutable access.
+    ///
+    /// ### Structural Changes
+    ///
+    /// Even with mutable access, structural changes to the scene (adding or removing
+    /// nodes) MUST be performed via the `command_queue` to ensure consistency
+    /// across parallel systems.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn scene_mut(&self) -> &mut Scene {
         &mut *self.scene
@@ -201,7 +232,8 @@ impl<'a> FrameContext<'a> {
     ///
     /// # Safety
     ///
-    /// Caller must ensure no other threads are accessing the renderer concurrently.
+    /// The caller must ensure that no other systems or threads are accessing the renderer
+    /// concurrently. This is typically guaranteed by the `Scheduler`.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn renderer_mut(&self) -> &mut Renderer {
         &mut *self.renderer
@@ -211,7 +243,8 @@ impl<'a> FrameContext<'a> {
     ///
     /// # Safety
     ///
-    /// Caller must ensure no other threads are accessing the resource manager concurrently.
+    /// The caller must ensure that no other systems or threads are accessing the
+    /// resource manager concurrently.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn resource_manager_mut(&self) -> &mut ResourceManager {
         &mut *self.resource_manager
@@ -221,7 +254,8 @@ impl<'a> FrameContext<'a> {
     ///
     /// # Safety
     ///
-    /// Caller must ensure no other threads are accessing the asset manager concurrently.
+    /// The caller must ensure that no other systems or threads are accessing the
+    /// asset manager concurrently.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn asset_manager_mut(&self) -> &mut crate::asset::AssetManager {
         &mut *self.asset_manager
@@ -242,6 +276,7 @@ impl<'a> FrameContext<'a> {
         self.scene().query_components::<T>()
     }
 
+    /// Creates a new query to filter nodes in the scene.
     pub fn query(&self) -> crate::scene::Query<'_> {
         self.scene().query()
     }
@@ -250,6 +285,13 @@ impl<'a> FrameContext<'a> {
         &self,
     ) -> Option<std::sync::Arc<std::sync::RwLock<Box<dyn std::any::Any + Send + Sync>>>> {
         self.resources.get::<T>()
+    }
+
+    pub fn get_resource_by_id(
+        &self,
+        id: TypeId,
+    ) -> Option<std::sync::Arc<std::sync::RwLock<Box<dyn std::any::Any + Send + Sync>>>> {
+        self.resources.get_by_id(id)
     }
 }
 
@@ -536,46 +578,66 @@ impl Engine {
                         self.last_frame_time = now;
                         self.current_fps = 0.9 * self.current_fps + 0.1 * (1.0 / delta.max(0.001));
 
-                        self.event_bus.swap_buffers();
-
-                        {
-                            let mut init_ctx = InitContext {
-                                scene: &mut self.scene,
-                                renderer: &mut self.renderer,
-                                resource_manager: &mut self.resource_manager,
-                                asset_manager: &mut self.asset_manager,
-                                resources: &mut self.resources,
-                                task_system: &self.task_system,
-                            };
-                            crate::systems::Scheduler::apply_state_changes(&mut self.system_registry, &mut init_ctx);
-                        }
-
-                        self.update_phase(delta);
-                        self.render_phase(egui_output, delta);
+                        self.on_frame_start(delta, egui_output);
                     }
                     _ => (),
                 }
 
                 if elwt.exiting() {
-                    let mut init_ctx = InitContext {
-                        scene: &mut self.scene,
-                        renderer: &mut self.renderer,
-                        resource_manager: &mut self.resource_manager,
-                        asset_manager: &mut self.asset_manager,
-                        resources: &mut self.resources,
-                        task_system: &self.task_system,
-                    };
-                    crate::systems::Scheduler::shutdown(&mut self.system_registry, &mut init_ctx);
+                    self.on_shutdown();
                 }
             })
             .expect("Event loop failed");
     }
 
-    fn update_phase(&mut self, delta: f32) {
+    /// Handles the transition at the start of a frame, including event buffer swapping,
+    /// state changes, and update/render execution.
+    fn on_frame_start(
+        &mut self,
+        delta: f32,
+        egui_output: Option<(egui::FullOutput, egui::Context)>,
+    ) {
+        self.event_bus.swap_buffers();
+
+        {
+            let mut init_ctx = InitContext {
+                scene: &mut self.scene,
+                renderer: &mut self.renderer,
+                resource_manager: &mut self.resource_manager,
+                asset_manager: &mut self.asset_manager,
+                resources: &mut self.resources,
+                task_system: &self.task_system,
+            };
+            crate::systems::Scheduler::apply_state_changes(
+                &mut self.system_registry,
+                &mut init_ctx,
+            );
+        }
+
+        self.update_phase(delta);
+        self.render_phase(egui_output, delta);
+    }
+
+    /// Handles engine shutdown logic and system cleanup.
+    fn on_shutdown(&mut self) {
+        let mut init_ctx = InitContext {
+            scene: &mut self.scene,
+            renderer: &mut self.renderer,
+            resource_manager: &mut self.resource_manager,
+            asset_manager: &mut self.asset_manager,
+            resources: &mut self.resources,
+            task_system: &self.task_system,
+        };
+        crate::systems::Scheduler::shutdown(&mut self.system_registry, &mut init_ctx);
+    }
+
+    /// Processes a single frame's update logic.
+    ///
+    /// This includes updating input state from the event bus and executing
+    /// all registered systems across multiple parallel stages.
+    pub fn update_phase(&mut self, delta: f32) {
         let events = self.event_bus.read_events::<crate::event::EngineEvent>();
         self.input_manager.update(&events);
-
-        self.system_events.lock().unwrap().clear(); // Reset for this frame
 
         {
             let mut ctx = FrameContext::new(
@@ -587,10 +649,6 @@ impl Engine {
                 &self.resources,
                 &self.task_system,
                 delta,
-                crate::systems_events::events::EventProxy {
-                    events: &events,
-                    outgoing: &self.system_events,
-                },
                 &self.input_manager,
                 &self.command_queue,
                 &self.event_bus,
@@ -604,58 +662,14 @@ impl Engine {
             .execute_all(&mut self.scene, &mut self.resource_manager);
     }
 
-    fn render_phase(&mut self, egui_output: Option<(egui::FullOutput, egui::Context)>, delta: f32) {
-        // Find active camera to calculate frustum
-        let mut camera_matrix = spark_math::Mat4::IDENTITY;
-        let mut projection_matrix = spark_math::Mat4::IDENTITY;
-
-        for node in self.scene.nodes.values() {
-            for component in &node.components {
-                if let Some(camera) = component
-                    .as_any()
-                    .downcast_ref::<crate::scene::CameraComponent>()
-                {
-                    let view = node.global_transform.inverse();
-                    if camera.orthographic {
-                        let aspect = self.renderer.get_extent().width as f32
-                            / self.renderer.get_extent().height as f32;
-                        let size = camera.ortho_size;
-                        projection_matrix = spark_math::Mat4::orthographic_rh(
-                            -size * aspect,
-                            size * aspect,
-                            -size,
-                            size,
-                            camera.near,
-                            camera.far,
-                        );
-                    } else {
-                        projection_matrix = spark_math::Mat4::perspective_rh(
-                            camera.fov.to_radians(),
-                            self.renderer.get_extent().width as f32
-                                / self.renderer.get_extent().height as f32,
-                            camera.near,
-                            camera.far,
-                        );
-                    }
-                    camera_matrix = projection_matrix * view;
-                    break;
-                }
-            }
-        }
-
-        let frustum_obj = spark_math::Frustum::from_matrix(camera_matrix);
-        let frustum_ref = if camera_matrix != spark_math::Mat4::IDENTITY {
-            Some(&frustum_obj)
-        } else {
-            None
-        };
-
-        // Collect visibility and light data
-        let mut packet = self
-            .scene
-            .collect_frame_packet(frustum_ref, &self.resource_manager, &self.asset_manager);
-        packet.projection_matrix = projection_matrix;
-        let total_objects = self.renderer.prepare_frame(packet);
+    pub fn render_phase(
+        &mut self,
+        egui_output: Option<(egui::FullOutput, egui::Context)>,
+        delta: f32,
+    ) {
+        let total_objects =
+            self.renderer
+                .prepare_frame(&self.scene, &self.resource_manager, &self.asset_manager);
 
         // Draw the frame
         self.renderer

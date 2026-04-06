@@ -1,8 +1,8 @@
-use std::path::{Path, PathBuf};
+use image::DynamicImage;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use serde::{Deserialize, Serialize};
-use image::DynamicImage;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Handle<T> {
@@ -63,11 +63,22 @@ impl<T> AssetStorage<T> {
     pub fn get_mut(&mut self, handle: Handle<T>) -> Option<&mut T> {
         self.assets.get_mut(handle.id as usize)
     }
+    pub fn assets_len(&self) -> usize {
+        self.assets.len()
+    }
 }
 
 impl<T> Default for AssetStorage<T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl spark_renderer::RenderableAssetManager for AssetManager {
+    fn is_material_transparent(&self, material_index: u32) -> bool {
+        self.materials
+            .get(crate::resource::Handle::new(material_index))
+            .is_some_and(|m| m.is_transparent)
     }
 }
 
@@ -111,10 +122,16 @@ impl AssetManager {
         &mut self,
         path: &Path,
         scene: &mut crate::scene::Scene,
-        renderer: &spark_renderer::Renderer,
+        renderer: &mut spark_renderer::Renderer,
         resource_manager: &mut crate::resource::ResourceManager,
-    ) {
-        crate::gltf_loader::GltfLoader::load_scene(resource_manager, self, path.to_path_buf(), scene, renderer);
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        crate::gltf_loader::GltfLoader::load_scene(
+            resource_manager,
+            self,
+            path.to_path_buf(),
+            scene,
+            renderer,
+        )
     }
 }
 

@@ -42,7 +42,7 @@ impl RenderPass for RayTracingPass {
             "HiZ",
         ]
     }
-    fn on_resize(&mut self, _renderer: &mut Renderer, _new_extent: vk::Extent2D) {}
+    fn on_resize(&mut self, _renderer: &Renderer, _new_extent: vk::Extent2D) {}
 
     fn bindings(&self) -> Vec<ResourceBinding> {
         vec![
@@ -149,7 +149,7 @@ impl RayTracingPass {
                 &[
                     renderer.frame_manager.frames[ctx.current_frame].global_descriptor_set,
                     self.descriptor_sets[ctx.current_frame],
-                    renderer.gpu_resource_manager.bindless_descriptor_set,
+                    renderer.gpu_resource_manager.bindless.set,
                 ],
                 &[],
             );
@@ -207,7 +207,6 @@ impl RayTracingPass {
             );
         }
     }
-
 }
 
 impl RayTracingPass {
@@ -364,7 +363,7 @@ impl RayTracingPass {
                     .set_layouts(&[
                         renderer.global_descriptor_set_layout,
                         ds_layout,
-                        renderer.gpu_resource_manager.bindless_descriptor_set_layout,
+                        renderer.gpu_resource_manager.bindless.layout,
                     ])
                     .push_constant_ranges(&[pc_range]),
                 None,
