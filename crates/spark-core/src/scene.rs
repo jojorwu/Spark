@@ -589,6 +589,11 @@ impl Scene {
         for layer in &self.cached_layers {
             let nodes_ptr = &self.nodes as *const SlotMap<NodeKey, Node> as usize;
             layer.into_par_iter().for_each(|&key| unsafe {
+                // SAFETY: We process the scene hierarchy layer by layer. Since each node belongs to exactly
+                // one layer and we process layers sequentially from root to leaves, we guarantee that
+                // parent transforms are already updated before children.
+                // Parallel access within a layer is safe because each node key in the layer is unique,
+                // ensuring disjoint mutable access to node data.
                 let nodes = &*(nodes_ptr as *const SlotMap<NodeKey, Node>);
                 let node = nodes.get(key).expect("Node not found in SlotMap during transform update");
                 let (parent_global, parent_dirty) = if let Some(parent_key) = node.parent {

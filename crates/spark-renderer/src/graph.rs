@@ -461,6 +461,8 @@ impl RenderGraph {
         }
     }
 
+    /// Updates Vulkan descriptor sets for a specific pass using current frame resources.
+    /// Updates Vulkan descriptor sets for a specific pass using current frame resources.
     fn perform_descriptor_update(
         &self,
         ctx: &RenderContext,
@@ -469,11 +471,15 @@ impl RenderGraph {
         bindings: &[crate::passes::ResourceBinding],
     ) {
         let renderer = ctx.renderer;
+
+        // Use temporary storage to maintain lifetimes for `update_descriptor_sets`.
+        // We use vectors and references carefully to satisfy the borrow checker.
         let mut img_infos = Vec::new();
         let mut buf_infos = Vec::new();
         let mut as_infos = Vec::new();
         let mut as_handles = Vec::new();
 
+        // Pass 1: Prepare all info structures.
         for binding in bindings {
             match binding {
                 crate::passes::ResourceBinding::SampledImage(_, name)
@@ -516,12 +522,13 @@ impl RenderGraph {
                         .lock()
                         .expect("Failed to lock AS manager during descriptor update");
                     if let Some(ref tlas) = as_manager.current_tlas[ctx.current_frame] {
-                        as_handles.push(tlas.handle);
+                        as_handles.push([tlas.handle]);
                     }
                 }
             }
         }
 
+        // Pass 2: Build the `WriteDescriptorSet` array using pointers to Pass 1 data.
         let mut writes = Vec::new();
         let mut img_idx = 0;
         let mut buf_idx = 0;
@@ -529,23 +536,18 @@ impl RenderGraph {
 
         for binding in bindings {
             match binding {
-                crate::passes::ResourceBinding::SampledImage(binding_idx, _) => {
+                crate::passes::ResourceBinding::SampledImage(binding_idx, _)
+                | crate::passes::ResourceBinding::InputAttachment(binding_idx, _) => {
+                    let ty = if matches!(binding, crate::passes::ResourceBinding::InputAttachment(_, _)) {
+                        vk::DescriptorType::INPUT_ATTACHMENT
+                    } else {
+                        vk::DescriptorType::COMBINED_IMAGE_SAMPLER
+                    };
                     writes.push(
                         vk::WriteDescriptorSet::default()
                             .dst_set(ds)
                             .dst_binding(*binding_idx)
-                            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                            .descriptor_count(1)
-                            .image_info(std::slice::from_ref(&img_infos[img_idx])),
-                    );
-                    img_idx += 1;
-                }
-                crate::passes::ResourceBinding::InputAttachment(binding_idx, _) => {
-                    writes.push(
-                        vk::WriteDescriptorSet::default()
-                            .dst_set(ds)
-                            .dst_binding(*binding_idx)
-                            .descriptor_type(vk::DescriptorType::INPUT_ATTACHMENT)
+                            .descriptor_type(ty)
                             .descriptor_count(1)
                             .image_info(std::slice::from_ref(&img_infos[img_idx])),
                     );
@@ -562,73 +564,56 @@ impl RenderGraph {
                     );
                     img_idx += 1;
                 }
-                crate::passes::ResourceBinding::StorageBuffer(binding_idx, name) => {
-                    if renderer
-                        .get_resource_buffer(pass_node.pass.name(), name, ctx.current_frame)
-                        .is_some()
-                    {
+                crate::passes::ResourceBinding::StorageBuffer(binding_idx, name)
+                | crate::passes::ResourceBinding::UniformBuffer(binding_idx, name) => {
+                    if renderer.get_resource_buffer(pass_node.pass.name(), name, ctx.current_frame).is_some() {
+                        let ty = if matches!(binding, crate::passes::ResourceBinding::StorageBuffer(_, _)) {
+                            vk::DescriptorType::STORAGE_BUFFER
+                        } else {
+                            vk::DescriptorType::UNIFORM_BUFFER
+                        };
                         writes.push(
                             vk::WriteDescriptorSet::default()
                                 .dst_set(ds)
                                 .dst_binding(*binding_idx)
-                                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                                .descriptor_type(ty)
                                 .descriptor_count(1)
                                 .buffer_info(std::slice::from_ref(&buf_infos[buf_idx])),
                         );
                         buf_idx += 1;
                     }
                 }
-                crate::passes::ResourceBinding::UniformBuffer(binding_idx, name) => {
-                    if renderer
-                        .get_resource_buffer(pass_node.pass.name(), name, ctx.current_frame)
-                        .is_some()
-                    {
-                        writes.push(
-                            vk::WriteDescriptorSet::default()
-                                .dst_set(ds)
-                                .dst_binding(*binding_idx)
-                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                .descriptor_count(1)
-                                .buffer_info(std::slice::from_ref(&buf_infos[buf_idx])),
-                        );
-                        buf_idx += 1;
-                    }
-                }
-                crate::passes::ResourceBinding::AccelerationStructure(_binding_idx, _) => {
+                crate::passes::ResourceBinding::AccelerationStructure(binding_idx, _) => {
                     if as_idx < as_handles.len() {
-                        let info = vk::WriteDescriptorSetAccelerationStructureKHR::default()
-                            .acceleration_structures(std::slice::from_ref(&as_handles[as_idx]));
-                        as_infos.push(info);
+                        as_infos.push(
+                            vk::WriteDescriptorSetAccelerationStructureKHR::default()
+                                .acceleration_structures(&as_handles[as_idx]),
+                        );
+                        writes.push(
+                            vk::WriteDescriptorSet::default()
+                                .dst_set(ds)
+                                .dst_binding(*binding_idx)
+                                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                                .descriptor_count(1),
+                        );
+                        as_idx += 1;
                     }
-                    as_idx += 1;
                 }
+            }
+        }
+
+        // Link Acceleration Structure infos manually using pointers to maintain borrows.
+        let mut current_as_idx = 0;
+        for write in &mut writes {
+            if write.descriptor_type == vk::DescriptorType::ACCELERATION_STRUCTURE_KHR {
+                write.p_next = &as_infos[current_as_idx] as *const _ as *const _;
+                current_as_idx += 1;
             }
         }
 
         if !writes.is_empty() {
             unsafe {
                 renderer.device.device.update_descriptor_sets(&writes, &[]);
-            }
-        }
-
-        let mut as_idx_2 = 0;
-        for binding in pass_node.pass.bindings() {
-            if let crate::passes::ResourceBinding::AccelerationStructure(binding_idx, _) = binding {
-                if as_idx_2 < as_infos.len() {
-                    let as_write = [vk::WriteDescriptorSet::default()
-                        .dst_set(ds)
-                        .dst_binding(binding_idx)
-                        .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                        .descriptor_count(1)
-                        .push_next(&mut as_infos[as_idx_2])];
-                    unsafe {
-                        renderer
-                            .device
-                            .device
-                            .update_descriptor_sets(&as_write, &[]);
-                    }
-                    as_idx_2 += 1;
-                }
             }
         }
     }
