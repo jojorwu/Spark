@@ -684,7 +684,7 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].transparent_indirect_buffer = buffer.clone();
         }
-        self.upload_to_buffer(&buffer.unwrap(), commands);
+        self.upload_to_buffer(&buffer.expect("Transparent indirect buffer missing"), commands);
 
         let obj_sz = std::mem::size_of_val(object_data) as u64;
         let mut obj_buffer = self.frame_manager.frames[frame_idx]
@@ -704,7 +704,7 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].transparent_object_buffer = obj_buffer.clone();
         }
-        self.upload_to_buffer(&obj_buffer.unwrap(), object_data);
+        self.upload_to_buffer(&obj_buffer.expect("Transparent object buffer missing"), object_data);
     }
 
     pub fn update_indirect_buffers(
@@ -736,7 +736,7 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].indirect_commands_buffer = buffer.clone();
         }
-        self.upload_to_buffer(&buffer.unwrap(), commands);
+        self.upload_to_buffer(&buffer.expect("Indirect commands buffer missing"), commands);
 
         let obj_sz = std::mem::size_of_val(object_data) as u64;
         let mut obj_buffer = self.frame_manager.frames[frame_idx]
@@ -756,7 +756,7 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].object_data_buffer = obj_buffer.clone();
         }
-        self.upload_to_buffer(&obj_buffer.unwrap(), object_data);
+        self.upload_to_buffer(&obj_buffer.expect("Object data buffer missing"), object_data);
 
         if self.frame_manager.frames[frame_idx]
             .draw_count_buffer
@@ -1657,50 +1657,15 @@ impl Renderer {
 
             self.ensure_indirect_buffers_capacity(frame_idx, cmd_sz, obj_sz);
 
-            let frame = &self.frame_manager.frames[frame_idx];
-            let cmd_ptr = frame.indirect_commands_buffer.as_ref().unwrap().ptr as usize;
-            let obj_ptr = frame.object_data_buffer.as_ref().unwrap().ptr as usize;
+            let (icb, odb) = {
+                let frame = &self.frame_manager.frames[frame_idx];
+                (
+                    frame.indirect_commands_buffer.clone().expect("Indirect commands buffer missing"),
+                    frame.object_data_buffer.clone().expect("Object data buffer missing"),
+                )
+            };
 
-            packet
-                .opaque_meshes
-                .par_iter()
-                .enumerate()
-                .for_each(|(i, mesh)| {
-                    let m = &mesh.model;
-                    unsafe {
-                        let obj_ptr = obj_ptr as *mut ObjectDataSSBO;
-                        let cmd_ptr = cmd_ptr as *mut vk::DrawIndexedIndirectCommand;
-                        *obj_ptr.add(i) = ObjectDataSSBO {
-                            model_row0: m.col(0),
-                            model_row1: m.col(1),
-                            model_row2: m.col(2),
-                            sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
-                            index_count: mesh.index_count,
-                            first_index: mesh.first_index,
-                            vertex_offset: mesh.vertex_offset,
-                            material_index: mesh.material_index,
-                        };
-                        *cmd_ptr.add(i) = vk::DrawIndexedIndirectCommand {
-                            index_count: mesh.index_count,
-                            instance_count: 1,
-                            first_index: mesh.first_index,
-                            vertex_offset: mesh.vertex_offset,
-                            first_instance: i as u32,
-                        };
-                    }
-                });
-            frame
-                .indirect_commands_buffer
-                .as_ref()
-                .unwrap()
-                .version
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            frame
-                .object_data_buffer
-                .as_ref()
-                .unwrap()
-                .version
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Self::fill_mesh_data_buffers(&packet.opaque_meshes, &icb, &odb);
         }
 
         // 2. Transparent meshes.
@@ -1713,54 +1678,63 @@ impl Renderer {
 
             self.ensure_transparent_buffers_capacity(frame_idx, cmd_sz, obj_sz);
 
-            let frame = &self.frame_manager.frames[frame_idx];
-            let cmd_ptr = frame.transparent_indirect_buffer.as_ref().unwrap().ptr as usize;
-            let obj_ptr = frame.transparent_object_buffer.as_ref().unwrap().ptr as usize;
+            let (ticb, todb) = {
+                let frame = &self.frame_manager.frames[frame_idx];
+                (
+                    frame.transparent_indirect_buffer.clone().expect("Transparent indirect buffer missing"),
+                    frame.transparent_object_buffer.clone().expect("Transparent object buffer missing"),
+                )
+            };
 
-            packet
-                .transparent_meshes
-                .par_iter()
-                .enumerate()
-                .for_each(|(i, mesh)| {
-                    let m = &mesh.model;
-                    unsafe {
-                        let obj_ptr = obj_ptr as *mut ObjectDataSSBO;
-                        let cmd_ptr = cmd_ptr as *mut vk::DrawIndexedIndirectCommand;
-                        *obj_ptr.add(i) = ObjectDataSSBO {
-                            model_row0: m.col(0),
-                            model_row1: m.col(1),
-                            model_row2: m.col(2),
-                            sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
-                            index_count: mesh.index_count,
-                            first_index: mesh.first_index,
-                            vertex_offset: mesh.vertex_offset,
-                            material_index: mesh.material_index,
-                        };
-                        *cmd_ptr.add(i) = vk::DrawIndexedIndirectCommand {
-                            index_count: mesh.index_count,
-                            instance_count: 1,
-                            first_index: mesh.first_index,
-                            vertex_offset: mesh.vertex_offset,
-                            first_instance: i as u32,
-                        };
-                    }
-                });
-            frame
-                .transparent_indirect_buffer
-                .as_ref()
-                .unwrap()
-                .version
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            frame
-                .transparent_object_buffer
-                .as_ref()
-                .unwrap()
-                .version
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Self::fill_mesh_data_buffers(&packet.transparent_meshes, &ticb, &todb);
         }
         self.last_transparent_count = trans_count;
 
         opaque_count
+    }
+
+    /// Fills the indirect command and object data buffers for a list of meshes.
+    fn fill_mesh_data_buffers(
+        meshes: &[crate::resource::MeshDraw],
+        indirect_buffer: &Buffer,
+        object_buffer: &Buffer,
+    ) {
+        use rayon::prelude::*;
+
+        let cmd_ptr = indirect_buffer.ptr as usize;
+        let obj_ptr = object_buffer.ptr as usize;
+
+        meshes.par_iter().enumerate().for_each(|(i, mesh)| {
+            let m = &mesh.model;
+            unsafe {
+                let obj_ptr = obj_ptr as *mut ObjectDataSSBO;
+                let cmd_ptr = cmd_ptr as *mut vk::DrawIndexedIndirectCommand;
+                *obj_ptr.add(i) = ObjectDataSSBO {
+                    model_row0: m.col(0),
+                    model_row1: m.col(1),
+                    model_row2: m.col(2),
+                    sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
+                    index_count: mesh.index_count,
+                    first_index: mesh.first_index,
+                    vertex_offset: mesh.vertex_offset,
+                    material_index: mesh.material_index,
+                };
+                *cmd_ptr.add(i) = vk::DrawIndexedIndirectCommand {
+                    index_count: mesh.index_count,
+                    instance_count: 1,
+                    first_index: mesh.first_index,
+                    vertex_offset: mesh.vertex_offset,
+                    first_instance: i as u32,
+                };
+            }
+        });
+
+        indirect_buffer
+            .version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        object_buffer
+            .version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn ensure_indirect_buffers_capacity(&mut self, frame_idx: usize, cmd_sz: u64, obj_sz: u64) {
