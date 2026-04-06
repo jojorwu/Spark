@@ -1,4 +1,5 @@
 pub mod as_manager;
+pub mod bindless;
 pub mod context;
 pub mod device;
 pub mod frame_manager;

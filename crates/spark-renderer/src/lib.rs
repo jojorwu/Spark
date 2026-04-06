@@ -1215,38 +1215,13 @@ impl Renderer {
         let v = self.create_image_view_basic(i, vk::Format::R8G8B8A8_SRGB, mip);
         let s = self.create_texture_sampler(mip);
 
-        let bindless_index = if let Some(idx) = self
-            .gpu_resource_manager
-            .free_bindless_indices
-            .lock()
-            .unwrap()
-            .pop()
-        {
-            idx
-        } else {
-            let idx = self
-                .gpu_resource_manager
-                .next_bindless_index
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if idx >= 10000 {
-                panic!("Exceeded maximum bindless texture count (10000)");
-            }
-            idx
-        };
-
-        let img_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(v)
-            .sampler(s)];
-        let writes = [vk::WriteDescriptorSet::default()
-            .dst_set(self.gpu_resource_manager.bindless_descriptor_set)
-            .dst_binding(0)
-            .dst_array_element(bindless_index)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .image_info(&img_info)];
-        unsafe {
-            self.device.device.update_descriptor_sets(&writes, &[]);
-        }
+        let bindless_index = self.gpu_resource_manager.bindless.allocate_index();
+        self.gpu_resource_manager.bindless.update_texture(
+            &self.device.device,
+            bindless_index,
+            v,
+            s,
+        );
 
         Texture {
             image: i,
@@ -1264,10 +1239,8 @@ impl Renderer {
             .remove(&t.view);
 
         self.gpu_resource_manager
-            .free_bindless_indices
-            .lock()
-            .unwrap()
-            .push(t.bindless_index);
+            .bindless
+            .deallocate_index(t.bindless_index);
 
         unsafe {
             self.device.device.destroy_sampler(t.sampler, None);
@@ -1588,34 +1561,50 @@ impl Renderer {
     ///
     /// # Returns
     /// * The total number of opaque objects to be rendered.
+    /// Prepares the engine for rendering the current frame by collecting scene data,
+    /// updating GPU buffers, and performing frustum culling.
     pub fn prepare_frame(
         &mut self,
         scene: &impl RenderableScene,
         _resource_manager: &impl RenderableResourceManager,
         asset_manager: &impl RenderableAssetManager,
     ) -> u32 {
-        // Find active camera to calculate frustum
-        let mut camera_matrix = spark_math::Mat4::IDENTITY;
-        let mut projection_matrix = spark_math::Mat4::IDENTITY;
+        let extent = self.get_extent();
+        let (_view_matrix, projection_matrix, frustum) = self.calculate_view_constants(scene, extent);
 
-        if let Some((view, proj, near, far)) = scene.get_active_camera_matrices(self.get_extent()) {
-            projection_matrix = proj;
-            camera_matrix = proj * view;
+        let mut packet = scene.collect_frame_packet(frustum.as_ref(), asset_manager);
+        packet.projection_matrix = projection_matrix;
+        self.sort_transparent_meshes(&mut packet);
+
+        self.scene_view_matrix_for_pos = packet.view_matrix;
+        self.update_statistics(&packet);
+
+        let total_objects = self.prepare_mesh_data(&packet);
+        self.update_lights_from_draw(&packet.lights);
+        self.update_global_ubo(&packet);
+
+        self.current_packet = Some(packet);
+        self.prepare_passes();
+
+        self.last_object_count = total_objects;
+        total_objects
+    }
+
+    fn calculate_view_constants(
+        &mut self,
+        scene: &impl RenderableScene,
+        extent: vk::Extent2D,
+    ) -> (spark_math::Mat4, spark_math::Mat4, Option<spark_math::Frustum>) {
+        if let Some((view, proj, near, far)) = scene.get_active_camera_matrices(extent) {
             self.current_znear = near;
             self.current_zfar = far;
+            let camera_matrix = proj * view;
+            return (view, proj, Some(spark_math::Frustum::from_matrix(camera_matrix)));
         }
+        (spark_math::Mat4::IDENTITY, spark_math::Mat4::IDENTITY, None)
+    }
 
-        let frustum_obj = spark_math::Frustum::from_matrix(camera_matrix);
-        let frustum_ref = if camera_matrix != spark_math::Mat4::IDENTITY {
-            Some(&frustum_obj)
-        } else {
-            None
-        };
-
-        // Collect visibility and light data
-        let mut packet = scene.collect_frame_packet(frustum_ref, asset_manager);
-        packet.projection_matrix = projection_matrix;
-
+    fn sort_transparent_meshes(&self, packet: &mut crate::resource::FramePacket) {
         let view_pos = packet.view_matrix.inverse().w_axis.xyz();
         packet.transparent_meshes.par_sort_by(|a, b| {
             let dist_a = (a.model.w_axis.xyz() - view_pos).length_squared();
@@ -1624,9 +1613,9 @@ impl Renderer {
                 .partial_cmp(&dist_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+    }
 
-        self.scene_view_matrix_for_pos = packet.view_matrix;
-
+    fn update_statistics(&self, packet: &crate::resource::FramePacket) {
         let triangle_count: u32 = packet
             .opaque_meshes
             .iter()
@@ -1639,28 +1628,19 @@ impl Renderer {
                 .sum::<u32>();
         self.last_triangle_count
             .store(triangle_count, std::sync::atomic::Ordering::Relaxed);
+    }
 
-        // 1. Prepare GPU Indirect and Object buffers.
-        let total_objects = self.prepare_mesh_data(&packet);
-
-        // 2. Update Lights.
-        self.update_lights_from_draw(&packet.lights);
-
-        // 3. Update Global UBO and Cascade Shadow Maps.
-        self.update_global_ubo(&packet);
-
-        self.current_packet = Some(packet);
-
-        // 4. Prepare Passes.
+    fn prepare_passes(&mut self) {
         let cf = self.frame_manager.current_frame;
-        for pass_node in &self.render_graph.passes {
-            if pass_node.pass.is_enabled(self) {
-                pass_node.pass.prepare(self, cf);
+        for i in 0..self.render_graph.passes.len() {
+            if self.render_graph.passes[i].pass.is_enabled(self) {
+                // We use a little unsafe here because we know prepare doesn't mutate the pass list itself
+                let pass_ptr = &self.render_graph.passes[i].pass as *const Box<dyn crate::passes::RenderPass>;
+                unsafe {
+                    (*pass_ptr).prepare(self, cf);
+                }
             }
         }
-
-        self.last_object_count = total_objects;
-        total_objects
     }
 
     /// Prepares mesh-related buffers (indirect commands, SSBOs).

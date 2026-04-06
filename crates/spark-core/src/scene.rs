@@ -307,6 +307,7 @@ pub struct Query<'a> {
 }
 
 impl<'a> Query<'a> {
+    /// Filters the query to only include nodes that have component `T`.
     pub fn with<T: 'static>(mut self) -> Self {
         let tid = std::any::TypeId::of::<T>();
         if let Some(nodes) = self.scene.component_registry.get(&tid) {
@@ -322,6 +323,7 @@ impl<'a> Query<'a> {
         self
     }
 
+    /// Filters the query to exclude nodes that have component `T`.
     pub fn without<T: 'static>(mut self) -> Self {
         let tid = std::any::TypeId::of::<T>();
         if let Some(nodes) = self.scene.component_registry.get(&tid) {
@@ -340,7 +342,8 @@ impl<'a> Query<'a> {
         self
     }
 
-    pub fn build(self) -> Vec<NodeKey> {
+    /// Executes the query and returns the matching node keys.
+    pub fn execute(self) -> Vec<NodeKey> {
         self.matches
             .map(|m| m.into_iter().collect())
             .unwrap_or_else(|| self.scene.nodes.keys().collect())
@@ -433,6 +436,33 @@ impl Scene {
 
         self.update_all_transforms();
         key
+    }
+
+    /// Adds a component to a specific node.
+    pub fn add_component<T: Component + 'static>(&mut self, node_key: NodeKey, component: T) {
+        if let Some(node) = self.nodes.get_mut(node_key) {
+            let type_id = std::any::TypeId::of::<T>();
+            node.components.push(Box::new(component));
+            self.component_registry
+                .entry(type_id)
+                .or_default()
+                .push(node_key);
+            self.nodes_version
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    /// Removes all components of type `T` from a specific node.
+    pub fn remove_components<T: 'static>(&mut self, node_key: NodeKey) {
+        if let Some(node) = self.nodes.get_mut(node_key) {
+            let type_id = std::any::TypeId::of::<T>();
+            node.components.retain(|c| c.as_any().type_id() != type_id);
+            if let Some(list) = self.component_registry.get_mut(&type_id) {
+                list.retain(|&k| k != node_key);
+            }
+            self.nodes_version
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
     }
 
     pub fn duplicate_node(&mut self, key: NodeKey) -> Option<NodeKey> {

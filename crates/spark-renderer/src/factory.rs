@@ -51,7 +51,7 @@ impl Renderer {
         let pool = self.gpu_resource_manager.descriptor_pool;
         let layout = self.global_descriptor_set_layout;
         let msaa = self.get_msaa_samples();
-        let bindless_layout = self.gpu_resource_manager.bindless_descriptor_set_layout;
+        let bindless_layout = self.gpu_resource_manager.bindless.layout;
 
         let hiz_pass = crate::passes::hiz::HiZPass::new(
             &self.device,

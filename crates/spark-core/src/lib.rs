@@ -276,6 +276,7 @@ impl<'a> FrameContext<'a> {
         self.scene().query_components::<T>()
     }
 
+    /// Creates a new query to filter nodes in the scene.
     pub fn query(&self) -> crate::scene::Query<'_> {
         self.scene().query()
     }

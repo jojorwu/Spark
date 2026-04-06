@@ -103,6 +103,24 @@ impl Command for DeleteNodeCommand {
     }
 }
 
+pub struct DuplicateNodeCommand {
+    pub original_key: NodeKey,
+    pub new_key: Option<NodeKey>,
+}
+
+impl Command for DuplicateNodeCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        if let Some(key) = scene.duplicate_node(self.original_key) {
+            self.new_key = Some(key);
+        }
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(key) = self.new_key.take() {
+            scene.remove_node(key);
+        }
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum SimulationState {
     Stopped,
@@ -308,9 +326,13 @@ impl EditorUI {
         }
 
         if let Some(key) = self.node_to_duplicate.take() {
-            if let Some(new_key) = scene.duplicate_node(key) {
-                self.selected_node = Some(new_key);
-            }
+            self.execute_command(
+                Box::new(DuplicateNodeCommand {
+                    original_key: key,
+                    new_key: None,
+                }),
+                scene,
+            );
         }
 
         if let Some((parent, node_type)) = self.node_to_add_child.take() {

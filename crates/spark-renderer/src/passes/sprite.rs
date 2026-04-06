@@ -144,7 +144,7 @@ impl RenderPass for SpritePass {
                 0,
                 &[
                     self.descriptor_sets[cf],
-                    renderer.gpu_resource_manager.bindless_descriptor_set,
+                    renderer.gpu_resource_manager.bindless.set,
                 ],
                 &[],
             );
@@ -213,10 +213,7 @@ impl SpritePass {
         let layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(&[
-                        ds_layout,
-                        renderer.gpu_resource_manager.bindless_descriptor_set_layout,
-                    ])
+                    .set_layouts(&[ds_layout, renderer.gpu_resource_manager.bindless.layout])
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,

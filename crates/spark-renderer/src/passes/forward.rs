@@ -135,7 +135,7 @@ impl RenderPass for ForwardPass {
                 0,
                 &[
                     renderer.frame_manager.frames[cf].global_descriptor_set,
-                    renderer.gpu_resource_manager.bindless_descriptor_set,
+                    renderer.gpu_resource_manager.bindless.set,
                 ],
                 &[],
             );
@@ -194,7 +194,7 @@ impl ForwardPass {
 
         let set_layouts = [
             renderer.global_descriptor_set_layout,
-            renderer.gpu_resource_manager.bindless_descriptor_set_layout,
+            renderer.gpu_resource_manager.bindless.layout,
         ];
 
         let layout = unsafe {

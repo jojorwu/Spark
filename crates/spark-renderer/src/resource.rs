@@ -146,6 +146,7 @@ pub struct Attachment {
     pub allocation: Arc<Mutex<Option<gpu_allocator::vulkan::Allocation>>>,
     pub view: vk::ImageView,
     pub extent: vk::Extent2D,
+    pub format: vk::Format,
     pub version: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -156,6 +157,7 @@ impl Clone for Attachment {
             allocation: self.allocation.clone(),
             view: self.view,
             extent: self.extent,
+            format: self.format,
             version: self.version.clone(),
         }
     }
@@ -366,6 +368,7 @@ impl Attachment {
             allocation: Arc::new(Mutex::new(Some(allocation))),
             view,
             extent: vk::Extent2D { width, height },
+            format,
             version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }

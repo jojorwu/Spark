@@ -182,10 +182,7 @@ impl GBufferPass {
                         vk::PipelineBindPoint::GRAPHICS,
                         pipeline.layout,
                         0,
-                        &[
-                            global_ds,
-                            renderer.gpu_resource_manager.bindless_descriptor_set,
-                        ],
+                        &[global_ds, renderer.gpu_resource_manager.bindless.set],
                         &[],
                     );
 
@@ -243,6 +240,48 @@ impl RenderPass for GBufferPass {
     fn name(&self) -> &str {
         "GBufferPass"
     }
+
+    fn outputs(&self) -> Vec<&'static str> {
+        vec![
+            "GBufferAlbedo",
+            "GBufferNormal",
+            "GBufferPBR",
+            "GBufferVelocity",
+            "GBufferDepth",
+        ]
+    }
+
+    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![
+            (
+                "GBufferAlbedo".to_string(),
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            ),
+            (
+                "GBufferNormal".to_string(),
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            ),
+            (
+                "GBufferPBR".to_string(),
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            ),
+            (
+                "GBufferVelocity".to_string(),
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            ),
+            (
+                "GBufferDepth".to_string(),
+                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+            ),
+        ]
+    }
+
     fn destroy(&mut self, _renderer: &mut Renderer) {}
     fn dependencies(&self) -> Vec<&'static str> {
         vec!["CullingPass"]
@@ -255,93 +294,5 @@ impl RenderPass for GBufferPass {
         let device = &renderer.device.device;
 
         self.record_gbuffer_commands(device, command_buffer, renderer, current_frame);
-
-        // Barrier: G-Buffer to SHADER_READ_ONLY_OPTIMAL
-        let gbuffer_barriers = [
-            vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(
-                    renderer
-                        .render_graph
-                        .physical_attachments
-                        .get("GBufferAlbedo")
-                        .unwrap()[current_frame]
-                        .image,
-                )
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                }),
-            vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(
-                    renderer
-                        .render_graph
-                        .physical_attachments
-                        .get("GBufferNormal")
-                        .unwrap()[current_frame]
-                        .image,
-                )
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                }),
-            vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(
-                    renderer
-                        .render_graph
-                        .physical_attachments
-                        .get("GBufferPBR")
-                        .unwrap()[current_frame]
-                        .image,
-                )
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                }),
-            vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(
-                    renderer
-                        .render_graph
-                        .physical_attachments
-                        .get("GBufferDepth")
-                        .unwrap()[current_frame]
-                        .image,
-                )
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::DEPTH,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                }),
-        ];
-        unsafe {
-            renderer.device.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &gbuffer_barriers,
-            );
-        }
     }
 }

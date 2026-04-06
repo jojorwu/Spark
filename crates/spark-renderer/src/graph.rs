@@ -385,18 +385,24 @@ impl RenderGraph {
                 continue;
             }
 
-            // 1. Update descriptor sets for the pass if any of its bound resources have changed.
-            self.update_pass_descriptors(ctx, pass_node);
-
-            // 2. Inject image memory barriers based on declarative access requirements.
-            self.inject_image_barriers(ctx, pass_node);
-
-            // 3. Inject buffer memory barriers.
-            self.inject_buffer_barriers(ctx, pass_node);
-
-            // 4. Record primary commands for the pass.
-            pass_node.pass.record_commands(ctx);
+            self.execute_pass(ctx, pass_node);
         }
+    }
+
+    fn execute_pass(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
+        // 1. Update descriptor sets for the pass if any of its bound resources have changed.
+        self.update_pass_descriptors(ctx, pass_node);
+
+        // 2. Inject memory barriers based on declarative access requirements.
+        self.inject_barriers(ctx, pass_node);
+
+        // 3. Record primary commands for the pass.
+        pass_node.pass.record_commands(ctx);
+    }
+
+    fn inject_barriers(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
+        self.inject_image_barriers(ctx, pass_node);
+        self.inject_buffer_barriers(ctx, pass_node);
     }
 
     fn update_pass_descriptors(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
@@ -641,27 +647,17 @@ impl RenderGraph {
 
             if let Some(attachments) = attachments {
                 let attachment = &attachments[ctx.current_frame];
-                let aspect = if res_name.contains("Depth") {
+                let aspect = if attachment.format == vk::Format::D32_SFLOAT
+                    || attachment.format == vk::Format::D32_SFLOAT_S8_UINT
+                    || attachment.format == vk::Format::D24_UNORM_S8_UINT
+                    || attachment.format == vk::Format::D16_UNORM
+                {
                     vk::ImageAspectFlags::DEPTH
                 } else {
                     vk::ImageAspectFlags::COLOR
                 };
 
-                let new_layout = if dst_access.contains(vk::AccessFlags::COLOR_ATTACHMENT_WRITE) {
-                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-                } else if dst_access.contains(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE) {
-                    vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
-                } else if dst_access.contains(vk::AccessFlags::SHADER_READ)
-                    && !dst_stage.contains(vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR)
-                {
-                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-                } else if dst_access.contains(vk::AccessFlags::TRANSFER_READ) {
-                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL
-                } else if dst_access.contains(vk::AccessFlags::TRANSFER_WRITE) {
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL
-                } else {
-                    vk::ImageLayout::GENERAL
-                };
+                let new_layout = self.determine_layout(dst_access, dst_stage);
 
                 renderer.resource_tracker.transition_image(
                     ctx.command_buffer,
@@ -675,6 +671,28 @@ impl RenderGraph {
                     aspect,
                 );
             }
+        }
+    }
+
+    fn determine_layout(
+        &self,
+        access: vk::AccessFlags,
+        stage: vk::PipelineStageFlags,
+    ) -> vk::ImageLayout {
+        if access.contains(vk::AccessFlags::COLOR_ATTACHMENT_WRITE) {
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+        } else if access.contains(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE) {
+            vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
+        } else if access.contains(vk::AccessFlags::SHADER_READ)
+            && !stage.contains(vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR)
+        {
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+        } else if access.contains(vk::AccessFlags::TRANSFER_READ) {
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL
+        } else if access.contains(vk::AccessFlags::TRANSFER_WRITE) {
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL
+        } else {
+            vk::ImageLayout::GENERAL
         }
     }
 

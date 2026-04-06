@@ -154,7 +154,7 @@ impl AccelerationStructureManager {
             });
         }
 
-        // Barrier for BLAS builds to complete before TLAS build
+        // Ensure all BLAS builds are complete before starting the TLAS build.
         let barrier_data = [vk::MemoryBarrier2::default()
             .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
             .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
@@ -181,8 +181,7 @@ impl AccelerationStructureManager {
         Ok(())
     }
 
-    /// Cleans up all cached BLAS.
-    /// Cleans up unused BLAS that haven't been seen in several frames.
+    /// Evicts unused BLAS entries from the cache that haven't been used for over 100 frames.
     pub fn evict_unused_blas(&mut self, device: &VulkanDevice, current_frame_id: u64) {
         let keys_to_remove: Vec<BlasKey> = self
             .blas_usage
