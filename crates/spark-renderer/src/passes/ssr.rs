@@ -131,13 +131,6 @@ impl RenderPass for SSRPass {
         }
     }
 
-    fn get_resource_view(&self, name: &str, frame_index: usize) -> Option<vk::ImageView> {
-        if name == "output" {
-            Some(self.output_images[frame_index].view)
-        } else {
-            None
-        }
-    }
 
     fn on_resize(&mut self, renderer: &mut Renderer, new_extent: vk::Extent2D) {
         for img in self.output_images.drain(..) {

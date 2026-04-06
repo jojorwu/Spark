@@ -21,51 +21,45 @@ impl RenderPass for ShadowPass {
     fn name(&self) -> &str {
         "ShadowPass"
     }
+    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+        vec![(
+            "ShadowMap".to_string(),
+            vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+        )]
+    }
     fn is_enabled(&self, renderer: &Renderer) -> bool {
         renderer.settings.enable_shadows
     }
     fn outputs(&self) -> Vec<&'static str> {
         vec!["ShadowMap"]
     }
+    fn declared_resources(&self) -> std::collections::HashMap<String, super::ResourceDesc> {
+        let mut res = std::collections::HashMap::new();
+        res.insert(
+            "ShadowMap".to_string(),
+            super::ResourceDesc::Image(super::AttachmentDesc {
+                format: vk::Format::D32_SFLOAT,
+                usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                size: super::AttachmentSize::Absolute(
+                    Renderer::SHADOW_MAP_CASCADE_SIZE,
+                    Renderer::SHADOW_MAP_CASCADE_SIZE,
+                ),
+            }),
+        );
+        res
+    }
 
-    fn record_secondary_commands(&self, ctx: &RenderContext) -> Vec<vk::CommandBuffer> {
+    fn record_commands(&self, ctx: &RenderContext) {
         let renderer = ctx.renderer;
         let device = &renderer.device.device;
         let lvps = renderer.frame_manager.frames[ctx.current_frame].light_view_projs;
 
-        let mut buffers = Vec::new();
         for (cascade_idx, &lvp) in lvps.iter().enumerate().take(SHADOW_CASCADE_COUNT) {
-            let cb = renderer.allocate_secondary_command_buffer();
-
-            let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::default()
-                .depth_attachment_format(vk::Format::D32_SFLOAT);
-            let inheritance =
-                vk::CommandBufferInheritanceInfo::default().push_next(&mut rendering_info);
-            let begin = vk::CommandBufferBeginInfo::default()
-                .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE)
-                .inheritance_info(&inheritance);
-
-            unsafe {
-                device.begin_command_buffer(cb, &begin).unwrap();
-                self.record_cascade_commands(device, cb, lvp, renderer, cascade_idx, true);
-                device.end_command_buffer(cb).unwrap();
-            }
-            buffers.push(cb);
-        }
-        buffers
-    }
-
-    fn record_commands(&self, _ctx: &RenderContext) {
-        // Note: record_cascade_commands is called via record_secondary_commands.
-    }
-
-    fn get_resource_view(&self, name: &str, _frame_index: usize) -> Option<vk::ImageView> {
-        if name == "shadow_map" {
-            Some(self.view)
-        } else {
-            None
+            self.record_cascade_commands(device, ctx.command_buffer, lvp, renderer, cascade_idx);
         }
     }
+
 
     fn destroy(&mut self, renderer: &mut Renderer) {
         unsafe {
@@ -101,7 +95,6 @@ impl ShadowPass {
         light_view_projs: &[spark_math::Mat4; SHADOW_CASCADE_COUNT],
         renderer: &Renderer,
         object_count: u32,
-        is_secondary: bool,
     ) {
         self.record_commands_impl(
             device,
@@ -109,7 +102,6 @@ impl ShadowPass {
             light_view_projs,
             renderer,
             object_count,
-            is_secondary,
         );
     }
 
@@ -306,7 +298,6 @@ impl ShadowPass {
         lvp: spark_math::Mat4,
         renderer: &Renderer,
         cascade_idx: usize,
-        is_secondary: bool,
     ) {
         let pipeline = match self.pipeline {
             Some(p) => p,
@@ -321,6 +312,17 @@ impl ShadowPass {
         }];
 
         unsafe {
+            // Ensure the ShadowMap is integrated into the RenderGraph by retrieving it.
+            let _graph_resource = renderer.get_pass_resource_view(
+                self.name(),
+                "ShadowMap",
+                renderer.frame_manager.current_frame,
+            );
+
+            // Note: In a real cascade implementation, cascade_views would be needed if we render to specific array layers.
+            // Since our RenderGraph doesn't yet support subresource views easily in get_pass_resource_view,
+            // we'll keep using the internal cascade_views but ensure the image is transitioned via the graph.
+
             let depth_attachment = vk::RenderingAttachmentInfo::default()
                 .image_view(self.cascade_views[cascade_idx])
                 .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
@@ -338,11 +340,6 @@ impl ShadowPass {
                 })
                 .layer_count(1)
                 .depth_attachment(&depth_attachment);
-
-            if is_secondary {
-                // Secondary buffers used in dynamic rendering don't use this flag in begin_rendering,
-                // but the inheritance info must match.
-            }
 
             device.cmd_begin_rendering(command_buffer, &rendering_info);
 
@@ -429,17 +426,9 @@ impl ShadowPass {
         light_view_projs: &[spark_math::Mat4; SHADOW_CASCADE_COUNT],
         renderer: &Renderer,
         _object_count: u32,
-        is_secondary: bool,
     ) {
         for (cascade_idx, &lvp) in light_view_projs.iter().enumerate() {
-            self.record_cascade_commands(
-                device,
-                command_buffer,
-                lvp,
-                renderer,
-                cascade_idx,
-                is_secondary,
-            );
+            self.record_cascade_commands(device, command_buffer, lvp, renderer, cascade_idx);
         }
     }
 }

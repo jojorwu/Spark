@@ -74,7 +74,13 @@ impl<T> Default for AssetStorage<T> {
     }
 }
 
-impl spark_renderer::RenderableAssetManager for AssetManager {}
+impl spark_renderer::RenderableAssetManager for AssetManager {
+    fn is_material_transparent(&self, material_index: u32) -> bool {
+        self.materials
+            .get(crate::resource::Handle::new(material_index))
+            .map_or(false, |m| m.is_transparent)
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Material {

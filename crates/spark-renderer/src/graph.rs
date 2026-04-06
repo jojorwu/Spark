@@ -60,6 +60,24 @@ impl RenderGraph {
         }
     }
 
+    pub fn destroy_resources(&mut self, renderer: &crate::Renderer) {
+        unsafe {
+            let device = &renderer.device.device;
+            let allocator = &renderer.device.allocator;
+
+            for (_, attachments) in self.transient_attachments.drain() {
+                for a in attachments {
+                    a.destroy(device, allocator);
+                }
+            }
+
+            if self.descriptor_pool != vk::DescriptorPool::null() {
+                device.destroy_descriptor_pool(self.descriptor_pool, None);
+                self.descriptor_pool = vk::DescriptorPool::null();
+            }
+        }
+    }
+
     pub fn add_pass<P: RenderPass + 'static>(
         &mut self,
         pass: P,
@@ -358,7 +376,7 @@ impl RenderGraph {
     ///
     /// Executes the render graph by iterating through sorted passes.
     /// Automatically handles descriptor updates and memory barrier injection.
-    pub fn execute(&self, ctx: &RenderContext, secondary_commands: &[Vec<vk::CommandBuffer>]) {
+    pub fn execute(&self, ctx: &RenderContext, _secondary_commands: &[Vec<vk::CommandBuffer>]) {
         for &idx in &self.sorted_passes {
             let pass_node = &self.passes[idx];
 
@@ -368,13 +386,10 @@ impl RenderGraph {
             // 2. Inject image memory barriers based on declarative access requirements.
             self.inject_image_barriers(ctx, pass_node);
 
-            // 3. Execute pre-recorded secondary command buffers for this pass.
-            self.execute_secondary_commands(ctx, &secondary_commands[idx]);
-
-            // 4. Inject buffer memory barriers.
+            // 3. Inject buffer memory barriers.
             self.inject_buffer_barriers(ctx, pass_node);
 
-            // 5. Record primary commands for the pass.
+            // 4. Record primary commands for the pass.
             pass_node.pass.record_commands(ctx);
         }
     }
@@ -658,16 +673,6 @@ impl RenderGraph {
         }
     }
 
-    fn execute_secondary_commands(&self, ctx: &RenderContext, commands: &[vk::CommandBuffer]) {
-        if !commands.is_empty() {
-            unsafe {
-                ctx.renderer
-                    .device
-                    .device
-                    .cmd_execute_commands(ctx.command_buffer, commands);
-            }
-        }
-    }
 
     fn inject_buffer_barriers(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
         let renderer = ctx.renderer;

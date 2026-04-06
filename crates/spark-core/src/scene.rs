@@ -245,7 +245,7 @@ impl spark_renderer::RenderableScene for Scene {
     fn get_active_camera_matrices(
         &self,
         extent: spark_renderer::ash::vk::Extent2D,
-    ) -> Option<(spark_math::Mat4, spark_math::Mat4)> {
+    ) -> Option<(spark_math::Mat4, spark_math::Mat4, f32, f32)> {
         for node in self.nodes.values() {
             for component in &node.components {
                 if let Some(camera) = component.as_any().downcast_ref::<CameraComponent>() {
@@ -269,7 +269,7 @@ impl spark_renderer::RenderableScene for Scene {
                             camera.far,
                         )
                     };
-                    return Some((view, projection));
+                    return Some((view, projection, camera.near, camera.far));
                 }
             }
         }
@@ -281,12 +281,7 @@ impl spark_renderer::RenderableScene for Scene {
         frustum: Option<&spark_math::Frustum>,
         asset_manager: &dyn spark_renderer::RenderableAssetManager,
     ) -> spark_renderer::resource::FramePacket {
-        // We know that in this engine, RenderableAssetManager is always AssetManager
-        let am = unsafe {
-            &*(asset_manager as *const dyn spark_renderer::RenderableAssetManager
-                as *const crate::asset::AssetManager)
-        };
-        self.collect_frame_packet(frustum, am)
+        self.collect_frame_packet_internal(frustum, asset_manager)
     }
 }
 
@@ -625,6 +620,14 @@ impl Scene {
         frustum: Option<&spark_math::Frustum>,
         asset_manager: &crate::asset::AssetManager,
     ) -> spark_renderer::resource::FramePacket {
+        self.collect_frame_packet_internal(frustum, asset_manager)
+    }
+
+    fn collect_frame_packet_internal(
+        &self,
+        frustum: Option<&spark_math::Frustum>,
+        asset_manager: &dyn spark_renderer::RenderableAssetManager,
+    ) -> spark_renderer::resource::FramePacket {
         use rayon::prelude::*;
         let mut data = SceneDataCollector::new();
         self.collect_data_recursive(self.root, frustum, &mut data);
@@ -636,10 +639,7 @@ impl Scene {
                     .par_iter()
                     .filter_map(|r| {
                         let mat_idx = r.6.unwrap_or(0);
-                        let is_transparent = asset_manager
-                            .materials
-                            .get(crate::resource::Handle::new(mat_idx))
-                            .is_some_and(|m| m.is_transparent);
+                        let is_transparent = asset_manager.is_material_transparent(mat_idx);
                         if !is_transparent {
                             Some(spark_renderer::resource::MeshDraw {
                                 model: r.0,
@@ -662,10 +662,7 @@ impl Scene {
                     .par_iter()
                     .filter_map(|r| {
                         let mat_idx = r.6.unwrap_or(0);
-                        let is_transparent = asset_manager
-                            .materials
-                            .get(crate::resource::Handle::new(mat_idx))
-                            .is_some_and(|m| m.is_transparent);
+                        let is_transparent = asset_manager.is_material_transparent(mat_idx);
                         if is_transparent {
                             Some(spark_renderer::resource::MeshDraw {
                                 model: r.0,
@@ -692,10 +689,7 @@ impl Scene {
             .map(|((ic, fi, vo, _tex, mat_idx, br_bits), transforms)| {
                 let br = f32::from_bits(*br_bits);
                 let midx = mat_idx.unwrap_or(0);
-                let is_transparent = asset_manager
-                    .materials
-                    .get(crate::resource::Handle::new(midx))
-                    .is_some_and(|m| m.is_transparent);
+                let is_transparent = asset_manager.is_material_transparent(midx);
 
                 transforms
                     .iter()

@@ -236,8 +236,8 @@ impl RenderPass for LightingPass {
                 0.0
             },
             shadow_pcf: renderer.settings.shadow_pcf_samples,
-            z_near: 0.1, // TODO: Get from active camera
-            z_far: 100.0,
+            z_near: renderer.current_znear,
+            z_far: renderer.current_zfar,
             object_buffer_address: renderer.frame_manager.frames[current_frame]
                 .object_data_buffer
                 .as_ref()

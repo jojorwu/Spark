@@ -30,7 +30,7 @@ pub trait RenderableScene {
     fn get_active_camera_matrices(
         &self,
         extent: vk::Extent2D,
-    ) -> Option<(spark_math::Mat4, spark_math::Mat4)>;
+    ) -> Option<(spark_math::Mat4, spark_math::Mat4, f32, f32)>;
     fn collect_frame_packet(
         &self,
         frustum: Option<&spark_math::Frustum>,
@@ -39,7 +39,9 @@ pub trait RenderableScene {
 }
 
 pub trait RenderableResourceManager {}
-pub trait RenderableAssetManager {}
+pub trait RenderableAssetManager: Send + Sync {
+    fn is_material_transparent(&self, material_index: u32) -> bool;
+}
 
 /// The main renderer of the Spark Engine, responsible for managing the Vulkan context,
 /// swapchain, and executing the rendering pipeline through a modular pass system.
@@ -77,6 +79,8 @@ pub struct Renderer {
         Vec<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
     pub dummy_buffer: Buffer,
     pub current_packet: Option<crate::resource::FramePacket>,
+    pub current_znear: f32,
+    pub current_zfar: f32,
 }
 
 #[repr(C)]
@@ -258,6 +262,8 @@ impl Renderer {
                 crate::vulkan::as_manager::AccelerationStructureManager::new(),
             )),
             current_packet: None,
+            current_znear: 0.1,
+            current_zfar: 100.0,
         };
 
         renderer
@@ -919,7 +925,6 @@ impl Renderer {
         egui_output: Option<(egui::FullOutput, egui::Context)>,
         delta: f32,
     ) {
-        use rayon::prelude::*;
         let command_buffer =
             self.frame_manager.frames[self.frame_manager.current_frame].command_buffer;
         let cf = self.frame_manager.current_frame;
@@ -940,16 +945,8 @@ impl Renderer {
                 delta,
             };
 
-            // 1. Record secondary command buffers in parallel
-            let pass_secondary_commands: Vec<Vec<vk::CommandBuffer>> = self
-                .render_graph
-                .passes
-                .par_iter()
-                .map(|pass_node| pass_node.pass.record_secondary_commands(&ctx))
-                .collect();
-
-            // 2. Execute RenderGraph
-            self.render_graph.execute(&ctx, &pass_secondary_commands);
+            // 1. Execute RenderGraph
+            self.render_graph.execute(&ctx, &[]);
 
             if let Some((output, egui_ctx)) = egui_output {
                 let ext = self.swapchain.extent;
@@ -1587,9 +1584,11 @@ impl Renderer {
         let mut camera_matrix = spark_math::Mat4::IDENTITY;
         let mut projection_matrix = spark_math::Mat4::IDENTITY;
 
-        if let Some((view, proj)) = scene.get_active_camera_matrices(self.get_extent()) {
+        if let Some((view, proj, near, far)) = scene.get_active_camera_matrices(self.get_extent()) {
             projection_matrix = proj;
             camera_matrix = proj * view;
+            self.current_znear = near;
+            self.current_zfar = far;
         }
 
         let frustum_obj = spark_math::Frustum::from_matrix(camera_matrix);
@@ -2065,6 +2064,8 @@ impl Drop for Renderer {
             for mut pass_node in std::mem::take(&mut self.render_graph.passes) {
                 pass_node.pass.destroy(self);
             }
+
+            self.render_graph.destroy_resources(self);
 
             self.cleanup_swapchain();
             self.frame_manager.destroy(&self.device);

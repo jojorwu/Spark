@@ -16,7 +16,7 @@ impl RenderPass for SSGIPass {
         "SSGIPass"
     }
     fn inputs(&self) -> Vec<&'static str> {
-        vec!["HDRColor", "GBuffer"]
+        vec!["GBufferAlbedo", "GBufferNormal", "GBufferDepth", "HDRColor"]
     }
     fn outputs(&self) -> Vec<&'static str> {
         vec!["SSGI"]
