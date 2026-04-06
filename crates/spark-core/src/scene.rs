@@ -170,6 +170,10 @@ pub struct Scene {
     pub component_registry: std::collections::HashMap<std::any::TypeId, Vec<NodeKey>>,
     #[serde(skip)]
     pub nodes_version: std::sync::atomic::AtomicU64,
+    #[serde(skip)]
+    pub cached_layers: Vec<Vec<NodeKey>>,
+    #[serde(skip)]
+    pub layers_version: u64,
 }
 
 type TextureHandle = crate::resource::Handle<spark_renderer::vulkan::texture::Texture>;
@@ -188,7 +192,7 @@ pub type InstancedKey = (u32, u32, i32, Option<TextureHandle>, Option<u32>, u32)
 
 struct SceneDataCollector {
     renderables: Vec<RenderableData>,
-    instanced: std::collections::HashMap<InstancedKey, Vec<Mat4>>,
+    instanced: Vec<(InstancedKey, Mat4)>,
     lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32, f32, f32)>,
     sprites: Vec<(Mat4, Option<TextureHandle>, [f32; 4], Vec2)>,
 }
@@ -197,19 +201,17 @@ impl SceneDataCollector {
     fn new() -> Self {
         Self {
             renderables: Vec::new(),
-            instanced: std::collections::HashMap::new(),
+            instanced: Vec::new(),
             lights: Vec::new(),
             sprites: Vec::new(),
         }
     }
 
-    fn merge(&mut self, other: SceneDataCollector) {
-        self.renderables.extend(other.renderables);
-        self.lights.extend(other.lights);
-        self.sprites.extend(other.sprites);
-        for (key, transforms) in other.instanced {
-            self.instanced.entry(key).or_default().extend(transforms);
-        }
+    fn merge(&mut self, mut other: SceneDataCollector) {
+        self.renderables.append(&mut other.renderables);
+        self.lights.append(&mut other.lights);
+        self.sprites.append(&mut other.sprites);
+        self.instanced.append(&mut other.instanced);
     }
 }
 
@@ -234,6 +236,8 @@ impl Scene {
             last_view_matrix: Mat4::IDENTITY,
             component_registry: std::collections::HashMap::new(),
             nodes_version: std::sync::atomic::AtomicU64::new(1),
+            cached_layers: Vec::new(),
+            layers_version: 0,
         }
     }
 
@@ -560,25 +564,31 @@ impl Scene {
     /// Uses level-based parallelism to ensure correct parent-child propagation.
     pub fn update_all_transforms(&mut self) {
         use rayon::prelude::*;
-        let mut layers = Vec::new();
-        let mut current_layer = vec![self.root];
 
-        while !current_layer.is_empty() {
-            let mut next_layer = Vec::new();
-            for &key in &current_layer {
-                if let Some(node) = self.nodes.get(key) {
-                    next_layer.extend(node.children.iter().copied());
+        let current_version = self.nodes_version.load(std::sync::atomic::Ordering::Acquire);
+        if current_version != self.layers_version {
+            let mut layers = Vec::new();
+            let mut current_layer = vec![self.root];
+
+            while !current_layer.is_empty() {
+                let mut next_layer = Vec::new();
+                for &key in &current_layer {
+                    if let Some(node) = self.nodes.get(key) {
+                        next_layer.extend(node.children.iter().copied());
+                    }
                 }
+                layers.push(current_layer);
+                current_layer = next_layer;
             }
-            layers.push(current_layer);
-            current_layer = next_layer;
+            self.cached_layers = layers;
+            self.layers_version = current_version;
         }
 
         // Итерация по уровням иерархии (от корня к листьям).
         // Iterate through hierarchy levels (root to leaves).
-        for layer in layers {
+        for layer in &self.cached_layers {
             let nodes_ptr = &self.nodes as *const SlotMap<NodeKey, Node> as usize;
-            layer.into_par_iter().for_each(|key| unsafe {
+            layer.into_par_iter().for_each(|&key| unsafe {
                 let nodes = &*(nodes_ptr as *const SlotMap<NodeKey, Node>);
                 let node = nodes.get(key).unwrap();
                 let (parent_global, parent_dirty) = if let Some(parent_key) = node.parent {
@@ -729,26 +739,29 @@ impl Scene {
         );
 
         // Parallel processing of instanced data
-        let instanced_results: Vec<Vec<(spark_renderer::resource::MeshDraw, bool)>> = data
-            .instanced
-            .par_iter()
-            .map(|((ic, fi, vo, _tex, mat_idx, br_bits), transforms)| {
-                let br = f32::from_bits(*br_bits);
-                let midx = mat_idx.unwrap_or(0);
+        let mut instanced = data.instanced;
+        instanced.par_sort_unstable_by_key(|&(key, _)| key);
+
+        let instanced_results: Vec<Vec<(spark_renderer::resource::MeshDraw, bool)>> = instanced
+            .par_chunk_by(|a, b| a.0 == b.0)
+            .map(|chunk| {
+                let (ic, fi, vo, _tex, mat_idx, br_bits) = chunk[0].0;
+                let br = f32::from_bits(br_bits);
+                let midx: u32 = mat_idx.unwrap_or(0);
                 let is_transparent = asset_manager.is_material_transparent(midx);
 
-                transforms
+                chunk
                     .iter()
-                    .map(move |&t| {
+                    .map(move |&(_, t)| {
                         let draw = spark_renderer::resource::MeshDraw {
                             model: t,
                             vertex_count: 0,
-                            index_count: *ic,
-                            first_index: *fi,
-                            vertex_offset: *vo,
+                            index_count: ic,
+                            first_index: fi,
+                            vertex_offset: vo,
                             material_index: midx,
                             bounding_radius: br,
-                            mesh_id: *fi,
+                            mesh_id: fi,
                         };
                         (draw, is_transparent)
                     })
@@ -831,17 +844,17 @@ impl Scene {
                     if visible {
                         let gt = node.global_transform;
                         if mesh.material_index.is_some() {
-                            data.instanced
-                                .entry((
+                            data.instanced.push((
+                                (
                                     mesh.index_count,
                                     mesh.first_index,
                                     mesh.vertex_offset,
                                     mesh.texture_handle,
                                     mesh.material_index,
                                     (mesh.bounding_radius).to_bits(),
-                                ))
-                                .or_default()
-                                .push(gt);
+                                ),
+                                gt,
+                            ));
                         } else {
                             data.renderables.push((
                                 gt,

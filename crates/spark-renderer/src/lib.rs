@@ -1666,14 +1666,14 @@ impl Renderer {
                 .par_iter()
                 .enumerate()
                 .for_each(|(i, mesh)| {
-                    let m = mesh.model.transpose();
+                    let m = &mesh.model;
                     unsafe {
                         let obj_ptr = obj_ptr as *mut ObjectDataSSBO;
                         let cmd_ptr = cmd_ptr as *mut vk::DrawIndexedIndirectCommand;
                         *obj_ptr.add(i) = ObjectDataSSBO {
-                            model_row0: m.row(0),
-                            model_row1: m.row(1),
-                            model_row2: m.row(2),
+                            model_row0: m.col(0),
+                            model_row1: m.col(1),
+                            model_row2: m.col(2),
                             sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
                             index_count: mesh.index_count,
                             first_index: mesh.first_index,
@@ -1722,14 +1722,14 @@ impl Renderer {
                 .par_iter()
                 .enumerate()
                 .for_each(|(i, mesh)| {
-                    let m = mesh.model.transpose();
+                    let m = &mesh.model;
                     unsafe {
                         let obj_ptr = obj_ptr as *mut ObjectDataSSBO;
                         let cmd_ptr = cmd_ptr as *mut vk::DrawIndexedIndirectCommand;
                         *obj_ptr.add(i) = ObjectDataSSBO {
-                            model_row0: m.row(0),
-                            model_row1: m.row(1),
-                            model_row2: m.row(2),
+                            model_row0: m.col(0),
+                            model_row1: m.col(1),
+                            model_row2: m.col(2),
                             sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
                             index_count: mesh.index_count,
                             first_index: mesh.first_index,
