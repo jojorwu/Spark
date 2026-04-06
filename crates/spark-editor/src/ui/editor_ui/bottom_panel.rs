@@ -204,7 +204,9 @@ impl EditorUI {
             self.asset_current_dir = dir;
         }
         if let Some(path) = asset_to_load {
-            resource_manager.load_scene(path, scene, renderer, asset_manager);
+            if let Err(e) = resource_manager.load_scene(path, scene, renderer, asset_manager) {
+                log::error!("Failed to load scene: {}", e);
+            }
         }
     }
 

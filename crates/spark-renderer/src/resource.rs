@@ -277,6 +277,10 @@ impl ResourceTracker {
         }
     }
 
+    /// Transitions an image from its current layout to a new layout.
+    ///
+    /// This method automatically tracks the previous layout and injects the appropriate
+    /// `vk::ImageMemoryBarrier2` into the command buffer.
     #[allow(clippy::too_many_arguments)]
     pub fn transition_image(
         &self,

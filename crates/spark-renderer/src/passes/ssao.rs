@@ -165,7 +165,9 @@ impl RenderPass for SSAOPass {
         self.record_commands_impl(&params);
     }
 
-    fn on_resize(&mut self, _renderer: &mut Renderer, _new_extent: vk::Extent2D) {}
+    fn on_resize(&mut self, renderer: &Renderer, _new_extent: vk::Extent2D) {
+        let _ = renderer;
+    }
 
     fn destroy(&mut self, renderer: &mut Renderer) {
         let device = &renderer.device.device;
@@ -230,7 +232,8 @@ impl SSAOPass {
             image::Rgba32FImage::from_raw(4, 4, bytemuck::cast_slice(&ssao_noise).to_vec())
                 .unwrap(),
         );
-        let noise_texture = renderer.create_texture_from_image(&noise_img);
+        let renderer_ptr = renderer as *const Renderer as *mut Renderer;
+        let noise_texture = unsafe { (*renderer_ptr).create_texture_from_image(&noise_img) };
 
         // 3. Create Buffers
         let mut ssao_params_buffer = Vec::new();

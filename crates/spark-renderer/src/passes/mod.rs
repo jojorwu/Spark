@@ -134,7 +134,7 @@ pub trait RenderPass: Send + Sync {
     }
 
     /// Notifies the pass that the viewport or swapchain has been resized.
-    fn on_resize(&mut self, _renderer: &mut Renderer, _new_extent: vk::Extent2D) {}
+    fn on_resize(&mut self, _renderer: &Renderer, _new_extent: vk::Extent2D) {}
 
     /// Returns the dependencies of this pass.
     fn dependencies(&self) -> Vec<&'static str> {
@@ -142,7 +142,7 @@ pub trait RenderPass: Send + Sync {
     }
 
     /// Cleans up resources managed by this pass.
-    fn destroy(&mut self, _renderer: &mut Renderer) {}
+    fn destroy(&mut self, renderer: &mut Renderer);
 
     /// Returns the input resource names for this pass.
     fn inputs(&self) -> Vec<&'static str> {

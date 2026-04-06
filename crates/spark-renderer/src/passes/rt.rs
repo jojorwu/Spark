@@ -42,7 +42,7 @@ impl RenderPass for RayTracingPass {
             "HiZ",
         ]
     }
-    fn on_resize(&mut self, _renderer: &mut Renderer, _new_extent: vk::Extent2D) {}
+    fn on_resize(&mut self, _renderer: &Renderer, _new_extent: vk::Extent2D) {}
 
     fn bindings(&self) -> Vec<ResourceBinding> {
         vec![

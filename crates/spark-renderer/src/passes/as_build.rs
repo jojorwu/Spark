@@ -1,4 +1,5 @@
 use super::{RenderContext, RenderPass};
+use crate::Renderer;
 use ash::vk;
 
 /// A rendering pass that builds and manages acceleration structures for ray tracing.
@@ -10,6 +11,7 @@ impl RenderPass for AccelerationStructurePass {
     fn name(&self) -> &str {
         "AccelerationStructurePass"
     }
+    fn destroy(&mut self, _renderer: &mut Renderer) {}
     fn outputs(&self) -> Vec<&'static str> {
         vec!["SceneTLAS"]
     }

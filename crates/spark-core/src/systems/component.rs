@@ -45,7 +45,7 @@ impl System for ComponentSystem {
 
             let current_version = scene
                 .nodes_version
-                .load(std::sync::atomic::Ordering::Relaxed);
+                .load(std::sync::atomic::Ordering::Acquire);
             if current_version != self.cached_version {
                 self.cached_keys = scene.nodes.keys().collect();
                 self.cached_version = current_version;

@@ -100,6 +100,11 @@ impl Renderer {
     /// Cascaded shadow map texture size. Default is 2048x2048.
     pub const SHADOW_MAP_CASCADE_SIZE: u32 = 2048;
 
+    /// Returns the active view-projection matrix used in the current frame.
+    pub fn get_current_view_proj(&self) -> spark_math::Mat4 {
+        self.current_view_proj
+    }
+
     /// Creates a new Renderer instance.
     /// Initializes Vulkan context, device, swapchain, and core resource managers.
     pub fn new(
@@ -379,7 +384,9 @@ impl Renderer {
 
     pub fn update_all_descriptor_sets(&mut self) {
         for pass_node in &self.render_graph.passes {
-            pass_node.pass.update_descriptor_sets(self);
+            if pass_node.pass.is_enabled(self) {
+                pass_node.pass.update_descriptor_sets(self);
+            }
         }
         self.ensure_global_descriptor_set();
     }
@@ -387,7 +394,9 @@ impl Renderer {
     pub fn update_pass_descriptors_if_needed(&mut self, current_frame: usize) {
         let mut passes_to_update = Vec::new();
         for (i, pass_node) in self.render_graph.passes.iter().enumerate() {
-            if pass_node.pass.needs_descriptor_update(self, current_frame) {
+            if pass_node.pass.is_enabled(self)
+                && pass_node.pass.needs_descriptor_update(self, current_frame)
+            {
                 passes_to_update.push(i);
             }
         }
@@ -834,6 +843,7 @@ impl Renderer {
                 .expect("Failed to wait for fence");
             // Получение индекса следующего доступного изображения из swapchain.
             // Acquire the next available image from the swapchain.
+            log::trace!("Acquiring next swapchain image");
             let result = self.swapchain.loader.acquire_next_image(
                 self.swapchain.handle,
                 u64::MAX,
@@ -1118,7 +1128,10 @@ impl Renderer {
         }
     }
 
-    pub fn create_texture_from_image(&self, img: &image::DynamicImage) -> Texture {
+    /// Creates a GPU-resident texture from a CPU-side image.
+    ///
+    /// This handles automatic mipmap generation and bindless descriptor registration.
+    pub fn create_texture_from_image(&mut self, img: &image::DynamicImage) -> Texture {
         let (w, h) = (img.width(), img.height());
         let mip = (((w.max(h) as f32).log2().floor()) as u32) + 1;
         let rgba = img.to_rgba8();
@@ -1126,33 +1139,27 @@ impl Renderer {
         let sz = pix.len() as u64;
 
         let frame_idx = self.frame_manager.current_frame;
-        // Optimization: Calculating capacity without a mutable borrow first to avoid RefCell/Mutex overhead here.
         let needs_new = {
             let f = &self.frame_manager.frames[frame_idx];
-            f.texture_staging_buffer.is_none()
-                || f.texture_staging_buffer.as_ref().unwrap().size < sz
+            f.texture_staging_buffer
+                .as_ref()
+                .is_none_or(|b| b.size < sz)
         };
 
         if needs_new {
-            // This is safe because we're calling from a thread that has access to self
-            // and we're not currently in a parallel loop that could conflict.
-            let self_ptr = self as *const Self as *mut Self;
-            unsafe {
-                let old_buffer = (*self_ptr).frame_manager.frames[frame_idx]
-                    .texture_staging_buffer
-                    .take();
-                if let Some(old) = old_buffer {
-                    (*self_ptr).device.destroy_buffer(old);
-                }
-
-                let new_buffer = (*self_ptr).create_buffer(
-                    sz.max(1024 * 1024), // Min 1MB
-                    vk::BufferUsageFlags::TRANSFER_SRC,
-                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                );
-                (*self_ptr).frame_manager.frames[frame_idx].texture_staging_buffer =
-                    Some(new_buffer);
+            let old_buffer = self.frame_manager.frames[frame_idx]
+                .texture_staging_buffer
+                .take();
+            if let Some(old) = old_buffer {
+                self.device.destroy_buffer(old);
             }
+
+            let new_buffer = self.create_buffer(
+                sz.max(1024 * 1024), // Min 1MB
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            self.frame_manager.frames[frame_idx].texture_staging_buffer = Some(new_buffer);
         }
 
         let frame = &self.frame_manager.frames[frame_idx];
@@ -1647,7 +1654,9 @@ impl Renderer {
         // 4. Prepare Passes.
         let cf = self.frame_manager.current_frame;
         for pass_node in &self.render_graph.passes {
-            pass_node.pass.prepare(self, cf);
+            if pass_node.pass.is_enabled(self) {
+                pass_node.pass.prepare(self, cf);
+            }
         }
 
         self.last_object_count = total_objects;

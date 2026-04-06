@@ -243,6 +243,7 @@ impl RenderPass for GBufferPass {
     fn name(&self) -> &str {
         "GBufferPass"
     }
+    fn destroy(&mut self, _renderer: &mut Renderer) {}
     fn dependencies(&self) -> Vec<&'static str> {
         vec!["CullingPass"]
     }

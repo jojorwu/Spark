@@ -2,7 +2,7 @@ use crate::asset::AssetManager;
 use crate::resource::ResourceManager;
 use crate::scene::Scene;
 use spark_renderer::Renderer;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub struct GltfLoader;
 
@@ -12,25 +12,29 @@ impl GltfLoader {
         am: &mut AssetManager,
         path: PathBuf,
         scene_tree: &mut Scene,
-        renderer: &Renderer,
-    ) {
+        renderer: &mut Renderer,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         use rayon::prelude::*;
         log::info!("Loading glTF scene: {:?}", path);
-        let (doc, buffers, images) = gltf::import(&path).expect("Failed to load glTF");
-        let parent_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+        let (doc, buffers, images) = gltf::import(&path)?;
 
-        // Pre-load images in parallel
-        let loaded_images: Vec<_> = images
+        // Pre-load images in parallel and register them in AssetManager
+        let mut loaded_gpu_textures = Vec::new();
+        let image_handles: Vec<_> = images
             .par_iter()
             .map(|data| {
-                image::load_from_memory(&data.pixels).unwrap_or_else(|_| {
+                let img = image::load_from_memory(&data.pixels).unwrap_or_else(|e| {
+                    log::error!("Failed to decode glTF image: {}. Using fallback.", e);
                     image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, 1))
-                })
+                });
+                img
             })
             .collect();
 
-        for img in loaded_images {
-            am.textures.add(img);
+        for img in image_handles {
+            am.textures.add(img.clone());
+            let tex = renderer.create_texture_from_image(&img);
+            loaded_gpu_textures.push(rm.gpu_textures.add(tex));
         }
 
         let default_scene = doc.default_scene().or(doc.scenes().next());
@@ -41,25 +45,23 @@ impl GltfLoader {
                     am,
                     node,
                     &buffers,
+                    &loaded_gpu_textures,
                     scene_tree,
                     scene_tree.root,
-                    renderer,
-                    &parent_dir,
                 );
             }
         }
+        Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn process_node(
         rm: &mut ResourceManager,
         am: &mut AssetManager,
         node: gltf::Node,
         buffers: &[gltf::buffer::Data],
+        loaded_gpu_textures: &[crate::resource::Handle<spark_renderer::vulkan::texture::Texture>],
         scene_tree: &mut Scene,
         parent: crate::scene::NodeKey,
-        renderer: &Renderer,
-        parent_dir: &Path,
     ) {
         use crate::scene::{Component, MeshComponent, Node};
         use spark_math::{Mat4, Quat, Vec3, Vec4};
@@ -77,44 +79,36 @@ impl GltfLoader {
             for primitive in mesh.primitives() {
                 use spark_renderer::vertex::Vertex;
                 let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-                let positions = match reader.read_positions() {
-                    Some(p) => p.collect::<Vec<_>>(),
-                    None => continue,
-                };
+
+                let positions = reader.read_positions().map(|p| p.collect::<Vec<_>>());
+                if positions.is_none() {
+                    continue;
+                }
+                let positions = positions.unwrap();
+
                 let v_offset = rm.all_vertices.len() as i32;
                 let i_start = rm.all_indices.len() as u32;
 
-                let mut max_dist_sq = 0.0f32;
                 let normals = reader.read_normals().map(|n| n.collect::<Vec<_>>());
                 let tangents = reader.read_tangents().map(|t| t.collect::<Vec<_>>());
                 let tex_coords = reader
                     .read_tex_coords(0)
                     .map(|t| t.into_f32().collect::<Vec<_>>());
 
+                let mut max_dist_sq = 0.0f32;
                 for i in 0..positions.len() {
                     let p = positions[i];
-                    let dist_sq = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
-                    if dist_sq > max_dist_sq {
-                        max_dist_sq = dist_sq;
-                    }
+                    max_dist_sq = max_dist_sq.max(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
 
-                    let n = if let Some(ref normals) = normals {
-                        spark_math::Vec3::from_array(normals[i])
-                    } else {
-                        spark_math::Vec3::Y
-                    };
-
-                    let tc = if let Some(ref tex_coords) = tex_coords {
-                        spark_math::Vec2::from_array(tex_coords[i])
-                    } else {
-                        spark_math::Vec2::ZERO
-                    };
-
-                    let tan = if let Some(ref tangents) = tangents {
-                        spark_math::Vec3::new(tangents[i][0], tangents[i][1], tangents[i][2])
-                    } else {
-                        spark_math::Vec3::X
-                    };
+                    let n = normals.as_ref().map_or(spark_math::Vec3::Y, |ns| {
+                        spark_math::Vec3::from_array(ns[i])
+                    });
+                    let tc = tex_coords.as_ref().map_or(spark_math::Vec2::ZERO, |tcs| {
+                        spark_math::Vec2::from_array(tcs[i])
+                    });
+                    let tan = tangents.as_ref().map_or(spark_math::Vec3::X, |ts| {
+                        spark_math::Vec3::new(ts[i][0], ts[i][1], ts[i][2])
+                    });
 
                     rm.all_vertices.push(Vertex::pack(
                         spark_math::Vec3::from_array(p),
@@ -157,44 +151,46 @@ impl GltfLoader {
                     padding: [0; 3],
                 };
 
+                let mut albedo_handle = None;
+                let mut normal_handle = None;
+                let mut mr_handle = None;
+
                 if let Some(tex) = pbr.base_color_texture() {
-                    if let gltf::image::Source::Uri { uri, .. } = tex.texture().source().source() {
-                        let handle = rm.upload_texture(&parent_dir.join(uri), renderer, am);
-                        if let Some(tex) = rm.gpu_textures.get(handle) {
-                            mat_ssbo.albedo_texture = tex.bindless_index as i32;
-                        }
+                    let img_idx = tex.texture().source().index();
+                    let handle = loaded_gpu_textures[img_idx];
+                    if let Some(gpu_tex) = rm.gpu_textures.get(handle) {
+                        mat_ssbo.albedo_texture = gpu_tex.bindless_index as i32;
+                        albedo_handle = Some(handle);
                     }
                 }
                 if let Some(tex) = gltf_mat.normal_texture() {
-                    if let gltf::image::Source::Uri { uri, .. } = tex.texture().source().source() {
-                        let handle = rm.upload_texture(&parent_dir.join(uri), renderer, am);
-                        if let Some(tex) = rm.gpu_textures.get(handle) {
-                            mat_ssbo.normal_texture = tex.bindless_index as i32;
-                        }
+                    let img_idx = tex.texture().source().index();
+                    let handle = loaded_gpu_textures[img_idx];
+                    if let Some(gpu_tex) = rm.gpu_textures.get(handle) {
+                        mat_ssbo.normal_texture = gpu_tex.bindless_index as i32;
+                        normal_handle = Some(handle);
                     }
                 }
                 if let Some(tex) = pbr.metallic_roughness_texture() {
-                    if let gltf::image::Source::Uri { uri, .. } = tex.texture().source().source() {
-                        let handle = rm.upload_texture(&parent_dir.join(uri), renderer, am);
-                        if let Some(tex) = rm.gpu_textures.get(handle) {
-                            mat_ssbo.metallic_roughness_texture = tex.bindless_index as i32;
-                        }
+                    let img_idx = tex.texture().source().index();
+                    let handle = loaded_gpu_textures[img_idx];
+                    if let Some(gpu_tex) = rm.gpu_textures.get(handle) {
+                        mat_ssbo.metallic_roughness_texture = gpu_tex.bindless_index as i32;
+                        mr_handle = Some(handle);
                     }
                 }
                 if let Some(tex) = gltf_mat.emissive_texture() {
-                    if let gltf::image::Source::Uri { uri, .. } = tex.texture().source().source() {
-                        let handle = rm.upload_texture(&parent_dir.join(uri), renderer, am);
-                        if let Some(tex) = rm.gpu_textures.get(handle) {
-                            mat_ssbo.emissive_texture = tex.bindless_index as i32;
-                        }
+                    let img_idx = tex.texture().source().index();
+                    let handle = loaded_gpu_textures[img_idx];
+                    if let Some(gpu_tex) = rm.gpu_textures.get(handle) {
+                        mat_ssbo.emissive_texture = gpu_tex.bindless_index as i32;
                     }
                 }
                 if let Some(tex) = gltf_mat.occlusion_texture() {
-                    if let gltf::image::Source::Uri { uri, .. } = tex.texture().source().source() {
-                        let handle = rm.upload_texture(&parent_dir.join(uri), renderer, am);
-                        if let Some(tex) = rm.gpu_textures.get(handle) {
-                            mat_ssbo.occlusion_texture = tex.bindless_index as i32;
-                        }
+                    let img_idx = tex.texture().source().index();
+                    let handle = loaded_gpu_textures[img_idx];
+                    if let Some(gpu_tex) = rm.gpu_textures.get(handle) {
+                        mat_ssbo.occlusion_texture = gpu_tex.bindless_index as i32;
                     }
                 }
 
@@ -212,9 +208,9 @@ impl GltfLoader {
                     ],
                     metallic_factor: pbr.metallic_factor(),
                     roughness_factor: pbr.roughness_factor(),
-                    albedo_texture: None, // Simplified
-                    normal_texture: None,
-                    metallic_roughness_texture: None,
+                    albedo_texture: albedo_handle,
+                    normal_texture: normal_handle,
+                    metallic_roughness_texture: mr_handle,
                     is_transparent: gltf_mat.alpha_mode() == gltf::material::AlphaMode::Blend,
                 });
 
@@ -247,9 +243,7 @@ impl GltfLoader {
 
         let key = scene_tree.add_node(parent, spark_node);
         for child in node.children() {
-            Self::process_node(
-                rm, am, child, buffers, scene_tree, key, renderer, parent_dir,
-            );
+            Self::process_node(rm, am, child, buffers, loaded_gpu_textures, scene_tree, key);
         }
     }
 }

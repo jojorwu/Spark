@@ -1,6 +1,7 @@
 use super::{RenderContext, RenderPass};
 use crate::resource::Attachment;
-use crate::{Renderer, MAX_FRAMES_IN_FLIGHT};
+use crate::Renderer;
+use crate::MAX_FRAMES_IN_FLIGHT;
 use ash::vk;
 
 pub struct SSGIPass {

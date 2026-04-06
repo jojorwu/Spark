@@ -131,7 +131,7 @@ impl RenderPass for SSRPass {
         }
     }
 
-    fn on_resize(&mut self, renderer: &mut Renderer, new_extent: vk::Extent2D) {
+    fn on_resize(&mut self, renderer: &Renderer, new_extent: vk::Extent2D) {
         for img in self.output_images.drain(..) {
             img.destroy(&renderer.device.device, &renderer.device.allocator);
         }

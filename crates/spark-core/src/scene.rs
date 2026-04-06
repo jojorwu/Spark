@@ -409,7 +409,7 @@ impl Scene {
 
         self.nodes.remove(key);
         self.nodes_version
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
     pub fn add_node(&mut self, parent: NodeKey, mut node: Node) -> NodeKey {
@@ -420,7 +420,7 @@ impl Scene {
         }
 
         self.nodes_version
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
 
         // Update registry
         for component in &self.nodes[key].components {
@@ -440,7 +440,7 @@ impl Scene {
         let parent = node_to_clone.parent;
 
         self.nodes_version
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
 
         let new_key = self.nodes.insert(Node {
             name: format!("{} (Copy)", node_to_clone.name),
@@ -487,7 +487,7 @@ impl Scene {
         let node_to_clone = self.nodes.get(key)?.clone();
 
         self.nodes_version
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
 
         let new_key = self.nodes.insert(Node {
             name: node_to_clone.name.clone(),

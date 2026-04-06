@@ -456,7 +456,14 @@ impl EditorUI {
                                 .add_filter("glTF", &["gltf", "glb"])
                                 .pick_file()
                             {
-                                resource_manager.load_scene(path, scene, renderer, asset_manager);
+                                if let Err(e) = resource_manager.load_scene(
+                                    path,
+                                    scene,
+                                    renderer,
+                                    asset_manager,
+                                ) {
+                                    log::error!("Failed to import glTF: {}", e);
+                                }
                             }
                             ui.close_menu();
                         }

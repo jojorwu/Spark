@@ -122,16 +122,16 @@ impl AssetManager {
         &mut self,
         path: &Path,
         scene: &mut crate::scene::Scene,
-        renderer: &spark_renderer::Renderer,
+        renderer: &mut spark_renderer::Renderer,
         resource_manager: &mut crate::resource::ResourceManager,
-    ) {
+    ) -> Result<(), Box<dyn std::error::Error>> {
         crate::gltf_loader::GltfLoader::load_scene(
             resource_manager,
             self,
             path.to_path_buf(),
             scene,
             renderer,
-        );
+        )
     }
 }
 

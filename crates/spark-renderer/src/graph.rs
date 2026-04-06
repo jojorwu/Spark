@@ -381,6 +381,10 @@ impl RenderGraph {
         for &idx in &self.sorted_passes {
             let pass_node = &self.passes[idx];
 
+            if !pass_node.pass.is_enabled(ctx.renderer) {
+                continue;
+            }
+
             // 1. Update descriptor sets for the pass if any of its bound resources have changed.
             self.update_pass_descriptors(ctx, pass_node);
 
