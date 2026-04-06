@@ -239,7 +239,7 @@ impl VulkanDevice {
         let allocation = self
             .allocator
             .lock()
-            .unwrap()
+            .expect("Failed to lock allocator during buffer allocation")
             .allocate(&AllocationCreateDesc {
                 name: "Buffer",
                 requirements: mem_reqs,
@@ -314,7 +314,7 @@ impl VulkanDevice {
         let allocation = self
             .allocator
             .lock()
-            .unwrap()
+            .expect("Failed to lock allocator during image allocation")
             .allocate(&AllocationCreateDesc {
                 name: "Image",
                 requirements: reqs,
@@ -359,7 +359,7 @@ impl VulkanDevice {
                 layer_count: 1,
             });
 
-        unsafe { self.device.create_image_view(&view_info, None).unwrap() }
+        unsafe { self.device.create_image_view(&view_info, None).expect("Failed to create image view") }
     }
 
     pub fn transition_image_layout(
@@ -451,7 +451,7 @@ impl VulkanDevice {
             .command_pool(pool)
             .command_buffer_count(1);
 
-        unsafe { self.device.allocate_command_buffers(&alloc_info).unwrap()[0] }
+        unsafe { self.device.allocate_command_buffers(&alloc_info).expect("Failed to allocate command buffer")[0] }
     }
 
     pub fn submit_commands(
@@ -481,13 +481,13 @@ impl VulkanDevice {
             .command_pool(self.command_pool)
             .command_buffer_count(1);
 
-        let cb = unsafe { self.device.allocate_command_buffers(&alloc_info).unwrap()[0] };
+        let cb = unsafe { self.device.allocate_command_buffers(&alloc_info).expect("Failed to allocate single-time command buffer")[0] };
 
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
         unsafe {
-            self.device.begin_command_buffer(cb, &begin_info).unwrap();
+            self.device.begin_command_buffer(cb, &begin_info).expect("Failed to begin single-time command buffer");
         }
 
         cb
@@ -495,14 +495,14 @@ impl VulkanDevice {
 
     pub fn end_single_time_commands(&self, cb: vk::CommandBuffer) {
         unsafe {
-            self.device.end_command_buffer(cb).unwrap();
+            self.device.end_command_buffer(cb).expect("Failed to end single-time command buffer");
 
             let submit_info = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cb));
 
             self.device
                 .queue_submit(self.graphics_queue, &[submit_info], vk::Fence::null())
                 .expect("Failed to submit single-time commands");
-            self.device.queue_wait_idle(self.graphics_queue).unwrap();
+            self.device.queue_wait_idle(self.graphics_queue).expect("Failed to wait for graphics queue idle after single-time submission");
 
             self.device.free_command_buffers(self.command_pool, &[cb]);
         }
@@ -511,8 +511,8 @@ impl VulkanDevice {
     pub fn destroy_buffer(&self, buffer: Buffer) {
         unsafe {
             self.device.destroy_buffer(buffer.handle, None);
-            if let Some(alloc) = buffer.allocation.lock().unwrap().take() {
-                self.allocator.lock().unwrap().free(alloc).unwrap();
+            if let Some(alloc) = buffer.allocation.lock().expect("Failed to lock buffer allocation during destroy").take() {
+                self.allocator.lock().expect("Failed to lock allocator during buffer free").free(alloc).expect("Failed to free buffer memory");
             }
         }
     }

@@ -52,13 +52,14 @@ impl RenderPass for ShadowPass {
     }
 
     fn record_commands(&self, ctx: &RenderContext) {
-        let renderer = ctx.renderer;
-        let device = &renderer.device.device;
-        let lvps = renderer.frame_manager.frames[ctx.current_frame].light_view_projs;
-
-        for (cascade_idx, &lvp) in lvps.iter().enumerate().take(SHADOW_CASCADE_COUNT) {
-            self.record_cascade_commands(device, ctx.command_buffer, lvp, renderer, cascade_idx);
-        }
+        let frame = &ctx.renderer.frame_manager.frames[ctx.current_frame];
+        self.record_commands_impl(
+            &ctx.renderer.device.device,
+            ctx.command_buffer,
+            &frame.light_view_projs,
+            ctx.renderer,
+            ctx.renderer.last_object_count,
+        );
     }
 
     fn destroy(&mut self, renderer: &mut Renderer) {
@@ -88,23 +89,6 @@ impl RenderPass for ShadowPass {
 }
 
 impl ShadowPass {
-    pub fn record_commands_internal(
-        &self,
-        device: &ash::Device,
-        command_buffer: vk::CommandBuffer,
-        light_view_projs: &[spark_math::Mat4; SHADOW_CASCADE_COUNT],
-        renderer: &Renderer,
-        object_count: u32,
-    ) {
-        self.record_commands_impl(
-            device,
-            command_buffer,
-            light_view_projs,
-            renderer,
-            object_count,
-        );
-    }
-
     pub fn new(
         device_wrapper: &crate::vulkan::device::VulkanDevice,
     ) -> Result<Self, crate::error::RendererError> {
@@ -282,7 +266,7 @@ impl ShadowPass {
         self.pipeline = Some(unsafe {
             device
                 .create_graphics_pipelines(pipeline_cache, &[info], None)
-                .unwrap()[0]
+                .expect("Failed to create ShadowPass graphics pipeline")[0]
         });
 
         unsafe {
@@ -384,34 +368,35 @@ impl ShadowPass {
                 pc_bytes,
             );
 
-            if let Some(ref indirect_buffer) = frame.indirect_commands_buffer {
-                if let Some(ib) = renderer.gpu_resource_manager.global_index_buffer.as_ref() {
-                    device.cmd_bind_index_buffer(
-                        command_buffer,
-                        ib.handle,
-                        0,
-                        vk::IndexType::UINT32,
-                    );
+            if let (Some(ref indirect_buffer), Some(ref index_buffer)) = (
+                frame.indirect_commands_buffer.as_ref(),
+                renderer.gpu_resource_manager.global_index_buffer.as_ref(),
+            ) {
+                device.cmd_bind_index_buffer(
+                    command_buffer,
+                    index_buffer.handle,
+                    0,
+                    vk::IndexType::UINT32,
+                );
 
-                    if let Some(ref count_buffer) = frame.draw_count_buffer {
-                        device.cmd_draw_indexed_indirect_count(
-                            command_buffer,
-                            indirect_buffer.handle,
-                            0,
-                            count_buffer.handle,
-                            0,
-                            renderer.last_object_count,
-                            std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
-                        );
-                    } else {
-                        device.cmd_draw_indexed_indirect(
-                            command_buffer,
-                            indirect_buffer.handle,
-                            0,
-                            renderer.last_object_count,
-                            std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
-                        );
-                    }
+                if let Some(ref count_buffer) = frame.draw_count_buffer {
+                    device.cmd_draw_indexed_indirect_count(
+                        command_buffer,
+                        indirect_buffer.handle,
+                        0,
+                        count_buffer.handle,
+                        0,
+                        renderer.last_object_count,
+                        std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                    );
+                } else {
+                    device.cmd_draw_indexed_indirect(
+                        command_buffer,
+                        indirect_buffer.handle,
+                        0,
+                        renderer.last_object_count,
+                        std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                    );
                 }
             }
 

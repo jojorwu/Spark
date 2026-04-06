@@ -1022,82 +1022,12 @@ impl Renderer {
             )?;
             let extent = self.swapchain.extent;
             // Recreate G-Buffer attachments
-            if let Some(hdr) = self.render_graph.physical_attachments.get_mut("GBufferHDR") {
-                for a in hdr {
-                    a.recreate(
-                        &self.device,
-                        extent.width,
-                        extent.height,
-                        vk::Format::R16G16B16A16_SFLOAT,
-                    )?;
-                }
-            }
-            if let Some(albedo) = self
-                .render_graph
-                .physical_attachments
-                .get_mut("GBufferAlbedo")
-            {
-                for a in albedo {
-                    a.recreate(
-                        &self.device,
-                        extent.width,
-                        extent.height,
-                        vk::Format::R8G8B8A8_UNORM,
-                    )?;
-                }
-            }
-            if let Some(normal) = self
-                .render_graph
-                .physical_attachments
-                .get_mut("GBufferNormal")
-            {
-                for a in normal {
-                    a.recreate(
-                        &self.device,
-                        extent.width,
-                        extent.height,
-                        vk::Format::R16G16B16A16_SFLOAT,
-                    )?;
-                }
-            }
-            if let Some(pbr) = self.render_graph.physical_attachments.get_mut("GBufferPBR") {
-                for a in pbr {
-                    a.recreate(
-                        &self.device,
-                        extent.width,
-                        extent.height,
-                        vk::Format::R8G8B8A8_UNORM,
-                    )?;
-                }
-            }
-            if let Some(velocity) = self
-                .render_graph
-                .physical_attachments
-                .get_mut("GBufferVelocity")
-            {
-                for a in velocity {
-                    a.recreate(
-                        &self.device,
-                        extent.width,
-                        extent.height,
-                        vk::Format::R16G16_SFLOAT,
-                    )?;
-                }
-            }
-            if let Some(depth) = self
-                .render_graph
-                .physical_attachments
-                .get_mut("GBufferDepth")
-            {
-                for a in depth {
-                    a.recreate(
-                        &self.device,
-                        extent.width,
-                        extent.height,
-                        self.device.depth_format,
-                    )?;
-                }
-            }
+            self.recreate_physical_attachment("GBufferHDR", extent, vk::Format::R16G16B16A16_SFLOAT)?;
+            self.recreate_physical_attachment("GBufferAlbedo", extent, vk::Format::R8G8B8A8_UNORM)?;
+            self.recreate_physical_attachment("GBufferNormal", extent, vk::Format::A2B10G10R10_UNORM_PACK32)?;
+            self.recreate_physical_attachment("GBufferPBR", extent, vk::Format::R8G8B8A8_UNORM)?;
+            self.recreate_physical_attachment("GBufferVelocity", extent, vk::Format::R16G16_SFLOAT)?;
+            self.recreate_physical_attachment("GBufferDepth", extent, self.device.depth_format)?;
 
             if self.viewport_attachment.is_some() {
                 self.create_viewport_attachment(extent.width, extent.height);
@@ -2036,6 +1966,20 @@ impl Renderer {
     }
     pub fn end_single_time_commands(&self, cb: vk::CommandBuffer) {
         self.device.end_single_time_commands(cb);
+    }
+
+    fn recreate_physical_attachment(
+        &mut self,
+        name: &str,
+        extent: vk::Extent2D,
+        format: vk::Format,
+    ) -> Result<(), RendererError> {
+        if let Some(attachments) = self.render_graph.physical_attachments.get_mut(name) {
+            for a in attachments {
+                a.recreate(&self.device, extent.width, extent.height, format)?;
+            }
+        }
+        Ok(())
     }
 }
 

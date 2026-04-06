@@ -54,8 +54,8 @@ impl RenderPass for ClusteredPass {
             renderer.swapchain.extent.height as f32,
         ];
 
-        let mut last_p = self.last_proj.lock().unwrap();
-        let mut last_s = self.last_screen_size.lock().unwrap();
+        let mut last_p = self.last_proj.lock().expect("Failed to lock last projection in ClusteredPass");
+        let mut last_s = self.last_screen_size.lock().expect("Failed to lock last screen size in ClusteredPass");
 
         if *last_p != proj || *last_s != screen_size {
             self.record_build_commands(
@@ -231,7 +231,7 @@ impl ClusteredPass {
         let build_pipeline = unsafe {
             device
                 .create_compute_pipelines(
-                    vk::PipelineCache::null(),
+                    renderer.pipeline_cache,
                     &[vk::ComputePipelineCreateInfo::default()
                         .stage(
                             vk::PipelineShaderStageCreateInfo::default()
@@ -242,13 +242,13 @@ impl ClusteredPass {
                         .layout(layout)],
                     None,
                 )
-                .unwrap()[0]
+                .expect("Failed to create ClusteredPass build pipeline")[0]
         };
 
         let cull_pipeline = unsafe {
             device
                 .create_compute_pipelines(
-                    vk::PipelineCache::null(),
+                    renderer.pipeline_cache,
                     &[vk::ComputePipelineCreateInfo::default()
                         .stage(
                             vk::PipelineShaderStageCreateInfo::default()
@@ -259,7 +259,7 @@ impl ClusteredPass {
                         .layout(layout)],
                     None,
                 )
-                .unwrap()[0]
+                .expect("Failed to create ClusteredPass cull pipeline")[0]
         };
 
         unsafe {

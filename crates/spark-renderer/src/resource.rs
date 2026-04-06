@@ -338,8 +338,8 @@ impl Attachment {
         unsafe {
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            if let Some(alloc) = self.allocation.lock().unwrap().take() {
-                allocator.lock().unwrap().free(alloc).unwrap();
+            if let Some(alloc) = self.allocation.lock().expect("Failed to lock attachment allocation during destroy").take() {
+                allocator.lock().expect("Failed to lock allocator during attachment free").free(alloc).expect("Failed to free attachment memory");
             }
         }
     }
@@ -373,6 +373,7 @@ impl Attachment {
         })
     }
 
+    /// Recreates the attachment with new dimensions or format.
     pub fn recreate(
         &mut self,
         device: &crate::vulkan::device::VulkanDevice,
@@ -383,8 +384,8 @@ impl Attachment {
         unsafe {
             device.device.destroy_image_view(self.view, None);
             device.device.destroy_image(self.image, None);
-            if let Some(alloc) = self.allocation.lock().unwrap().take() {
-                device.allocator.lock().unwrap().free(alloc).unwrap();
+            if let Some(alloc) = self.allocation.lock().expect("Failed to lock attachment allocation during recreate").take() {
+                device.allocator.lock().expect("Failed to lock allocator during attachment free").free(alloc).expect("Failed to free attachment memory");
             }
         }
 
@@ -415,7 +416,7 @@ impl Attachment {
         })?;
 
         self.image = img;
-        *self.allocation.lock().unwrap() = Some(allocation);
+        *self.allocation.lock().expect("Failed to lock attachment allocation for update") = Some(allocation);
         self.view = device.create_image_view(img, format, 1);
         self.extent = vk::Extent2D { width, height };
         self.version
