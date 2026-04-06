@@ -74,6 +74,8 @@ pub struct Renderer {
     pub current_view_proj: spark_math::Mat4,
     pub last_object_count: u32,
     pub last_transparent_count: u32,
+    pub last_draw_calls: std::sync::atomic::AtomicU32,
+    pub last_triangle_count: std::sync::atomic::AtomicU32,
     pub current_image_index: u32,
     pub pass_descriptor_versions:
         Vec<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
@@ -251,6 +253,8 @@ impl Renderer {
             current_view_proj: spark_math::Mat4::IDENTITY,
             last_object_count: 0,
             last_transparent_count: 0,
+            last_draw_calls: std::sync::atomic::AtomicU32::new(0),
+            last_triangle_count: std::sync::atomic::AtomicU32::new(0),
             current_image_index: 0,
             pass_descriptor_versions: (0..MAX_FRAMES_IN_FLIGHT)
                 .map(|_| {
@@ -928,6 +932,9 @@ impl Renderer {
         let command_buffer =
             self.frame_manager.frames[self.frame_manager.current_frame].command_buffer;
         let cf = self.frame_manager.current_frame;
+
+        self.last_draw_calls
+            .store(0, std::sync::atomic::Ordering::Relaxed);
 
         unsafe {
             self.device
@@ -1613,6 +1620,19 @@ impl Renderer {
 
         self.scene_view_matrix_for_pos = packet.view_matrix;
 
+        let triangle_count: u32 = packet
+            .opaque_meshes
+            .iter()
+            .map(|m| m.index_count / 3)
+            .sum::<u32>()
+            + packet
+                .transparent_meshes
+                .iter()
+                .map(|m| m.index_count / 3)
+                .sum::<u32>();
+        self.last_triangle_count
+            .store(triangle_count, std::sync::atomic::Ordering::Relaxed);
+
         // 1. Prepare GPU Indirect and Object buffers.
         let total_objects = self.prepare_mesh_data(&packet);
 
@@ -2065,7 +2085,8 @@ impl Drop for Renderer {
                 pass_node.pass.destroy(self);
             }
 
-            self.render_graph.destroy_resources(self);
+            self.render_graph
+                .destroy_resources(&self.device.device, &self.device.allocator);
 
             self.cleanup_swapchain();
             self.frame_manager.destroy(&self.device);

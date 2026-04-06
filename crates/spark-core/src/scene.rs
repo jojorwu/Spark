@@ -144,6 +144,22 @@ impl Clone for Node {
     }
 }
 
+impl Default for Node {
+    fn default() -> Self {
+        Self {
+            name: "New Node".to_string(),
+            visible: true,
+            locked: false,
+            is_dirty: true,
+            local_transform: Mat4::IDENTITY,
+            global_transform: Mat4::IDENTITY,
+            parent: None,
+            children: Vec::new(),
+            components: Vec::new(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Scene {
     pub nodes: SlotMap<NodeKey, Node>,

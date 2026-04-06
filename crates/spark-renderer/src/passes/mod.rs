@@ -119,7 +119,6 @@ pub trait RenderPass: Send + Sync {
     /// Records Vulkan commands for this pass into the provided command buffer.
     fn record_commands(&self, ctx: &RenderContext);
 
-
     /// Retrieves a specific image resource view from the pass for cross-pass communication.
     fn get_resource_view(&self, _name: &str, _frame_index: usize) -> Option<vk::ImageView> {
         None

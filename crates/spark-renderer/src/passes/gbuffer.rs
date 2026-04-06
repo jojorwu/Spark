@@ -201,6 +201,14 @@ impl GBufferPass {
                     if let Some(ref count_buffer) =
                         renderer.frame_manager.frames[current_frame].draw_count_buffer
                     {
+                        renderer.last_draw_calls.fetch_add(
+                            renderer.last_object_count,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        // Approximate triangle count (this is very rough as we don't know the actual index counts without reading the buffer)
+                        // In a real engine, we'd sum this up during packet collection or use pipeline statistics queries.
+                        // For now, let's just use a heuristic or sum it up in prepare_frame.
+
                         device.cmd_draw_indexed_indirect_count(
                             command_buffer,
                             indirect_buffer.handle,
@@ -211,6 +219,10 @@ impl GBufferPass {
                             std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
                         );
                     } else {
+                        renderer.last_draw_calls.fetch_add(
+                            renderer.last_object_count,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
                         device.cmd_draw_indexed_indirect(
                             command_buffer,
                             indirect_buffer.handle,

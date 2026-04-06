@@ -25,7 +25,8 @@ impl RenderPass for ShadowPass {
         vec![(
             "ShadowMap".to_string(),
             vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+            vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
         )]
     }
     fn is_enabled(&self, renderer: &Renderer) -> bool {
@@ -59,7 +60,6 @@ impl RenderPass for ShadowPass {
             self.record_cascade_commands(device, ctx.command_buffer, lvp, renderer, cascade_idx);
         }
     }
-
 
     fn destroy(&mut self, renderer: &mut Renderer) {
         unsafe {

@@ -60,11 +60,12 @@ impl RenderGraph {
         }
     }
 
-    pub fn destroy_resources(&mut self, renderer: &crate::Renderer) {
+    pub fn destroy_resources(
+        &mut self,
+        device: &ash::Device,
+        allocator: &std::sync::Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>,
+    ) {
         unsafe {
-            let device = &renderer.device.device;
-            let allocator = &renderer.device.allocator;
-
             for (_, attachments) in self.transient_attachments.drain() {
                 for a in attachments {
                     a.destroy(device, allocator);
@@ -672,7 +673,6 @@ impl RenderGraph {
             }
         }
     }
-
 
     fn inject_buffer_barriers(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
         let renderer = ctx.renderer;
