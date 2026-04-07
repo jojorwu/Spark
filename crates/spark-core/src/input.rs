@@ -13,10 +13,13 @@ pub enum InputAction {
     Interact,
 }
 
+/// Manages user input by tracking key states and mapping them to logical actions.
 pub struct InputManager {
     keys_pressed: HashSet<KeyCode>,
     mouse_position: (f64, f64),
     action_map: HashMap<KeyCode, InputAction>,
+    /// Cache for actions that are currently pressed to avoid per-query resolution.
+    active_actions: HashSet<InputAction>,
 }
 
 impl InputManager {
@@ -33,9 +36,11 @@ impl InputManager {
             keys_pressed: HashSet::new(),
             mouse_position: (0.0, 0.0),
             action_map,
+            active_actions: HashSet::new(),
         }
     }
 
+    /// Processes input events and updates the internal key states and active actions.
     pub fn update(&mut self, events: &[crate::event::EngineEvent]) {
         for event in events {
             match event {
@@ -51,19 +56,24 @@ impl InputManager {
                 _ => {}
             }
         }
+
+        // Rebuild active actions cache
+        self.active_actions.clear();
+        for (key, action) in &self.action_map {
+            if self.keys_pressed.contains(key) {
+                self.active_actions.insert(*action);
+            }
+        }
     }
 
+    /// Returns true if the specified key is currently held down.
     pub fn is_key_pressed(&self, key: KeyCode) -> bool {
         self.keys_pressed.contains(&key)
     }
 
+    /// Returns true if any key mapped to the logical action is currently held down.
     pub fn is_action_pressed(&self, action: InputAction) -> bool {
-        for (key, mapped_action) in &self.action_map {
-            if *mapped_action == action && self.keys_pressed.contains(key) {
-                return true;
-            }
-        }
-        false
+        self.active_actions.contains(&action)
     }
 
     pub fn mouse_position(&self) -> (f64, f64) {
