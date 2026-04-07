@@ -33,6 +33,7 @@ pub struct RenderGraphPassNode {
 
 /// Граф рендеринга, управляющий зависимостями между проходами и ресурсами.
 /// The RenderGraph manages dependencies between rendering passes and GPU resources.
+/// It performs topological sorting of passes and automatic resource lifecycle management.
 pub struct RenderGraph {
     pub passes: Vec<RenderGraphPassNode>,
     pub resources: HashMap<String, RenderGraphResource>,

@@ -1064,101 +1064,78 @@ impl Renderer {
         let (w, h) = (img.width(), img.height());
         let mip = (((w.max(h) as f32).log2().floor()) as u32) + 1;
         let rgba = img.to_rgba8();
-        let pix = rgba.as_raw();
-        let sz = pix.len() as u64;
+        let pixels = rgba.as_raw();
+        let size = pixels.len() as u64;
 
         let frame_idx = self.frame_manager.current_frame;
-        let needs_new = {
-            let f = &self.frame_manager.frames[frame_idx];
-            f.texture_staging_buffer
-                .as_ref()
-                .is_none_or(|b| b.size < sz)
-        };
+        self.ensure_staging_buffer_capacity(frame_idx, size);
 
-        if needs_new {
-            let old_buffer = self.frame_manager.frames[frame_idx]
-                .texture_staging_buffer
-                .take();
-            if let Some(old) = old_buffer {
-                self.device.destroy_buffer(old);
-            }
-
-            let new_buffer = self.create_buffer(
-                sz.max(1024 * 1024), // Min 1MB
-                vk::BufferUsageFlags::TRANSFER_SRC,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            );
-            self.frame_manager.frames[frame_idx].texture_staging_buffer = Some(new_buffer);
-        }
-
-        let frame = &self.frame_manager.frames[frame_idx];
-        let st = frame.texture_staging_buffer.as_ref().unwrap();
-        let st_ptr = st.ptr;
-        let st_handle = st.handle;
-
+        let staging = self.frame_manager.frames[frame_idx].texture_staging_buffer.as_ref().expect("Staging buffer missing after ensure");
         unsafe {
-            std::ptr::copy_nonoverlapping(pix.as_ptr(), st_ptr as *mut u8, pix.len());
+            std::ptr::copy_nonoverlapping(pixels.as_ptr(), staging.ptr as *mut u8, pixels.len());
         }
 
-        let (i, m) = self.create_image_basic(&crate::vulkan::device::ImageCreateParams {
+        let (image, allocation) = self.create_image_basic(&crate::vulkan::device::ImageCreateParams {
             width: w,
             height: h,
             mip_levels: mip,
             format: vk::Format::R8G8B8A8_SRGB,
             tiling: vk::ImageTiling::OPTIMAL,
-            usage: vk::ImageUsageFlags::TRANSFER_SRC
-                | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::SAMPLED,
+            usage: vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
             properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
             samples: vk::SampleCountFlags::TYPE_1,
         });
-        self.transition_image_layout_basic(
-            i,
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            mip,
-        );
+
+        self.transition_image_layout_basic(image, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, mip);
+
         let cb = self.begin_single_time_commands();
+        let region = vk::BufferImageCopy::default()
+            .image_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .image_extent(vk::Extent3D { width: w, height: h, depth: 1 });
+
         unsafe {
-            self.device.device.cmd_copy_buffer_to_image(
-                cb,
-                st_handle,
-                i,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[vk::BufferImageCopy::default()
-                    .image_subresource(vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        mip_level: 0,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    })
-                    .image_extent(vk::Extent3D {
-                        width: w,
-                        height: h,
-                        depth: 1,
-                    })],
-            );
+            self.device.device.cmd_copy_buffer_to_image(cb, staging.handle, image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
         }
         self.end_single_time_commands(cb);
-        self.generate_mipmaps(i, vk::Format::R8G8B8A8_SRGB, w, h, mip);
-        let v = self.create_image_view_basic(i, vk::Format::R8G8B8A8_SRGB, mip);
-        let s = self.create_texture_sampler(mip);
+
+        self.generate_mipmaps(image, vk::Format::R8G8B8A8_SRGB, w, h, mip);
+        let view = self.create_image_view_basic(image, vk::Format::R8G8B8A8_SRGB, mip);
+        let sampler = self.create_texture_sampler(mip);
 
         let bindless_index = self.gpu_resource_manager.bindless.allocate_index();
-        self.gpu_resource_manager.bindless.update_texture(
-            &self.device.device,
-            bindless_index,
-            v,
-            s,
-        );
+        self.gpu_resource_manager.bindless.update_texture(&self.device.device, bindless_index, view, sampler);
 
         Texture {
-            image: i,
-            allocation: Some(m),
-            view: v,
-            sampler: s,
+            image,
+            allocation: Some(allocation),
+            view,
+            sampler,
             mip_levels: mip,
             bindless_index,
+        }
+    }
+
+    fn ensure_staging_buffer_capacity(&mut self, frame_idx: usize, sz: u64) {
+        let needs_new = {
+            let f = &self.frame_manager.frames[frame_idx];
+            f.texture_staging_buffer.as_ref().is_none_or(|b| b.size < sz)
+        };
+
+        if needs_new {
+            if let Some(old) = self.frame_manager.frames[frame_idx].texture_staging_buffer.take() {
+                self.device.destroy_buffer(old);
+            }
+            let b = self.create_buffer(
+                sz.max(1024 * 1024),
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            self.frame_manager.frames[frame_idx].texture_staging_buffer = Some(b);
         }
     }
 
