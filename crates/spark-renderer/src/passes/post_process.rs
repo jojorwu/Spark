@@ -140,7 +140,7 @@ impl RenderPass for PostProcessPass {
                 renderer.device.device.cmd_bind_pipeline(
                     ctx.command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
-                    self.downsample_pipeline.unwrap(),
+                    self.downsample_pipeline.expect("Downsample pipeline missing in PostProcessPass"),
                 );
                 renderer.device.device.cmd_bind_descriptor_sets(
                     ctx.command_buffer,
@@ -247,7 +247,7 @@ impl RenderPass for PostProcessPass {
                 renderer.device.device.cmd_bind_pipeline(
                     ctx.command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
-                    self.upsample_pipeline.unwrap(),
+                    self.upsample_pipeline.expect("Upsample pipeline missing in PostProcessPass"),
                 );
                 renderer.device.device.cmd_bind_descriptor_sets(
                     ctx.command_buffer,
@@ -363,7 +363,7 @@ impl RenderPass for PostProcessPass {
             renderer.device.device.cmd_bind_pipeline(
                 ctx.command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.unwrap(),
+                self.pipeline.expect("Final tonemapping pipeline missing in PostProcessPass"),
             );
             renderer.device.device.cmd_bind_descriptor_sets(
                 ctx.command_buffer,
@@ -500,7 +500,7 @@ impl RenderPass for PostProcessPass {
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
                 vk::SampleCountFlags::TYPE_1,
             )
-            .unwrap();
+            .expect("Failed to create bloom mip attachment during resize");
             self.bloom_mips.push(att);
         }
     }
@@ -676,7 +676,7 @@ impl PostProcessPass {
         let frag_module = Pipeline::create_shader_module(device, params.frag_spirv);
         let downsample_module = Pipeline::create_shader_module(device, params.downsample_spirv);
         let upsample_module = Pipeline::create_shader_module(device, params.upsample_spirv);
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point = std::ffi::CString::new("main").expect("Failed to create entry point name");
 
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -731,7 +731,7 @@ impl PostProcessPass {
         self.pipeline = Some(unsafe {
             device
                 .create_graphics_pipelines(pipeline_cache, &[info], None)
-                .unwrap()[0]
+                .expect("Failed to create final PostProcess pipeline")[0]
         });
 
         // Downsample Pipeline
@@ -762,7 +762,7 @@ impl PostProcessPass {
         self.downsample_pipeline = Some(unsafe {
             device
                 .create_graphics_pipelines(pipeline_cache, &[ds_info], None)
-                .unwrap()[0]
+                .expect("Failed to create bloom downsample pipeline")[0]
         });
 
         // Upsample Pipeline (Additive)
@@ -801,7 +801,7 @@ impl PostProcessPass {
         self.upsample_pipeline = Some(unsafe {
             device
                 .create_graphics_pipelines(pipeline_cache, &[us_info], None)
-                .unwrap()[0]
+                .expect("Failed to create bloom upsample pipeline")[0]
         });
 
         unsafe {

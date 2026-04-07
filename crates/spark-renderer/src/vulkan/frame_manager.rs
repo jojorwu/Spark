@@ -19,7 +19,7 @@ impl FrameManager {
                     .command_pool(device.command_pool)
                     .level(vk::CommandBufferLevel::PRIMARY)
                     .command_buffer_count(1);
-                let cb = unsafe { device.device.allocate_command_buffers(&alloc_info).unwrap()[0] };
+                let cb = unsafe { device.device.allocate_command_buffers(&alloc_info).expect("Failed to allocate per-frame command buffer")[0] };
                 RenderFrame {
                     command_buffer: cb,
                     image_available: av[i],
@@ -43,7 +43,7 @@ impl FrameManager {
             })
             .collect::<Vec<_>>()
             .try_into()
-            .unwrap();
+            .expect("Failed to convert per-frame buffer list to fixed-size array");
         let mut culling_finished_semaphores = [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT];
         for sem in culling_finished_semaphores.iter_mut() {
             *sem = unsafe {
@@ -69,9 +69,9 @@ impl FrameManager {
         let f_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             unsafe {
-                av.push(device.create_semaphore(&s_info, None).unwrap());
-                fi.push(device.create_semaphore(&s_info, None).unwrap());
-                in_f.push(device.create_fence(&f_info, None).unwrap());
+                av.push(device.create_semaphore(&s_info, None).expect("Failed to create image available semaphore"));
+                fi.push(device.create_semaphore(&s_info, None).expect("Failed to create render finished semaphore"));
+                in_f.push(device.create_fence(&f_info, None).expect("Failed to create in-flight fence"));
             }
         }
         (av, fi, in_f)

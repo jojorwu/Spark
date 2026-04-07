@@ -235,8 +235,8 @@ impl TAAPass {
 
         let pipeline = unsafe {
             device
-                .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
-                .unwrap()[0]
+                .create_graphics_pipelines(renderer.pipeline_cache, &[info], None)
+                .expect("Failed to create TAA graphics pipeline")[0]
         };
 
         unsafe {

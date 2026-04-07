@@ -1,5 +1,4 @@
 use super::{RenderContext, RenderPass};
-use crate::resource::Attachment;
 use crate::Renderer;
 use crate::MAX_FRAMES_IN_FLIGHT;
 use ash::vk;
@@ -9,7 +8,6 @@ pub struct SSRPass {
     pub layout: vk::PipelineLayout,
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     pub descriptor_sets: Vec<vk::DescriptorSet>,
-    pub output_images: Vec<Attachment>,
 }
 
 impl RenderPass for SSRPass {
@@ -131,24 +129,7 @@ impl RenderPass for SSRPass {
         }
     }
 
-    fn on_resize(&mut self, renderer: &Renderer, new_extent: vk::Extent2D) {
-        for img in self.output_images.drain(..) {
-            img.destroy(&renderer.device.device, &renderer.device.allocator);
-        }
-        self.output_images = (0..MAX_FRAMES_IN_FLIGHT)
-            .map(|_| {
-                Attachment::create_image_resource(
-                    &renderer.device,
-                    new_extent.width,
-                    new_extent.height,
-                    vk::Format::R16G16B16A16_SFLOAT,
-                    vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
-                    vk::SampleCountFlags::TYPE_1,
-                )
-                .unwrap()
-            })
-            .collect();
-    }
+    fn on_resize(&mut self, _renderer: &Renderer, _new_extent: vk::Extent2D) {}
 
     fn destroy(&mut self, renderer: &mut Renderer) {
         let device = &renderer.device.device;
@@ -156,9 +137,6 @@ impl RenderPass for SSRPass {
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            for img in self.output_images.drain(..) {
-                img.destroy(device, &renderer.device.allocator);
-            }
         }
     }
 }
@@ -169,21 +147,6 @@ impl SSRPass {
         shader_spirv: &[u32],
     ) -> Result<Self, crate::error::RendererError> {
         let device = &renderer.device.device;
-        let extent = renderer.get_extent();
-
-        let output_images = (0..MAX_FRAMES_IN_FLIGHT)
-            .map(|_| {
-                Attachment::create_image_resource(
-                    &renderer.device,
-                    extent.width,
-                    extent.height,
-                    vk::Format::R16G16B16A16_SFLOAT,
-                    vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
-                    vk::SampleCountFlags::TYPE_1,
-                )
-                .unwrap()
-            })
-            .collect::<Vec<_>>();
 
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
@@ -251,7 +214,7 @@ impl SSRPass {
         };
 
         let module = crate::pipeline::Pipeline::create_shader_module(device, shader_spirv);
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point = std::ffi::CString::new("main").expect("Failed to create entry point name");
         let stage_info = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(module)
@@ -260,13 +223,13 @@ impl SSRPass {
         let pipeline = unsafe {
             device
                 .create_compute_pipelines(
-                    vk::PipelineCache::null(),
+                    renderer.pipeline_cache,
                     &[vk::ComputePipelineCreateInfo::default()
                         .stage(stage_info)
                         .layout(layout)],
                     None,
                 )
-                .unwrap()[0]
+                .expect("Failed to create SSRPass compute pipeline")[0]
         };
 
         unsafe {
@@ -278,7 +241,6 @@ impl SSRPass {
             layout,
             descriptor_set_layout: ds_layout,
             descriptor_sets,
-            output_images,
         })
     }
 }

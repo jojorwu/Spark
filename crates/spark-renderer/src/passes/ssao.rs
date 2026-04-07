@@ -147,10 +147,10 @@ impl RenderPass for SSAOPass {
         );
         let ssao_view = renderer
             .get_pass_resource_view(self.name(), "SSAO_Intermediary", ctx.current_frame)
-            .unwrap();
+            .expect("Failed to retrieve SSAO_Intermediary view");
         let blur_view = renderer
             .get_pass_resource_view(self.name(), "SSAO", ctx.current_frame)
-            .unwrap();
+            .expect("Failed to retrieve SSAO view");
 
         let params = SSAORecordParams {
             renderer,
@@ -187,7 +187,7 @@ impl RenderPass for SSAOPass {
                     .gpu_resource_manager
                     .default_texture
                     .as_ref()
-                    .unwrap()
+                    .expect("Default texture missing during SSAOPass cleanup")
                     .clone(),
             );
             renderer.destroy_texture(texture);
@@ -230,8 +230,12 @@ impl SSAOPass {
 
         let noise_img = image::DynamicImage::ImageRgba32F(
             image::Rgba32FImage::from_raw(4, 4, bytemuck::cast_slice(&ssao_noise).to_vec())
-                .unwrap(),
+                .expect("Failed to create SSAO noise image"),
         );
+
+        // Use a safe way to create texture if we were given a &Renderer
+        // But SSAOPass::new takes &Renderer. create_texture_from_image requires &mut self.
+        // For now, let's keep the cast but document why it's used in this specific initialization context.
         let renderer_ptr = renderer as *const Renderer as *mut Renderer;
         let noise_texture = unsafe { (*renderer_ptr).create_texture_from_image(&noise_img) };
 
@@ -352,7 +356,7 @@ impl SSAOPass {
         let blur_module =
             crate::pipeline::Pipeline::create_shader_module(device, params.blur_shader);
 
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point = std::ffi::CString::new("main").expect("Failed to create entry point name");
 
         // SSAO Pipeline
         let ssao_stages = [
@@ -407,7 +411,7 @@ impl SSAOPass {
         self.ssao_pipeline = unsafe {
             device
                 .create_graphics_pipelines(pipeline_cache, &[ssao_info], None)
-                .unwrap()[0]
+                .expect("Failed to create SSAO pipeline")[0]
         };
 
         // Blur Pipeline
@@ -436,7 +440,7 @@ impl SSAOPass {
         self.blur_pipeline = unsafe {
             device
                 .create_graphics_pipelines(pipeline_cache, &[blur_info], None)
-                .unwrap()[0]
+                .expect("Failed to create SSAO blur pipeline")[0]
         };
 
         unsafe {
@@ -592,7 +596,7 @@ impl SSAOPass {
                 .image_view(
                     renderer
                         .get_pass_resource_view(self.name(), "SSAO_Intermediary", i)
-                        .unwrap(),
+                        .expect("Failed to retrieve SSAO_Intermediary view for descriptor update"),
                 )
                 .sampler(sampler)];
             let depth_info = [vk::DescriptorImageInfo::default()

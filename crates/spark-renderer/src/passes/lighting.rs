@@ -256,8 +256,8 @@ impl RenderPass for LightingPass {
                 let color_attachment = vk::RenderingAttachmentInfo::default()
                     .image_view(
                         renderer
-                            .get_pass_resource_view("", "GBufferHDR", current_frame)
-                            .unwrap_or(renderer.common_shadow_view),
+                            .get_pass_resource_view(self.name(), "GBufferHDR", current_frame)
+                            .expect("Failed to retrieve GBufferHDR for LightingPass"),
                     )
                     .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                     .load_op(vk::AttachmentLoadOp::CLEAR)

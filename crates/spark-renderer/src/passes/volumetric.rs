@@ -158,7 +158,7 @@ impl VolumetricPass {
                 None,
             )?
         };
-        let entry = std::ffi::CString::new("main").unwrap();
+        let entry = std::ffi::CString::new("main").expect("Failed to create entry point name");
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(shader_module)
@@ -167,13 +167,14 @@ impl VolumetricPass {
         let pipeline = unsafe {
             device
                 .create_compute_pipelines(
-                    vk::PipelineCache::null(),
+                    renderer.pipeline_cache,
                     &[vk::ComputePipelineCreateInfo::default()
                         .stage(stage)
                         .layout(layout)],
                     None,
                 )
-                .map_err(|e| e.1)?[0]
+                .map_err(|e| e.1)
+                .expect("Failed to create VolumetricPass compute pipeline")[0]
         };
 
         unsafe {

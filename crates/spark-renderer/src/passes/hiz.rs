@@ -40,7 +40,7 @@ impl RenderPass for HiZPass {
 
         let pass_versions = renderer.pass_descriptor_versions[frame_index]
             .lock()
-            .unwrap();
+            .expect("Failed to lock pass descriptor versions in HiZPass");
         if let Some(&v) = pass_versions.get(self.name()) {
             return v != depth_version;
         }
@@ -92,8 +92,8 @@ impl RenderPass for HiZPass {
             }
             device.device.destroy_image_view(self.pyramid_view, None);
             device.device.destroy_image(self.pyramid_image, None);
-            if let Some(alloc) = self.pyramid_allocation.lock().unwrap().take() {
-                device.allocator.lock().unwrap().free(alloc).unwrap();
+            if let Some(alloc) = self.pyramid_allocation.lock().expect("Failed to lock HiZ pyramid allocation").take() {
+                device.allocator.lock().expect("Failed to lock allocator in HiZPass").free(alloc).expect("Failed to free HiZ pyramid memory");
             }
         }
 
@@ -114,10 +114,10 @@ impl RenderPass for HiZPass {
                 properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
                 samples: vk::SampleCountFlags::TYPE_1,
             })
-            .unwrap();
+            .expect("Failed to create HiZ pyramid image during resize");
 
         self.pyramid_image = image;
-        *self.pyramid_allocation.lock().unwrap() = Some(allocation);
+        *self.pyramid_allocation.lock().expect("Failed to lock HiZ pyramid allocation for update") = Some(allocation);
         self.pyramid_view =
             device.create_image_view(image, vk::Format::R32_SFLOAT, self.mip_levels);
 
@@ -135,7 +135,7 @@ impl RenderPass for HiZPass {
                     layer_count: 1,
                 });
             self.mip_views
-                .push(unsafe { device.device.create_image_view(&view_info, None).unwrap() });
+                .push(unsafe { device.device.create_image_view(&view_info, None).expect("Failed to create HiZ mip view during resize") });
         }
     }
 
@@ -147,14 +147,14 @@ impl RenderPass for HiZPass {
             }
             device.destroy_image_view(self.pyramid_view, None);
             device.destroy_image(self.pyramid_image, None);
-            if let Some(alloc) = self.pyramid_allocation.lock().unwrap().take() {
+            if let Some(alloc) = self.pyramid_allocation.lock().expect("Failed to lock HiZ pyramid allocation during destroy").take() {
                 renderer
                     .device
                     .allocator
                     .lock()
-                    .unwrap()
+                    .expect("Failed to lock allocator during HiZ destroy")
                     .free(alloc)
-                    .unwrap();
+                    .expect("Failed to free HiZ pyramid memory");
             }
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.layout, None);
@@ -202,7 +202,7 @@ impl HiZPass {
                     base_array_layer: 0,
                     layer_count: 1,
                 });
-            mip_views.push(unsafe { device.device.create_image_view(&view_info, None).unwrap() });
+            mip_views.push(unsafe { device.device.create_image_view(&view_info, None).expect("Failed to create HiZ mip view") });
         }
 
         let bindings = [
@@ -367,7 +367,7 @@ impl HiZPass {
                     .unwrap_or(0);
                 renderer.pass_descriptor_versions[frame_index]
                     .lock()
-                    .unwrap()
+                    .expect("Failed to lock pass descriptor versions in HiZPass commands")
                     .insert(self.name().to_string(), depth_version);
 
                 device.cmd_bind_descriptor_sets(

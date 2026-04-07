@@ -89,69 +89,33 @@ impl GBufferPass {
                     pc_bytes,
                 );
 
+                let create_attachment = |name: &str, clear_color: [f32; 4]| {
+                    vk::RenderingAttachmentInfo::default()
+                        .image_view(
+                            renderer
+                                .get_pass_resource_view(self.name(), name, current_frame)
+                                .expect("Failed to retrieve G-Buffer attachment"),
+                        )
+                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                        .store_op(vk::AttachmentStoreOp::STORE)
+                        .clear_value(vk::ClearValue {
+                            color: vk::ClearColorValue { float32: clear_color },
+                        })
+                };
+
                 let color_attachments = [
-                    vk::RenderingAttachmentInfo::default()
-                        .image_view(
-                            renderer
-                                .get_pass_resource_view("", "GBufferAlbedo", current_frame)
-                                .unwrap(),
-                        )
-                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                        .load_op(vk::AttachmentLoadOp::CLEAR)
-                        .store_op(vk::AttachmentStoreOp::STORE)
-                        .clear_value(vk::ClearValue {
-                            color: vk::ClearColorValue {
-                                float32: [0.0, 0.0, 0.0, 1.0],
-                            },
-                        }),
-                    vk::RenderingAttachmentInfo::default()
-                        .image_view(
-                            renderer
-                                .get_pass_resource_view("", "GBufferNormal", current_frame)
-                                .unwrap(),
-                        )
-                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                        .load_op(vk::AttachmentLoadOp::CLEAR)
-                        .store_op(vk::AttachmentStoreOp::STORE)
-                        .clear_value(vk::ClearValue {
-                            color: vk::ClearColorValue {
-                                float32: [0.0, 0.0, 0.0, 1.0],
-                            },
-                        }),
-                    vk::RenderingAttachmentInfo::default()
-                        .image_view(
-                            renderer
-                                .get_pass_resource_view("", "GBufferPBR", current_frame)
-                                .unwrap(),
-                        )
-                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                        .load_op(vk::AttachmentLoadOp::CLEAR)
-                        .store_op(vk::AttachmentStoreOp::STORE)
-                        .clear_value(vk::ClearValue {
-                            color: vk::ClearColorValue {
-                                float32: [0.0, 0.0, 0.0, 1.0],
-                            },
-                        }),
-                    vk::RenderingAttachmentInfo::default()
-                        .image_view(
-                            renderer
-                                .get_pass_resource_view("", "GBufferVelocity", current_frame)
-                                .unwrap(),
-                        )
-                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                        .load_op(vk::AttachmentLoadOp::CLEAR)
-                        .store_op(vk::AttachmentStoreOp::STORE)
-                        .clear_value(vk::ClearValue {
-                            color: vk::ClearColorValue {
-                                float32: [0.0, 0.0, 0.0, 1.0],
-                            },
-                        }),
+                    create_attachment("GBufferAlbedo", [0.0, 0.0, 0.0, 1.0]),
+                    create_attachment("GBufferNormal", [0.0, 0.0, 0.0, 1.0]),
+                    create_attachment("GBufferPBR", [0.0, 0.0, 0.0, 1.0]),
+                    create_attachment("GBufferVelocity", [0.0, 0.0, 0.0, 1.0]),
                 ];
+
                 let depth_attachment = vk::RenderingAttachmentInfo::default()
                     .image_view(
                         renderer
-                            .get_pass_resource_view("", "GBufferDepth", current_frame)
-                            .unwrap(),
+                            .get_pass_resource_view(self.name(), "GBufferDepth", current_frame)
+                            .expect("Failed to retrieve G-Buffer depth attachment"),
                     )
                     .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
@@ -202,9 +166,6 @@ impl GBufferPass {
                             renderer.last_object_count,
                             std::sync::atomic::Ordering::Relaxed,
                         );
-                        // Approximate triangle count (this is very rough as we don't know the actual index counts without reading the buffer)
-                        // In a real engine, we'd sum this up during packet collection or use pipeline statistics queries.
-                        // For now, let's just use a heuristic or sum it up in prepare_frame.
 
                         device.cmd_draw_indexed_indirect_count(
                             command_buffer,
