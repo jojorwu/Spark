@@ -126,7 +126,7 @@ impl VulkanDevice {
                 .push_next(&mut features_rt);
         }
 
-        let device = unsafe { instance.create_device(pdevice, &device_create_info, None)? };
+        let device = unsafe { instance.create_device(pdevice, &device_create_info, None).expect("Failed to create logical Vulkan device") };
 
         let graphics_queue = unsafe { device.get_device_queue(graphics_family, 0) };
         let compute_queue = unsafe { device.get_device_queue(compute_family, 0) };
@@ -141,7 +141,7 @@ impl VulkanDevice {
                     .queue_family_index(graphics_family)
                     .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
                 None,
-            )?
+            ).expect("Failed to create main command pool")
         };
 
         let compute_command_pool = unsafe {
@@ -150,7 +150,7 @@ impl VulkanDevice {
                     .queue_family_index(compute_family)
                     .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
                 None,
-            )?
+            ).expect("Failed to create compute command pool")
         };
 
         let mut thread_command_pools = Vec::new();
@@ -164,7 +164,7 @@ impl VulkanDevice {
                             .queue_family_index(graphics_family)
                             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
                         None,
-                    )?
+                    ).expect("Failed to create thread command pool")
                 };
             }
             thread_command_pools.push(pools);

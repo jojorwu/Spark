@@ -76,7 +76,7 @@ impl BindlessManager {
     /// This method first attempts to recycle an index from the free list.
     /// If the free list is empty, it increments the global index counter.
     pub fn allocate_index(&self) -> u32 {
-        if let Some(idx) = self.free_indices.lock().unwrap().pop() {
+        if let Some(idx) = self.free_indices.lock().expect("Failed to lock free indices for allocation").pop() {
             idx
         } else {
             let idx = self.next_index.fetch_add(1, Ordering::Relaxed);
@@ -92,7 +92,7 @@ impl BindlessManager {
 
     /// Returns a bindless index to the free list for future reuse.
     pub fn deallocate_index(&self, index: u32) {
-        self.free_indices.lock().unwrap().push(index);
+        self.free_indices.lock().expect("Failed to lock free indices for deallocation").push(index);
     }
 
     pub fn update_texture(

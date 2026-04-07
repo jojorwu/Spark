@@ -447,7 +447,7 @@ impl RayTracingPass {
             rt_loader
                 .create_ray_tracing_pipelines(
                     vk::DeferredOperationKHR::null(),
-                    vk::PipelineCache::null(),
+                    renderer.pipeline_cache,
                     &[vk::RayTracingPipelineCreateInfoKHR::default()
                         .stages(&stages)
                         .groups(&groups)
@@ -455,7 +455,8 @@ impl RayTracingPass {
                         .layout(layout)],
                     None,
                 )
-                .unwrap()[0]
+                .map_err(|e| e.1)
+                .expect("Failed to create RayTracing pipeline")[0]
         };
 
         unsafe {
@@ -497,7 +498,7 @@ impl RayTracingPass {
                     groups.len() as u32,
                     (groups.len() as u32 * handle_size) as usize,
                 )
-                .unwrap()
+                .expect("Failed to get ray tracing shader group handles")
         };
 
         let mut sbt_regions = [vk::StridedDeviceAddressRegionKHR::default(); 4];

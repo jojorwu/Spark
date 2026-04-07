@@ -188,7 +188,7 @@ impl RenderPass for SSAOPass {
                     .default_texture
                     .as_ref()
                     .expect("Default texture missing during SSAOPass cleanup")
-                    .clone(),
+                    .shallow_copy(),
             );
             renderer.destroy_texture(texture);
         }

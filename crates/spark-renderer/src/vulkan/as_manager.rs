@@ -75,13 +75,7 @@ impl AccelerationStructureManager {
         &mut self,
         params: TlasBuildParams,
     ) -> Result<(), crate::error::RendererError> {
-        // Cleanup old resources for this frame slot
-        if let Some(mut old_tlas) = self.current_tlas[params.frame_index].take() {
-            old_tlas.destroy(params.device);
-        }
-        for b in self.frame_scratch[params.frame_index].drain(..) {
-            params.device.destroy_buffer(b);
-        }
+        self.cleanup_frame_resources(params.device, params.frame_index);
 
         let as_loader = params
             .device
@@ -89,70 +83,8 @@ impl AccelerationStructureManager {
             .as_ref()
             .ok_or(crate::error::RendererError::NoSuitableDevice)?;
         let mut scratch_buffers = Vec::new();
-        let mut instances = Vec::new();
 
-        for (i, mesh) in params.packet.opaque_meshes.iter().enumerate() {
-            let key = BlasKey {
-                mesh_id: mesh.mesh_id,
-                vertex_offset: mesh.vertex_offset,
-                first_index: mesh.first_index,
-            };
-
-            let blas_address = match self.blas_cache.entry(key) {
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    let blas_params = BlasBuildParams {
-                        device: params.device,
-                        as_loader,
-                        cb: params.cb,
-                        vertex_buffer: params.global_vb,
-                        index_buffer: params.global_ib,
-                        vertex_count: mesh.vertex_count,
-                        index_count: mesh.index_count,
-                        vertex_stride: params.vertex_stride,
-                        vertex_offset: mesh.vertex_offset,
-                        first_index: mesh.first_index,
-                    };
-                    let (b, scratch) = AccelerationStructure::new_blas(blas_params)?;
-                    scratch_buffers.push(scratch);
-                    let address = b.address;
-                    entry.insert(b);
-                    address
-                }
-                std::collections::hash_map::Entry::Occupied(entry) => entry.get().address,
-            };
-
-            self.blas_usage.insert(key, params.frame_id);
-
-            let m = mesh.model.transpose();
-            let transform = vk::TransformMatrixKHR {
-                matrix: [
-                    m.row(0).x,
-                    m.row(0).y,
-                    m.row(0).z,
-                    m.row(0).w,
-                    m.row(1).x,
-                    m.row(1).y,
-                    m.row(1).z,
-                    m.row(1).w,
-                    m.row(2).x,
-                    m.row(2).y,
-                    m.row(2).z,
-                    m.row(2).w,
-                ],
-            };
-
-            instances.push(vk::AccelerationStructureInstanceKHR {
-                transform,
-                instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, 0xFF),
-                instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
-                    0,
-                    vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
-                ),
-                acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                    device_handle: blas_address,
-                },
-            });
-        }
+        let instances = self.prepare_tlas_instances(&params, as_loader, &mut scratch_buffers)?;
 
         // Ensure all BLAS builds are complete before starting the TLAS build.
         let barrier_data = [vk::MemoryBarrier2::default()
@@ -202,15 +134,93 @@ impl AccelerationStructureManager {
         for (_, mut blas) in self.blas_cache.drain() {
             blas.destroy(device);
         }
-        for tlas in self.current_tlas.iter_mut() {
-            if let Some(mut t) = tlas.take() {
-                t.destroy(device);
-            }
+        for i in 0..crate::MAX_FRAMES_IN_FLIGHT {
+            self.cleanup_frame_resources(device, i);
         }
-        for scratch_list in self.frame_scratch.iter_mut() {
-            for b in scratch_list.drain(..) {
-                device.destroy_buffer(b);
+    }
+
+    fn cleanup_frame_resources(&mut self, device: &VulkanDevice, frame_index: usize) {
+        if let Some(mut old_tlas) = self.current_tlas[frame_index].take() {
+            old_tlas.destroy(device);
+        }
+        for b in self.frame_scratch[frame_index].drain(..) {
+            device.destroy_buffer(b);
+        }
+    }
+
+    fn prepare_tlas_instances(
+        &mut self,
+        params: &TlasBuildParams,
+        as_loader: &ash::khr::acceleration_structure::Device,
+        scratch_buffers: &mut Vec<Buffer>,
+    ) -> Result<Vec<vk::AccelerationStructureInstanceKHR>, crate::error::RendererError> {
+        let mut instances = Vec::with_capacity(params.packet.opaque_meshes.len());
+
+        for (i, mesh) in params.packet.opaque_meshes.iter().enumerate() {
+            let key = BlasKey {
+                mesh_id: mesh.mesh_id,
+                vertex_offset: mesh.vertex_offset,
+                first_index: mesh.first_index,
+            };
+
+            let blas_address = self.get_or_build_blas(params, as_loader, key, mesh, scratch_buffers)?;
+            self.blas_usage.insert(key, params.frame_id);
+
+            instances.push(vk::AccelerationStructureInstanceKHR {
+                transform: Self::convert_to_vk_transform(&mesh.model),
+                instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, 0xFF),
+                instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
+                    0,
+                    vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
+                ),
+                acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                    device_handle: blas_address,
+                },
+            });
+        }
+        Ok(instances)
+    }
+
+    fn get_or_build_blas(
+        &mut self,
+        params: &TlasBuildParams,
+        as_loader: &ash::khr::acceleration_structure::Device,
+        key: BlasKey,
+        mesh: &crate::resource::MeshDraw,
+        scratch_buffers: &mut Vec<Buffer>,
+    ) -> Result<u64, crate::error::RendererError> {
+        match self.blas_cache.entry(key) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let blas_params = BlasBuildParams {
+                    device: params.device,
+                    as_loader,
+                    cb: params.cb,
+                    vertex_buffer: params.global_vb,
+                    index_buffer: params.global_ib,
+                    vertex_count: mesh.vertex_count,
+                    index_count: mesh.index_count,
+                    vertex_stride: params.vertex_stride,
+                    vertex_offset: mesh.vertex_offset,
+                    first_index: mesh.first_index,
+                };
+                let (b, scratch) = AccelerationStructure::new_blas(blas_params)?;
+                scratch_buffers.push(scratch);
+                let address = b.address;
+                entry.insert(b);
+                Ok(address)
             }
+            std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.get().address),
+        }
+    }
+
+    fn convert_to_vk_transform(model: &spark_math::Mat4) -> vk::TransformMatrixKHR {
+        let m = model.transpose();
+        vk::TransformMatrixKHR {
+            matrix: [
+                m.row(0).x, m.row(0).y, m.row(0).z, m.row(0).w,
+                m.row(1).x, m.row(1).y, m.row(1).z, m.row(1).w,
+                m.row(2).x, m.row(2).y, m.row(2).z, m.row(2).w,
+            ],
         }
     }
 }
@@ -280,7 +290,8 @@ impl AccelerationStructure {
         let handle = unsafe {
             params
                 .as_loader
-                .create_acceleration_structure(&create_info, None)?
+                .create_acceleration_structure(&create_info, None)
+                .expect("Failed to create BLAS handle")
         };
         let address = unsafe {
             params.as_loader.get_acceleration_structure_device_address(
@@ -372,7 +383,7 @@ impl AccelerationStructure {
             .size(size_info.acceleration_structure_size)
             .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL);
 
-        let handle = unsafe { as_loader.create_acceleration_structure(&create_info, None)? };
+        let handle = unsafe { as_loader.create_acceleration_structure(&create_info, None).expect("Failed to create TLAS handle") };
         let address = unsafe {
             as_loader.get_acceleration_structure_device_address(
                 &vk::AccelerationStructureDeviceAddressInfoKHR::default()
