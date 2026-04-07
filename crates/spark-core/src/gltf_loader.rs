@@ -81,10 +81,9 @@ impl GltfLoader {
                 let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
                 let positions = reader.read_positions().map(|p| p.collect::<Vec<_>>());
-                if positions.is_none() {
+                let Some(positions) = positions else {
                     continue;
-                }
-                let positions = positions.unwrap();
+                };
 
                 let v_offset = rm.all_vertices.len() as i32;
                 let i_start = rm.all_indices.len() as u32;

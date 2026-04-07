@@ -130,80 +130,11 @@ impl Renderer {
             device.msaa_samples,
             device.depth_format,
         )?;
-        let common_sampler = unsafe {
-            device.device.create_sampler(
-                &vk::SamplerCreateInfo::default()
-                    .mag_filter(vk::Filter::LINEAR)
-                    .min_filter(vk::Filter::LINEAR)
-                    .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_BORDER)
-                    .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_BORDER)
-                    .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_BORDER)
-                    .border_color(vk::BorderColor::FLOAT_OPAQUE_WHITE)
-                    .mipmap_mode(vk::SamplerMipmapMode::LINEAR),
-                None,
-            )?
-        };
 
-        let dummy_buffer = device
-            .create_buffer(
-                64,
-                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            )
-            .map_err(|_| RendererError::NoSuitableDevice)?;
-        let pipeline_cache = unsafe {
-            device
-                .device
-                .create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)?
-        };
-
-        let global_descriptor_set_layout = unsafe {
-            device.device.create_descriptor_set_layout(
-                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(0)
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(1)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(2)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(3)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(4)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::COMPUTE),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(5)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(6)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(7)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-                ]),
-                None,
-            )?
-        };
+        let common_sampler = Self::create_common_sampler(&device.device)?;
+        let dummy_buffer = Self::create_dummy_buffer(&device)?;
+        let pipeline_cache = Self::create_pipeline_cache(&device.device)?;
+        let global_descriptor_set_layout = Self::create_global_ds_layout(&device.device)?;
 
         let gpu_resource_manager =
             crate::vulkan::resource_manager::GpuResourceManager::new(&device)?;
@@ -275,31 +206,7 @@ impl Renderer {
             current_zfar: 100.0,
         };
 
-        renderer
-            .render_graph
-            .physical_attachments
-            .insert("GBufferHDR".to_string(), gbuffer.hdr);
-        renderer
-            .render_graph
-            .physical_attachments
-            .insert("GBufferAlbedo".to_string(), gbuffer.albedo);
-        renderer
-            .render_graph
-            .physical_attachments
-            .insert("GBufferNormal".to_string(), gbuffer.normal);
-        renderer
-            .render_graph
-            .physical_attachments
-            .insert("GBufferPBR".to_string(), gbuffer.pbr);
-        renderer
-            .render_graph
-            .physical_attachments
-            .insert("GBufferVelocity".to_string(), gbuffer.velocity);
-        renderer
-            .render_graph
-            .physical_attachments
-            .insert("GBufferDepth".to_string(), gbuffer.depth);
-
+        renderer.init_gbuffer_attachments(gbuffer);
         renderer.init_default_resources();
         if let Some(ref tex) = renderer.gpu_resource_manager.default_texture {
             renderer.common_shadow_view = tex.view;
@@ -307,6 +214,109 @@ impl Renderer {
         }
 
         Ok(renderer)
+    }
+
+    fn create_common_sampler(device: &ash::Device) -> Result<vk::Sampler, vk::Result> {
+        unsafe {
+            device.create_sampler(
+                &vk::SamplerCreateInfo::default()
+                    .mag_filter(vk::Filter::LINEAR)
+                    .min_filter(vk::Filter::LINEAR)
+                    .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                    .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                    .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                    .border_color(vk::BorderColor::FLOAT_OPAQUE_WHITE)
+                    .mipmap_mode(vk::SamplerMipmapMode::LINEAR),
+                None,
+            )
+        }
+    }
+
+    fn create_dummy_buffer(device: &VulkanDevice) -> Result<Buffer, RendererError> {
+        device.create_buffer(
+            64,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        ).map_err(|_| RendererError::NoSuitableDevice)
+    }
+
+    fn create_pipeline_cache(device: &ash::Device) -> Result<vk::PipelineCache, vk::Result> {
+        unsafe {
+            device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)
+        }
+    }
+
+    fn create_global_ds_layout(device: &ash::Device) -> Result<vk::DescriptorSetLayout, vk::Result> {
+        let bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(5)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(6)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(7)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        ];
+
+        unsafe {
+            device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+                None,
+            )
+        }
+    }
+
+    fn init_gbuffer_attachments(&mut self, gbuffer: GBuffer) {
+        self.render_graph
+            .physical_attachments
+            .insert("GBufferHDR".to_string(), gbuffer.hdr);
+        self.render_graph
+            .physical_attachments
+            .insert("GBufferAlbedo".to_string(), gbuffer.albedo);
+        self.render_graph
+            .physical_attachments
+            .insert("GBufferNormal".to_string(), gbuffer.normal);
+        self.render_graph
+            .physical_attachments
+            .insert("GBufferPBR".to_string(), gbuffer.pbr);
+        self.render_graph
+            .physical_attachments
+            .insert("GBufferVelocity".to_string(), gbuffer.velocity);
+        self.render_graph
+            .physical_attachments
+            .insert("GBufferDepth".to_string(), gbuffer.depth);
     }
 
     pub fn set_global_buffers(&mut self, vertex: Buffer, index: Buffer) {
@@ -423,19 +433,8 @@ impl Renderer {
             self.common_shadow_view
         };
 
-        let (grid_buf, index_buf) = {
-            let mut g = None;
-            let mut idx = None;
-            for pass_node in &self.render_graph.passes {
-                if let Some(b) = pass_node.pass.get_resource_buffer("light_grid", 0) {
-                    g = Some(b);
-                }
-                if let Some(b) = pass_node.pass.get_resource_buffer("index_list", 0) {
-                    idx = Some(b);
-                }
-            }
-            (g, idx)
-        };
+        let grid_buf = self.get_resource_buffer("ClusteredPass", "light_grid", 0);
+        let index_buf = self.get_resource_buffer("ClusteredPass", "index_list", 0);
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let frame = &self.frame_manager.frames[i];

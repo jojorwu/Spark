@@ -16,8 +16,8 @@ impl VulkanContext {
     pub fn new(window: &Window) -> Result<Self, RendererError> {
         let entry = unsafe { Entry::load()? };
 
-        let app_name = CString::new("Spark Engine").unwrap();
-        let engine_name = CString::new("Spark").unwrap();
+        let app_name = CString::new("Spark Engine").expect("Failed to create app name CString");
+        let engine_name = CString::new("Spark").expect("Failed to create engine name CString");
 
         let app_info = vk::ApplicationInfo::default()
             .application_name(&app_name)
@@ -26,8 +26,8 @@ impl VulkanContext {
             .engine_version(vk::make_api_version(0, 0, 1, 0))
             .api_version(vk::API_VERSION_1_3);
 
-        let display_handle = window.display_handle().unwrap().as_raw();
-        let window_handle = window.window_handle().unwrap().as_raw();
+        let display_handle = window.display_handle().expect("Failed to get display handle").as_raw();
+        let window_handle = window.window_handle().expect("Failed to get window handle").as_raw();
 
         let extensions = ash_window::enumerate_required_extensions(display_handle)
             .map_err(|_| RendererError::SurfaceCreation)?;
