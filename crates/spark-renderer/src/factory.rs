@@ -193,7 +193,7 @@ impl Renderer {
         Ok(pass)
     }
 
-    fn init_ssao_pass(&self, shaders: &PassShaders, cache: vk::PipelineCache, extent: vk::Extent2D, pool: vk::DescriptorPool) -> Result<crate::passes::ssao::SSAOPass, RendererError> {
+    fn init_ssao_pass(&mut self, shaders: &PassShaders, cache: vk::PipelineCache, extent: vk::Extent2D, pool: vk::DescriptorPool) -> Result<crate::passes::ssao::SSAOPass, RendererError> {
         let mut pass = crate::passes::ssao::SSAOPass::new(self, pool)
             .map_err(|_| RendererError::NoSuitableDevice)?;
         pass.create_pipelines(crate::passes::ssao::SSAOPipelineParams {

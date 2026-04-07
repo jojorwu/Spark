@@ -196,22 +196,33 @@ pub struct FramePacket {
     pub lights: Vec<LightDraw>,
 }
 
+/// Encapsulates all resources required to render a single frame in flight.
 #[derive(Debug)]
 pub struct RenderFrame {
     pub command_buffer: vk::CommandBuffer,
     pub image_available: vk::Semaphore,
     pub render_finished: vk::Semaphore,
     pub in_flight: vk::Fence,
+
+    // Uniform and Storage Buffers
     pub global_buffer: Option<Buffer>,
     pub light_buffer: Option<Buffer>,
     pub global_descriptor_set: vk::DescriptorSet,
+
+    // Dynamic Instance Data
     pub instance_pool: Vec<Buffer>,
     pub instance_index: usize,
+
+    // Indirect Drawing Resources
     pub indirect_commands_buffer: Option<Buffer>,
     pub object_data_buffer: Option<Buffer>,
     pub draw_count_buffer: Option<Buffer>,
+
+    // Transparency Rendering Resources
     pub transparent_indirect_buffer: Option<Buffer>,
     pub transparent_object_buffer: Option<Buffer>,
+
+    // Management & Temporary State
     pub secondary_command_buffers: Vec<vk::CommandBuffer>,
     pub light_view_projs: [spark_math::Mat4; 4],
     pub scratch_buffers: Vec<Buffer>,

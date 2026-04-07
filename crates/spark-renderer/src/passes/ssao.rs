@@ -197,11 +197,9 @@ impl RenderPass for SSAOPass {
 
 impl SSAOPass {
     pub fn new(
-        renderer: &Renderer,
+        renderer: &mut Renderer,
         descriptor_pool: vk::DescriptorPool,
     ) -> Result<Self, crate::error::RendererError> {
-        let device = &renderer.device.device;
-
         // 1. Generate Kernel Samples
         let mut rng = rand::thread_rng();
         let mut kernel_samples = [Vec4::ZERO; 64];
@@ -233,11 +231,7 @@ impl SSAOPass {
                 .expect("Failed to create SSAO noise image"),
         );
 
-        // Use a safe way to create texture if we were given a &Renderer
-        // But SSAOPass::new takes &Renderer. create_texture_from_image requires &mut self.
-        // For now, let's keep the cast but document why it's used in this specific initialization context.
-        let renderer_ptr = renderer as *const Renderer as *mut Renderer;
-        let noise_texture = unsafe { (*renderer_ptr).create_texture_from_image(&noise_img) };
+        let noise_texture = renderer.create_texture_from_image(&noise_img);
 
         // 3. Create Buffers
         let mut ssao_params_buffer = Vec::new();
@@ -274,7 +268,7 @@ impl SSAOPass {
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
         let ds_layout = unsafe {
-            device.create_descriptor_set_layout(
+            renderer.device.device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
                 None,
             )?
@@ -293,7 +287,7 @@ impl SSAOPass {
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
         let blur_ds_layout = unsafe {
-            device.create_descriptor_set_layout(
+            renderer.device.device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&blur_bindings),
                 None,
             )?
@@ -301,20 +295,20 @@ impl SSAOPass {
 
         // 5. Pipelines
         let layout = unsafe {
-            device.create_pipeline_layout(
+            renderer.device.device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default().set_layouts(&[ds_layout]),
                 None,
             )?
         };
         let blur_layout = unsafe {
-            device.create_pipeline_layout(
+            renderer.device.device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default().set_layouts(&[blur_ds_layout]),
                 None,
             )?
         };
 
         let descriptor_sets = unsafe {
-            device.allocate_descriptor_sets(
+            renderer.device.device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(descriptor_pool)
                     .set_layouts(&[ds_layout; MAX_FRAMES_IN_FLIGHT]),
@@ -322,7 +316,7 @@ impl SSAOPass {
         };
 
         let blur_descriptor_sets = unsafe {
-            device.allocate_descriptor_sets(
+            renderer.device.device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(descriptor_pool)
                     .set_layouts(&[blur_ds_layout; MAX_FRAMES_IN_FLIGHT]),

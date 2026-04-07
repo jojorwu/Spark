@@ -5,6 +5,7 @@ use crate::vulkan::texture::Texture;
 use ash::vk;
 use std::collections::HashMap;
 
+/// Manages the allocation and lifecycle of GPU-resident resources.
 pub struct GpuResourceManager {
     pub descriptor_pool: vk::DescriptorPool,
     pub texture_descriptor_sets: HashMap<vk::ImageView, vk::DescriptorSet>,
@@ -18,6 +19,7 @@ pub struct GpuResourceManager {
 }
 
 impl GpuResourceManager {
+    /// Creates a new GpuResourceManager and initializes the global descriptor pool and bindless manager.
     pub fn new(device: &VulkanDevice) -> Result<Self, crate::error::RendererError> {
         let descriptor_pool = Self::create_descriptor_pool(&device.device);
         let bindless = BindlessManager::new(device, descriptor_pool, 10000)?;
@@ -52,16 +54,16 @@ impl GpuResourceManager {
                 .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                 .descriptor_count(100),
         ];
+
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .pool_sizes(&sizes)
+            .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
+            .max_sets(2000);
+
         unsafe {
             device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&sizes)
-                        .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
-                        .max_sets(2000),
-                    None,
-                )
-                .expect("Failed to create descriptor pool")
+                .create_descriptor_pool(&pool_info, None)
+                .expect("Failed to create global GpuResourceManager descriptor pool")
         }
     }
     pub fn destroy(&mut self, device: &VulkanDevice) {
