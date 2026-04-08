@@ -45,7 +45,8 @@ impl ScriptHost {
         log::info!("Initializing .NET Runtime with config: {}", config_path);
 
         if let Some(hostfxr) = &self.hostfxr {
-            let config_path_pdc = PdCString::from_os_str(config_path).unwrap();
+            let config_path_pdc = PdCString::from_os_str(config_path)
+                .expect("Failed to create PdCString from config path");
             let context = hostfxr
                 .initialize_for_runtime_config(config_path_pdc)
                 .expect("Failed to initialize .NET core");

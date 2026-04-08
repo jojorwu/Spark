@@ -42,18 +42,21 @@ impl SystemRegistry {
     pub fn add_system<S: System + 'static>(&mut self, system: S) {
         self.systems
             .get_mut(&CoreStage::Update)
-            .unwrap()
+            .expect("Update stage missing in system registry")
             .push(Box::new(system));
     }
 
     pub fn add_system_to_stage<S: System + 'static>(&mut self, stage: CoreStage, system: S) {
-        self.systems.get_mut(&stage).unwrap().push(Box::new(system));
+        self.systems
+            .get_mut(&stage)
+            .expect("Requested stage missing in system registry")
+            .push(Box::new(system));
     }
 
     pub fn add_boxed_system(&mut self, system: Box<dyn System>) {
         self.systems
             .get_mut(&CoreStage::Update)
-            .unwrap()
+            .expect("Update stage missing in system registry")
             .push(system);
     }
 
@@ -141,14 +144,30 @@ impl SystemRegistry {
             // 1. Explicit dependencies (this system depends on others)
             for dep in systems[idx].dependencies() {
                 if let Some(&dep_idx) = name_to_idx.get(dep) {
-                    Self::topo_visit(dep_idx, systems, name_to_idx, ordered, visited, temp_visited, reverse_before);
+                    Self::topo_visit(
+                        dep_idx,
+                        systems,
+                        name_to_idx,
+                        ordered,
+                        visited,
+                        temp_visited,
+                        reverse_before,
+                    );
                 }
             }
 
             // 2. `run_after` labels (this system must run after others)
             for after in systems[idx].run_after() {
                 if let Some(&after_idx) = name_to_idx.get(after) {
-                    Self::topo_visit(after_idx, systems, name_to_idx, ordered, visited, temp_visited, reverse_before);
+                    Self::topo_visit(
+                        after_idx,
+                        systems,
+                        name_to_idx,
+                        ordered,
+                        visited,
+                        temp_visited,
+                        reverse_before,
+                    );
                 }
             }
 
@@ -156,7 +175,15 @@ impl SystemRegistry {
             // If system B says `run_before(A)`, then A depends on B.
             if let Some(dependent_systems) = reverse_before.get(systems[idx].name()) {
                 for &before_idx in dependent_systems {
-                    Self::topo_visit(before_idx, systems, name_to_idx, ordered, visited, temp_visited, reverse_before);
+                    Self::topo_visit(
+                        before_idx,
+                        systems,
+                        name_to_idx,
+                        ordered,
+                        visited,
+                        temp_visited,
+                        reverse_before,
+                    );
                 }
             }
 
@@ -167,7 +194,10 @@ impl SystemRegistry {
     }
 
     fn build_stage_batches(&mut self, stage: CoreStage) {
-        let stage_systems = self.systems.get(&stage).unwrap();
+        let stage_systems = self
+            .systems
+            .get(&stage)
+            .expect("Requested stage missing in system registry");
         let name_to_idx: HashMap<String, usize> = stage_systems
             .iter()
             .enumerate()
@@ -261,7 +291,8 @@ impl Scheduler {
                     }
 
                     if allowed.contains(&state)
-                        && (old_state.is_none() || !allowed.contains(old_state.as_ref().unwrap()))
+                        && (old_state.is_none()
+                            || !allowed.contains(old_state.as_ref().expect("State expected")))
                     {
                         system.on_enter(ctx);
                     }
@@ -308,7 +339,10 @@ impl Scheduler {
 
         for stage in stages {
             if let Some(batches) = registry.sorted_indices.get(&stage) {
-                let systems = registry.systems.get_mut(&stage).unwrap();
+                let systems = registry
+                    .systems
+                    .get_mut(&stage)
+                    .expect("Requested stage missing in system registry");
                 let active_state = registry.active_state.as_deref();
 
                 for batch in batches {

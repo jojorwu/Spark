@@ -123,7 +123,8 @@ impl CullingPass {
             )?
         };
 
-        let entry_point = std::ffi::CString::new("main").expect("Failed to create entry point name");
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create entry point name");
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(shader_module)

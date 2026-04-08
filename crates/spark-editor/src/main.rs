@@ -10,12 +10,13 @@ struct ShaderCompiler {
 impl ShaderCompiler {
     fn new() -> Self {
         Self {
-            compiler: shaderc::Compiler::new().unwrap(),
+            compiler: shaderc::Compiler::new().expect("Failed to create shaderc compiler"),
         }
     }
 
     fn compile(&self, path: &str, kind: shaderc::ShaderKind) -> Result<Vec<u32>, String> {
-        let mut options = shaderc::CompileOptions::new().unwrap();
+        let mut options =
+            shaderc::CompileOptions::new().expect("Failed to create shaderc compile options");
         options.set_include_callback(|name, _, _, _| {
             let p = format!("assets/shaders/{}", name);
             fs::read_to_string(&p)
@@ -30,9 +31,9 @@ impl ShaderCompiler {
             .map_err(|e| format!("Failed to read shader {}: {}", path, e))?;
         let name = std::path::Path::new(path)
             .file_name()
-            .unwrap()
+            .expect("Shader path has no file name")
             .to_str()
-            .unwrap();
+            .expect("Shader file name is not valid UTF-8");
         self.compiler
             .compile_into_spirv(&code, kind, name, "main", Some(&options))
             .map(|artifact| artifact.as_binary().to_vec())
@@ -49,9 +50,9 @@ impl ShaderCompiler {
             .map_err(|e| format!("Failed to read shader {}: {}", path, e))?;
         let name = std::path::Path::new(path)
             .file_name()
-            .unwrap()
+            .expect("Shader path has no file name")
             .to_str()
-            .unwrap();
+            .expect("Shader file name is not valid UTF-8");
         self.compiler
             .compile_into_spirv(&code, kind, name, "main", Some(options))
             .map(|artifact| artifact.as_binary().to_vec())
@@ -134,7 +135,8 @@ fn create_app(
 }
 
 fn setup_renderer_passes(app: &mut App, compiler: &ShaderCompiler) {
-    let mut def_options = shaderc::CompileOptions::new().unwrap();
+    let mut def_options =
+        shaderc::CompileOptions::new().expect("Failed to create shaderc compile options");
     let msaa_count = match app.engine.renderer.get_msaa_samples() {
         ash::vk::SampleCountFlags::TYPE_1 => 1,
         ash::vk::SampleCountFlags::TYPE_2 => 2,
@@ -409,7 +411,7 @@ fn setup_viewport(app: &mut App, ui: &mut EditorUI) {
         .renderer
         .viewport_attachment
         .as_ref()
-        .unwrap()
+        .expect("Viewport attachment not initialized")
         .view;
     let viewport_sampler = app.engine.renderer.common_sampler;
     ui.viewport_texture_id = Some(

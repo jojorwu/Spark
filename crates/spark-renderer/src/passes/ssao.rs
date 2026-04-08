@@ -1,4 +1,5 @@
 use crate::resource::Buffer;
+use crate::vulkan::texture::Texture;
 use crate::Renderer;
 use crate::MAX_FRAMES_IN_FLIGHT;
 use ash::vk;
@@ -181,15 +182,16 @@ impl RenderPass for SSAOPass {
             for buffer in self.ssao_params_buffer.drain(..) {
                 renderer.destroy_buffer(buffer);
             }
-            let texture = std::mem::replace(
-                &mut self.noise_texture,
-                renderer
-                    .gpu_resource_manager
-                    .default_texture
-                    .as_ref()
-                    .expect("Default texture missing during SSAOPass cleanup")
-                    .shallow_copy(),
-            );
+            // Temporarily replace with dummy texture to take ownership
+            let dummy_tex = Texture {
+                image: vk::Image::null(),
+                allocation: None,
+                view: vk::ImageView::null(),
+                sampler: vk::Sampler::null(),
+                mip_levels: 0,
+                bindless_index: 0,
+            };
+            let texture = std::mem::replace(&mut self.noise_texture, dummy_tex);
             renderer.destroy_texture(texture);
         }
     }
@@ -350,7 +352,8 @@ impl SSAOPass {
         let blur_module =
             crate::pipeline::Pipeline::create_shader_module(device, params.blur_shader);
 
-        let entry_point = std::ffi::CString::new("main").expect("Failed to create entry point name");
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create entry point name");
 
         // SSAO Pipeline
         let ssao_stages = [

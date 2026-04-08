@@ -307,7 +307,10 @@ impl ResourceTracker {
         dst_stage: vk::PipelineStageFlags,
         aspect_mask: vk::ImageAspectFlags,
     ) {
-        let mut layouts = self.image_layouts.lock().unwrap();
+        let mut layouts = self
+            .image_layouts
+            .lock()
+            .expect("Failed to lock image layouts");
         let old_layout = *layouts.get(&image).unwrap_or(&vk::ImageLayout::UNDEFINED);
         if old_layout == new_layout {
             return;
@@ -349,8 +352,17 @@ impl Attachment {
         unsafe {
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            if let Some(alloc) = self.allocation.lock().expect("Failed to lock attachment allocation during destroy").take() {
-                allocator.lock().expect("Failed to lock allocator during attachment free").free(alloc).expect("Failed to free attachment memory");
+            if let Some(alloc) = self
+                .allocation
+                .lock()
+                .expect("Failed to lock attachment allocation during destroy")
+                .take()
+            {
+                allocator
+                    .lock()
+                    .expect("Failed to lock allocator during attachment free")
+                    .free(alloc)
+                    .expect("Failed to free attachment memory");
             }
         }
     }
@@ -395,8 +407,18 @@ impl Attachment {
         unsafe {
             device.device.destroy_image_view(self.view, None);
             device.device.destroy_image(self.image, None);
-            if let Some(alloc) = self.allocation.lock().expect("Failed to lock attachment allocation during recreate").take() {
-                device.allocator.lock().expect("Failed to lock allocator during attachment free").free(alloc).expect("Failed to free attachment memory");
+            if let Some(alloc) = self
+                .allocation
+                .lock()
+                .expect("Failed to lock attachment allocation during recreate")
+                .take()
+            {
+                device
+                    .allocator
+                    .lock()
+                    .expect("Failed to lock allocator during attachment free")
+                    .free(alloc)
+                    .expect("Failed to free attachment memory");
             }
         }
 
@@ -427,7 +449,10 @@ impl Attachment {
         })?;
 
         self.image = img;
-        *self.allocation.lock().expect("Failed to lock attachment allocation for update") = Some(allocation);
+        *self
+            .allocation
+            .lock()
+            .expect("Failed to lock attachment allocation for update") = Some(allocation);
         self.view = device.create_image_view(img, format, 1);
         self.extent = vk::Extent2D { width, height };
         self.version

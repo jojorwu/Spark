@@ -183,7 +183,8 @@ impl TAAPass {
 
         let vert_module = crate::pipeline::Pipeline::create_shader_module(device, vert_shader);
         let frag_module = crate::pipeline::Pipeline::create_shader_module(device, shader);
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
 
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()

@@ -140,7 +140,8 @@ impl RenderPass for PostProcessPass {
                 renderer.device.device.cmd_bind_pipeline(
                     ctx.command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
-                    self.downsample_pipeline.expect("Downsample pipeline missing in PostProcessPass"),
+                    self.downsample_pipeline
+                        .expect("Downsample pipeline missing in PostProcessPass"),
                 );
                 renderer.device.device.cmd_bind_descriptor_sets(
                     ctx.command_buffer,
@@ -247,7 +248,8 @@ impl RenderPass for PostProcessPass {
                 renderer.device.device.cmd_bind_pipeline(
                     ctx.command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
-                    self.upsample_pipeline.expect("Upsample pipeline missing in PostProcessPass"),
+                    self.upsample_pipeline
+                        .expect("Upsample pipeline missing in PostProcessPass"),
                 );
                 renderer.device.device.cmd_bind_descriptor_sets(
                     ctx.command_buffer,
@@ -363,7 +365,8 @@ impl RenderPass for PostProcessPass {
             renderer.device.device.cmd_bind_pipeline(
                 ctx.command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.expect("Final tonemapping pipeline missing in PostProcessPass"),
+                self.pipeline
+                    .expect("Final tonemapping pipeline missing in PostProcessPass"),
             );
             renderer.device.device.cmd_bind_descriptor_sets(
                 ctx.command_buffer,
@@ -676,7 +679,8 @@ impl PostProcessPass {
         let frag_module = Pipeline::create_shader_module(device, params.frag_spirv);
         let downsample_module = Pipeline::create_shader_module(device, params.downsample_spirv);
         let upsample_module = Pipeline::create_shader_module(device, params.upsample_spirv);
-        let entry_point = std::ffi::CString::new("main").expect("Failed to create entry point name");
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create entry point name");
 
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()

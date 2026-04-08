@@ -37,7 +37,10 @@ impl EventBus {
     where
         F: Fn(&E) + Send + Sync + 'static,
     {
-        let mut handlers = self.handlers.write().expect("Failed to lock event handlers for subscription");
+        let mut handlers = self
+            .handlers
+            .write()
+            .expect("Failed to lock event handlers for subscription");
         let entry = handlers.entry(TypeId::of::<E>()).or_default();
         entry.push(Box::new(move |any_event| {
             if let Some(event) = any_event.downcast_ref::<E>() {
@@ -50,7 +53,10 @@ impl EventBus {
     pub fn publish<E: Event + Send + Sync + 'static>(&self, event: E) {
         // Instant handlers
         {
-            let handlers = self.handlers.read().expect("Failed to lock event handlers for publishing");
+            let handlers = self
+                .handlers
+                .read()
+                .expect("Failed to lock event handlers for publishing");
             if let Some(event_handlers) = handlers.get(&TypeId::of::<E>()) {
                 for handler in event_handlers {
                     handler(&event);
@@ -59,7 +65,10 @@ impl EventBus {
         }
 
         // Buffered events
-        let mut events = self.incoming_events.lock().expect("Failed to lock incoming events for publishing");
+        let mut events = self
+            .incoming_events
+            .lock()
+            .expect("Failed to lock incoming events for publishing");
         events
             .entry(TypeId::of::<E>())
             .or_default()
@@ -68,7 +77,10 @@ impl EventBus {
 
     /// Reads events from the ACTIVE buffer (published in previous frames and swapped).
     pub fn read_events<E: Clone + Send + Sync + 'static>(&self) -> Vec<E> {
-        let events = self.active_events.read().expect("Failed to lock active events for reading");
+        let events = self
+            .active_events
+            .read()
+            .expect("Failed to lock active events for reading");
         if let Some(event_list) = events.get(&TypeId::of::<E>()) {
             event_list
                 .iter()
@@ -82,15 +94,27 @@ impl EventBus {
     /// Swaps the incoming buffer into the active buffer and clears incoming.
     /// This should be called at the start of each frame.
     pub fn swap_buffers(&self) {
-        let mut incoming = self.incoming_events.lock().expect("Failed to lock incoming events for swap");
-        let mut active = self.active_events.write().expect("Failed to lock active events for swap");
+        let mut incoming = self
+            .incoming_events
+            .lock()
+            .expect("Failed to lock incoming events for swap");
+        let mut active = self
+            .active_events
+            .write()
+            .expect("Failed to lock active events for swap");
         *active = std::mem::take(&mut *incoming);
     }
 
     /// Clears both event buffers.
     pub fn clear_events(&self) {
-        self.active_events.write().expect("Failed to lock active events for clear").clear();
-        self.incoming_events.lock().expect("Failed to lock incoming events for clear").clear();
+        self.active_events
+            .write()
+            .expect("Failed to lock active events for clear")
+            .clear();
+        self.incoming_events
+            .lock()
+            .expect("Failed to lock incoming events for clear")
+            .clear();
     }
 }
 

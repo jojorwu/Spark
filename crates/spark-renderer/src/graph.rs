@@ -618,10 +618,7 @@ impl RenderGraph {
 
         if !writes.is_empty() {
             unsafe {
-                renderer
-                    .device
-                    .device
-                    .update_descriptor_sets(&writes, &[]);
+                renderer.device.device.update_descriptor_sets(&writes, &[]);
             }
         }
     }

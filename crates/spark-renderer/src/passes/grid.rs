@@ -63,7 +63,8 @@ impl GridPass {
 
         let vert_module = Pipeline::create_shader_module(device, vert_spirv);
         let frag_module = Pipeline::create_shader_module(device, frag_spirv);
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
 
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()

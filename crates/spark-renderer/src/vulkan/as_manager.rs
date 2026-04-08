@@ -163,7 +163,8 @@ impl AccelerationStructureManager {
                 first_index: mesh.first_index,
             };
 
-            let blas_address = self.get_or_build_blas(params, as_loader, key, mesh, scratch_buffers)?;
+            let blas_address =
+                self.get_or_build_blas(params, as_loader, key, mesh, scratch_buffers)?;
             self.blas_usage.insert(key, params.frame_id);
 
             instances.push(vk::AccelerationStructureInstanceKHR {
@@ -217,9 +218,18 @@ impl AccelerationStructureManager {
         let m = model.transpose();
         vk::TransformMatrixKHR {
             matrix: [
-                m.row(0).x, m.row(0).y, m.row(0).z, m.row(0).w,
-                m.row(1).x, m.row(1).y, m.row(1).z, m.row(1).w,
-                m.row(2).x, m.row(2).y, m.row(2).z, m.row(2).w,
+                m.row(0).x,
+                m.row(0).y,
+                m.row(0).z,
+                m.row(0).w,
+                m.row(1).x,
+                m.row(1).y,
+                m.row(1).z,
+                m.row(1).w,
+                m.row(2).x,
+                m.row(2).y,
+                m.row(2).z,
+                m.row(2).w,
             ],
         }
     }
@@ -383,7 +393,11 @@ impl AccelerationStructure {
             .size(size_info.acceleration_structure_size)
             .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL);
 
-        let handle = unsafe { as_loader.create_acceleration_structure(&create_info, None).expect("Failed to create TLAS handle") };
+        let handle = unsafe {
+            as_loader
+                .create_acceleration_structure(&create_info, None)
+                .expect("Failed to create TLAS handle")
+        };
         let address = unsafe {
             as_loader.get_acceleration_structure_device_address(
                 &vk::AccelerationStructureDeviceAddressInfoKHR::default()

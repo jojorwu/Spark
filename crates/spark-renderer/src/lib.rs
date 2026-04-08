@@ -140,18 +140,12 @@ impl Renderer {
             crate::vulkan::resource_manager::GpuResourceManager::new(&device)?;
         let mut frame_manager = crate::vulkan::frame_manager::FrameManager::new(&device)?;
 
-        let global_layouts = vec![global_descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
-        let global_descriptor_sets = unsafe {
-            device.device.allocate_descriptor_sets(
-                &vk::DescriptorSetAllocateInfo::default()
-                    .descriptor_pool(gpu_resource_manager.descriptor_pool)
-                    .set_layouts(&global_layouts),
-            )?
-        };
-
-        for (i, frame) in frame_manager.frames.iter_mut().enumerate() {
-            frame.global_descriptor_set = global_descriptor_sets[i];
-        }
+        Self::allocate_global_descriptor_sets(
+            &device,
+            &gpu_resource_manager,
+            &mut frame_manager,
+            global_descriptor_set_layout,
+        )?;
 
         let egui_renderer = ui_shaders.map(|(v, f)| {
             EguiRenderer::new(
@@ -208,12 +202,37 @@ impl Renderer {
 
         renderer.init_gbuffer_attachments(gbuffer);
         renderer.init_default_resources();
-        if let Some(ref tex) = renderer.gpu_resource_manager.default_texture {
-            renderer.common_shadow_view = tex.view;
-            renderer.hiz_view = tex.view;
-        }
+        renderer.init_common_views();
 
         Ok(renderer)
+    }
+
+    fn allocate_global_descriptor_sets(
+        device: &VulkanDevice,
+        gpu_resource_manager: &crate::vulkan::resource_manager::GpuResourceManager,
+        frame_manager: &mut crate::vulkan::frame_manager::FrameManager,
+        layout: vk::DescriptorSetLayout,
+    ) -> Result<(), RendererError> {
+        let global_layouts = vec![layout; MAX_FRAMES_IN_FLIGHT];
+        let global_descriptor_sets = unsafe {
+            device.device.allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(gpu_resource_manager.descriptor_pool)
+                    .set_layouts(&global_layouts),
+            )?
+        };
+
+        for (i, frame) in frame_manager.frames.iter_mut().enumerate() {
+            frame.global_descriptor_set = global_descriptor_sets[i];
+        }
+        Ok(())
+    }
+
+    fn init_common_views(&mut self) {
+        if let Some(ref tex) = self.gpu_resource_manager.default_texture {
+            self.common_shadow_view = tex.view;
+            self.hiz_view = tex.view;
+        }
     }
 
     fn create_common_sampler(device: &ash::Device) -> Result<vk::Sampler, vk::Result> {
@@ -233,20 +252,22 @@ impl Renderer {
     }
 
     fn create_dummy_buffer(device: &VulkanDevice) -> Result<Buffer, RendererError> {
-        device.create_buffer(
-            64,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        ).map_err(|_| RendererError::NoSuitableDevice)
+        device
+            .create_buffer(
+                64,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )
+            .map_err(|_| RendererError::NoSuitableDevice)
     }
 
     fn create_pipeline_cache(device: &ash::Device) -> Result<vk::PipelineCache, vk::Result> {
-        unsafe {
-            device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)
-        }
+        unsafe { device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None) }
     }
 
-    fn create_global_ds_layout(device: &ash::Device) -> Result<vk::DescriptorSetLayout, vk::Result> {
+    fn create_global_ds_layout(
+        device: &ash::Device,
+    ) -> Result<vk::DescriptorSetLayout, vk::Result> {
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -342,7 +363,8 @@ impl Renderer {
         if self.gpu_resource_manager.default_texture.is_none() {
             let white_pixel = [255u8, 255, 255, 255];
             let img = image::DynamicImage::ImageRgba8(
-                image::RgbaImage::from_raw(1, 1, white_pixel.to_vec()).unwrap(),
+                image::RgbaImage::from_raw(1, 1, white_pixel.to_vec())
+                    .expect("Failed to create 1x1 white texture"),
             );
             let tex = self.create_texture_from_image(&img);
             self.gpu_resource_manager.default_texture = Some(tex);
@@ -421,7 +443,7 @@ impl Renderer {
             // the pass is now up-to-date with whatever resource it tracked in needs_descriptor_update.
             self.pass_descriptor_versions[current_frame]
                 .lock()
-                .unwrap()
+                .expect("Failed to lock pass descriptor versions")
                 .insert(pass_name, 1);
         }
     }
@@ -612,7 +634,7 @@ impl Renderer {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let needs_new_buffer = {
                 let frame = &self.frame_manager.frames[i];
-                frame.light_buffer.is_none() || frame.light_buffer.as_ref().unwrap().size < sz
+                frame.light_buffer.as_ref().map_or(true, |b| b.size < sz)
             };
 
             if needs_new_buffer {
@@ -669,7 +691,7 @@ impl Renderer {
         let mut buffer = self.frame_manager.frames[frame_idx]
             .transparent_indirect_buffer
             .clone();
-        if buffer.is_none() || buffer.as_ref().unwrap().size < cmd_sz {
+        if buffer.as_ref().map_or(true, |b| b.size < cmd_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .transparent_indirect_buffer
                 .take()
@@ -683,13 +705,16 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].transparent_indirect_buffer = buffer.clone();
         }
-        self.upload_to_buffer(&buffer.expect("Transparent indirect buffer missing"), commands);
+        self.upload_to_buffer(
+            &buffer.expect("Transparent indirect buffer missing"),
+            commands,
+        );
 
         let obj_sz = std::mem::size_of_val(object_data) as u64;
         let mut obj_buffer = self.frame_manager.frames[frame_idx]
             .transparent_object_buffer
             .clone();
-        if obj_buffer.is_none() || obj_buffer.as_ref().unwrap().size < obj_sz {
+        if obj_buffer.as_ref().map_or(true, |b| b.size < obj_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .transparent_object_buffer
                 .take()
@@ -703,7 +728,10 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].transparent_object_buffer = obj_buffer.clone();
         }
-        self.upload_to_buffer(&obj_buffer.expect("Transparent object buffer missing"), object_data);
+        self.upload_to_buffer(
+            &obj_buffer.expect("Transparent object buffer missing"),
+            object_data,
+        );
     }
 
     pub fn update_indirect_buffers(
@@ -721,7 +749,7 @@ impl Renderer {
         let mut buffer = self.frame_manager.frames[frame_idx]
             .indirect_commands_buffer
             .clone();
-        if buffer.is_none() || buffer.as_ref().unwrap().size < cmd_sz {
+        if buffer.as_ref().map_or(true, |b| b.size < cmd_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .indirect_commands_buffer
                 .take()
@@ -741,7 +769,7 @@ impl Renderer {
         let mut obj_buffer = self.frame_manager.frames[frame_idx]
             .object_data_buffer
             .clone();
-        if obj_buffer.is_none() || obj_buffer.as_ref().unwrap().size < obj_sz {
+        if obj_buffer.as_ref().map_or(true, |b| b.size < obj_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .object_data_buffer
                 .take()
@@ -755,7 +783,10 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].object_data_buffer = obj_buffer.clone();
         }
-        self.upload_to_buffer(&obj_buffer.expect("Object data buffer missing"), object_data);
+        self.upload_to_buffer(
+            &obj_buffer.expect("Object data buffer missing"),
+            object_data,
+        );
 
         if self.frame_manager.frames[frame_idx]
             .draw_count_buffer
@@ -875,7 +906,7 @@ impl Renderer {
                 self.device
                     .device
                     .reset_command_pool(pool, vk::CommandPoolResetFlags::empty())
-                    .unwrap();
+                    .expect("Failed to reset thread command pool");
             }
             self.record_command_buffer(image_index, egui_output, delta);
             let s_finished = [render_finished];
@@ -899,7 +930,7 @@ impl Renderer {
             self.device
                 .device
                 .queue_submit(self.device.graphics_queue, &[submit_info], in_flight)
-                .unwrap();
+                .expect("Failed to submit queue");
             let result = self.swapchain.loader.queue_present(
                 self.device.graphics_queue,
                 &vk::PresentInfoKHR::default()
@@ -949,7 +980,7 @@ impl Renderer {
             self.device
                 .device
                 .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
-                .unwrap();
+                .expect("Failed to begin command buffer");
 
             use crate::passes::RenderContext;
 
@@ -981,7 +1012,7 @@ impl Renderer {
             self.device
                 .device
                 .end_command_buffer(command_buffer)
-                .unwrap();
+                .expect("Failed to end command buffer");
         }
     }
 
@@ -1021,11 +1052,23 @@ impl Renderer {
             )?;
             let extent = self.swapchain.extent;
             // Recreate G-Buffer attachments
-            self.recreate_physical_attachment("GBufferHDR", extent, vk::Format::R16G16B16A16_SFLOAT)?;
+            self.recreate_physical_attachment(
+                "GBufferHDR",
+                extent,
+                vk::Format::R16G16B16A16_SFLOAT,
+            )?;
             self.recreate_physical_attachment("GBufferAlbedo", extent, vk::Format::R8G8B8A8_UNORM)?;
-            self.recreate_physical_attachment("GBufferNormal", extent, vk::Format::A2B10G10R10_UNORM_PACK32)?;
+            self.recreate_physical_attachment(
+                "GBufferNormal",
+                extent,
+                vk::Format::A2B10G10R10_UNORM_PACK32,
+            )?;
             self.recreate_physical_attachment("GBufferPBR", extent, vk::Format::R8G8B8A8_UNORM)?;
-            self.recreate_physical_attachment("GBufferVelocity", extent, vk::Format::R16G16_SFLOAT)?;
+            self.recreate_physical_attachment(
+                "GBufferVelocity",
+                extent,
+                vk::Format::R16G16_SFLOAT,
+            )?;
             self.recreate_physical_attachment("GBufferDepth", extent, self.device.depth_format)?;
 
             if self.viewport_attachment.is_some() {
@@ -1070,23 +1113,34 @@ impl Renderer {
         let frame_idx = self.frame_manager.current_frame;
         self.ensure_staging_buffer_capacity(frame_idx, size);
 
-        let staging = self.frame_manager.frames[frame_idx].texture_staging_buffer.as_ref().expect("Staging buffer missing after ensure");
+        let staging = self.frame_manager.frames[frame_idx]
+            .texture_staging_buffer
+            .as_ref()
+            .expect("Staging buffer missing after ensure");
         unsafe {
             std::ptr::copy_nonoverlapping(pixels.as_ptr(), staging.ptr as *mut u8, pixels.len());
         }
 
-        let (image, allocation) = self.create_image_basic(&crate::vulkan::device::ImageCreateParams {
-            width: w,
-            height: h,
-            mip_levels: mip,
-            format: vk::Format::R8G8B8A8_SRGB,
-            tiling: vk::ImageTiling::OPTIMAL,
-            usage: vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-            properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            samples: vk::SampleCountFlags::TYPE_1,
-        });
+        let (image, allocation) =
+            self.create_image_basic(&crate::vulkan::device::ImageCreateParams {
+                width: w,
+                height: h,
+                mip_levels: mip,
+                format: vk::Format::R8G8B8A8_SRGB,
+                tiling: vk::ImageTiling::OPTIMAL,
+                usage: vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST
+                    | vk::ImageUsageFlags::SAMPLED,
+                properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                samples: vk::SampleCountFlags::TYPE_1,
+            });
 
-        self.transition_image_layout_basic(image, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, mip);
+        self.transition_image_layout_basic(
+            image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            mip,
+        );
 
         let cb = self.begin_single_time_commands();
         let region = vk::BufferImageCopy::default()
@@ -1096,10 +1150,20 @@ impl Renderer {
                 base_array_layer: 0,
                 layer_count: 1,
             })
-            .image_extent(vk::Extent3D { width: w, height: h, depth: 1 });
+            .image_extent(vk::Extent3D {
+                width: w,
+                height: h,
+                depth: 1,
+            });
 
         unsafe {
-            self.device.device.cmd_copy_buffer_to_image(cb, staging.handle, image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
+            self.device.device.cmd_copy_buffer_to_image(
+                cb,
+                staging.handle,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
         }
         self.end_single_time_commands(cb);
 
@@ -1108,7 +1172,12 @@ impl Renderer {
         let sampler = self.create_texture_sampler(mip);
 
         let bindless_index = self.gpu_resource_manager.bindless.allocate_index();
-        self.gpu_resource_manager.bindless.update_texture(&self.device.device, bindless_index, view, sampler);
+        self.gpu_resource_manager.bindless.update_texture(
+            &self.device.device,
+            bindless_index,
+            view,
+            sampler,
+        );
 
         Texture {
             image,
@@ -1123,11 +1192,16 @@ impl Renderer {
     fn ensure_staging_buffer_capacity(&mut self, frame_idx: usize, sz: u64) {
         let needs_new = {
             let f = &self.frame_manager.frames[frame_idx];
-            f.texture_staging_buffer.as_ref().is_none_or(|b| b.size < sz)
+            f.texture_staging_buffer
+                .as_ref()
+                .is_none_or(|b| b.size < sz)
         };
 
         if needs_new {
-            if let Some(old) = self.frame_manager.frames[frame_idx].texture_staging_buffer.take() {
+            if let Some(old) = self.frame_manager.frames[frame_idx]
+                .texture_staging_buffer
+                .take()
+            {
                 self.device.destroy_buffer(old);
             }
             let b = self.create_buffer(
@@ -1153,7 +1227,12 @@ impl Renderer {
             self.device.device.destroy_image_view(t.view, None);
             self.device.device.destroy_image(t.image, None);
             if let Some(alloc) = t.allocation.take() {
-                self.device.allocator.lock().unwrap().free(alloc).unwrap();
+                self.device
+                    .allocator
+                    .lock()
+                    .expect("Failed to lock allocator")
+                    .free(alloc)
+                    .expect("Failed to free texture allocation");
             }
         }
     }
@@ -1191,7 +1270,7 @@ impl Renderer {
                         .max_lod(mip as f32),
                     None,
                 )
-                .unwrap()
+                .expect("Failed to create texture sampler")
         }
     }
 
@@ -1476,7 +1555,8 @@ impl Renderer {
         asset_manager: &impl RenderableAssetManager,
     ) -> u32 {
         let extent = self.get_extent();
-        let (_view_matrix, projection_matrix, frustum) = self.calculate_view_constants(scene, extent);
+        let (_view_matrix, projection_matrix, frustum) =
+            self.calculate_view_constants(scene, extent);
 
         let mut packet = scene.collect_frame_packet(frustum.as_ref(), asset_manager);
         packet.projection_matrix = projection_matrix;
@@ -1500,12 +1580,20 @@ impl Renderer {
         &mut self,
         scene: &impl RenderableScene,
         extent: vk::Extent2D,
-    ) -> (spark_math::Mat4, spark_math::Mat4, Option<spark_math::Frustum>) {
+    ) -> (
+        spark_math::Mat4,
+        spark_math::Mat4,
+        Option<spark_math::Frustum>,
+    ) {
         if let Some((view, proj, near, far)) = scene.get_active_camera_matrices(extent) {
             self.current_znear = near;
             self.current_zfar = far;
             let camera_matrix = proj * view;
-            return (view, proj, Some(spark_math::Frustum::from_matrix(camera_matrix)));
+            return (
+                view,
+                proj,
+                Some(spark_math::Frustum::from_matrix(camera_matrix)),
+            );
         }
         (spark_math::Mat4::IDENTITY, spark_math::Mat4::IDENTITY, None)
     }
@@ -1541,7 +1629,8 @@ impl Renderer {
         for i in 0..self.render_graph.passes.len() {
             if self.render_graph.passes[i].pass.is_enabled(self) {
                 // We use a little unsafe here because we know prepare doesn't mutate the pass list itself
-                let pass_ptr = &self.render_graph.passes[i].pass as *const Box<dyn crate::passes::RenderPass>;
+                let pass_ptr =
+                    &self.render_graph.passes[i].pass as *const Box<dyn crate::passes::RenderPass>;
                 unsafe {
                     (*pass_ptr).prepare(self, cf);
                 }
@@ -1566,8 +1655,14 @@ impl Renderer {
             let (icb, odb) = {
                 let frame = &self.frame_manager.frames[frame_idx];
                 (
-                    frame.indirect_commands_buffer.clone().expect("Indirect commands buffer missing"),
-                    frame.object_data_buffer.clone().expect("Object data buffer missing"),
+                    frame
+                        .indirect_commands_buffer
+                        .clone()
+                        .expect("Indirect commands buffer missing"),
+                    frame
+                        .object_data_buffer
+                        .clone()
+                        .expect("Object data buffer missing"),
                 )
             };
 
@@ -1587,8 +1682,14 @@ impl Renderer {
             let (ticb, todb) = {
                 let frame = &self.frame_manager.frames[frame_idx];
                 (
-                    frame.transparent_indirect_buffer.clone().expect("Transparent indirect buffer missing"),
-                    frame.transparent_object_buffer.clone().expect("Transparent object buffer missing"),
+                    frame
+                        .transparent_indirect_buffer
+                        .clone()
+                        .expect("Transparent indirect buffer missing"),
+                    frame
+                        .transparent_object_buffer
+                        .clone()
+                        .expect("Transparent object buffer missing"),
                 )
             };
 
@@ -1997,7 +2098,10 @@ impl Drop for Renderer {
                 .device
                 .destroy_descriptor_set_layout(self.global_descriptor_set_layout, None);
 
-            self.as_manager.lock().unwrap().cleanup(&self.device);
+            self.as_manager
+                .lock()
+                .expect("Failed to lock AS manager during cleanup")
+                .cleanup(&self.device);
 
             self.device
                 .device

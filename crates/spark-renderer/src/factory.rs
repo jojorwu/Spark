@@ -57,28 +57,66 @@ impl Renderer {
         // 1. Initialize Base Infrastructure
         let hiz_pass = self.init_hiz_pass(&shaders)?;
         let clustered_pass = self.init_clustered_pass(&shaders)?;
-        let culling_pass = crate::passes::culling::CullingPass::new(&self.device.device, pool, &shaders.culling, layout)?;
+        let culling_pass = crate::passes::culling::CullingPass::new(
+            &self.device.device,
+            pool,
+            &shaders.culling,
+            layout,
+        )?;
         let shadow_pass = self.init_shadow_pass(&shaders, cache)?;
         let gbuffer_pass = crate::passes::gbuffer::GBufferPass::new();
         let as_build_pass = crate::passes::as_build::AccelerationStructurePass::new();
 
         // 2. Initialize Lighting and Global Effects
         let ssao_pass = self.init_ssao_pass(&shaders, cache, extent, pool)?;
-        let lighting_pass = self.init_lighting_pass(&shaders, cache, extent, pool, layout, bindless_layout, msaa)?;
-        let grid_pass = crate::passes::grid::GridPass::new(&self.device.device, cache, &shaders.grid_vert, &shaders.grid_frag, layout, vk::Format::R16G16B16A16_SFLOAT)?;
-        let volumetric_pass = crate::passes::volumetric::VolumetricPass::new(self, &shaders.volumetric)?;
+        let lighting_pass =
+            self.init_lighting_pass(&shaders, cache, extent, pool, layout, bindless_layout, msaa)?;
+        let grid_pass = crate::passes::grid::GridPass::new(
+            &self.device.device,
+            cache,
+            &shaders.grid_vert,
+            &shaders.grid_frag,
+            layout,
+            vk::Format::R16G16B16A16_SFLOAT,
+        )?;
+        let volumetric_pass =
+            crate::passes::volumetric::VolumetricPass::new(self, &shaders.volumetric)?;
         let ssr_pass = crate::passes::ssr::SSRPass::new(self, &shaders.ssr_comp)?;
-        let luminance_pass = crate::passes::luminance::LuminancePass::new(self, &shaders.luminance)?;
+        let luminance_pass =
+            crate::passes::luminance::LuminancePass::new(self, &shaders.luminance)?;
         let dof_pass = crate::passes::dof::DoFPass::new(self, &shaders.dof)?;
-        let point_shadow_pass = crate::passes::point_shadow::PointShadowPass::new(self, &shaders.point_shadow_vert, &shaders.point_shadow_frag)?;
+        let point_shadow_pass = crate::passes::point_shadow::PointShadowPass::new(
+            self,
+            &shaders.point_shadow_vert,
+            &shaders.point_shadow_frag,
+        )?;
         let ssgi_pass = crate::passes::ssgi::SSGIPass::new(self, &shaders.ssgi)?;
-        let rt_pass = crate::passes::rt::RayTracingPass::new(self, &shaders.rgen, &shaders.rmiss, &shaders.rchit)?;
-        let forward_pass = crate::passes::forward::ForwardPass::new(self, &shaders.forward_vert, &shaders.forward_frag)?;
-        let particle_pass = crate::passes::particle::ParticlePass::new(self, &shaders.particle_comp, &shaders.particle_vert, &shaders.particle_frag)?;
-        let sprite_pass = crate::passes::sprite::SpritePass::new(self, &shaders.sprite_vert, &shaders.sprite_frag)?;
+        let rt_pass = crate::passes::rt::RayTracingPass::new(
+            self,
+            &shaders.rgen,
+            &shaders.rmiss,
+            &shaders.rchit,
+        )?;
+        let forward_pass = crate::passes::forward::ForwardPass::new(
+            self,
+            &shaders.forward_vert,
+            &shaders.forward_frag,
+        )?;
+        let particle_pass = crate::passes::particle::ParticlePass::new(
+            self,
+            &shaders.particle_comp,
+            &shaders.particle_vert,
+            &shaders.particle_frag,
+        )?;
+        let sprite_pass = crate::passes::sprite::SpritePass::new(
+            self,
+            &shaders.sprite_vert,
+            &shaders.sprite_frag,
+        )?;
 
         // 3. Initialize Post-Processing
-        let taa_pass = crate::passes::taa::TAAPass::new(self, &shaders.taa_frag, &shaders.taa_vert).map_err(|_| RendererError::NoSuitableDevice)?;
+        let taa_pass = crate::passes::taa::TAAPass::new(self, &shaders.taa_frag, &shaders.taa_vert)
+            .map_err(|_| RendererError::NoSuitableDevice)?;
         let post_process_pass = self.init_post_process_pass(&shaders, cache, extent)?;
 
         // 4. Register all passes to the RenderGraph
@@ -154,12 +192,23 @@ impl Renderer {
         self.update_all_descriptor_sets();
 
         // Initialize default pipeline for the renderer
-        self.init_main_pipeline(extent, msaa, layout, bindless_layout, cache, &shaders.gbuffer_vert, &shaders.gbuffer_frag);
+        self.init_main_pipeline(
+            extent,
+            msaa,
+            layout,
+            bindless_layout,
+            cache,
+            &shaders.gbuffer_vert,
+            &shaders.gbuffer_frag,
+        );
 
         Ok(())
     }
 
-    fn init_hiz_pass(&mut self, shaders: &PassShaders) -> Result<crate::passes::hiz::HiZPass, RendererError> {
+    fn init_hiz_pass(
+        &mut self,
+        shaders: &PassShaders,
+    ) -> Result<crate::passes::hiz::HiZPass, RendererError> {
         let extent = self.get_extent();
         let pass = crate::passes::hiz::HiZPass::new(
             &self.device,
@@ -172,15 +221,23 @@ impl Renderer {
         Ok(pass)
     }
 
-    fn init_clustered_pass(&self, shaders: &PassShaders) -> Result<crate::passes::clustered::ClusteredPass, RendererError> {
+    fn init_clustered_pass(
+        &self,
+        shaders: &PassShaders,
+    ) -> Result<crate::passes::clustered::ClusteredPass, RendererError> {
         crate::passes::clustered::ClusteredPass::new(
             self,
             &shaders.cluster_build,
             &shaders.cluster_cull,
-        ).map_err(|_| RendererError::NoSuitableDevice)
+        )
+        .map_err(|_| RendererError::NoSuitableDevice)
     }
 
-    fn init_shadow_pass(&mut self, shaders: &PassShaders, cache: vk::PipelineCache) -> Result<crate::passes::shadow::ShadowPass, RendererError> {
+    fn init_shadow_pass(
+        &mut self,
+        shaders: &PassShaders,
+        cache: vk::PipelineCache,
+    ) -> Result<crate::passes::shadow::ShadowPass, RendererError> {
         let mut pass = crate::passes::shadow::ShadowPass::new(&self.device)
             .map_err(|_| RendererError::NoSuitableDevice)?;
         pass.create_pipeline(
@@ -193,7 +250,13 @@ impl Renderer {
         Ok(pass)
     }
 
-    fn init_ssao_pass(&mut self, shaders: &PassShaders, cache: vk::PipelineCache, extent: vk::Extent2D, pool: vk::DescriptorPool) -> Result<crate::passes::ssao::SSAOPass, RendererError> {
+    fn init_ssao_pass(
+        &mut self,
+        shaders: &PassShaders,
+        cache: vk::PipelineCache,
+        extent: vk::Extent2D,
+        pool: vk::DescriptorPool,
+    ) -> Result<crate::passes::ssao::SSAOPass, RendererError> {
         let mut pass = crate::passes::ssao::SSAOPass::new(self, pool)
             .map_err(|_| RendererError::NoSuitableDevice)?;
         pass.create_pipelines(crate::passes::ssao::SSAOPipelineParams {
@@ -217,8 +280,9 @@ impl Renderer {
         bindless_layout: vk::DescriptorSetLayout,
         msaa: vk::SampleCountFlags,
     ) -> Result<crate::passes::lighting::LightingPass, RendererError> {
-        let mut pass = crate::passes::lighting::LightingPass::new(&self.device.device, pool, layout)
-            .map_err(|_| RendererError::NoSuitableDevice)?;
+        let mut pass =
+            crate::passes::lighting::LightingPass::new(&self.device.device, pool, layout)
+                .map_err(|_| RendererError::NoSuitableDevice)?;
         pass.create_pipeline(crate::passes::lighting::LightingPipelineParams {
             device: &self.device.device,
             pipeline_cache: cache,
@@ -238,19 +302,18 @@ impl Renderer {
         cache: vk::PipelineCache,
         extent: vk::Extent2D,
     ) -> Result<crate::passes::post_process::PostProcessPass, RendererError> {
-        let mut pass = crate::passes::post_process::PostProcessPass::new(self, self.swapchain.format, extent)
-            .map_err(|_| RendererError::NoSuitableDevice)?;
-        pass.create_pipelines(
-            crate::passes::post_process::PostProcessPipelineParams {
-                device: &self.device.device,
-                pipeline_cache: cache,
-                extent,
-                vert_spirv: &shaders.fullscreen_vert,
-                frag_spirv: &shaders.tonemap_frag,
-                downsample_spirv: &shaders.bloom_downsample,
-                upsample_spirv: &shaders.bloom_upsample,
-            },
-        );
+        let mut pass =
+            crate::passes::post_process::PostProcessPass::new(self, self.swapchain.format, extent)
+                .map_err(|_| RendererError::NoSuitableDevice)?;
+        pass.create_pipelines(crate::passes::post_process::PostProcessPipelineParams {
+            device: &self.device.device,
+            pipeline_cache: cache,
+            extent,
+            vert_spirv: &shaders.fullscreen_vert,
+            frag_spirv: &shaders.tonemap_frag,
+            downsample_spirv: &shaders.bloom_downsample,
+            upsample_spirv: &shaders.bloom_upsample,
+        });
         Ok(pass)
     }
 

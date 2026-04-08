@@ -89,13 +89,19 @@ impl CommandQueue {
 
     /// Pushes a new command onto the queue.
     pub fn push<C: Command + 'static>(&self, command: C) {
-        self.commands.lock().expect("Failed to lock CommandQueue for push").push(Box::new(command));
+        self.commands
+            .lock()
+            .expect("Failed to lock CommandQueue for push")
+            .push(Box::new(command));
     }
 
     /// Executes all deferred commands and clears the queue.
     pub fn execute_all(&self, scene: &mut Scene, resource_manager: &mut ResourceManager) {
         let mut commands = {
-            let mut guard = self.commands.lock().expect("Failed to lock CommandQueue for execution");
+            let mut guard = self
+                .commands
+                .lock()
+                .expect("Failed to lock CommandQueue for execution");
             std::mem::take(&mut *guard)
         };
         for mut command in commands.drain(..) {

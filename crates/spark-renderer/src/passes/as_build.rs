@@ -36,7 +36,10 @@ impl RenderPass for AccelerationStructurePass {
                     renderer.gpu_resource_manager.global_vertex_buffer.as_ref(),
                     renderer.gpu_resource_manager.global_index_buffer.as_ref(),
                 ) {
-                    let mut as_manager = renderer.as_manager.lock().unwrap();
+                    let mut as_manager = renderer
+                        .as_manager
+                        .lock()
+                        .expect("Failed to lock AS manager");
 
                     let params = crate::vulkan::as_manager::TlasBuildParams {
                         device: &renderer.device,

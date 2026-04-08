@@ -100,7 +100,9 @@ impl GBufferPass {
                         .load_op(vk::AttachmentLoadOp::CLEAR)
                         .store_op(vk::AttachmentStoreOp::STORE)
                         .clear_value(vk::ClearValue {
-                            color: vk::ClearColorValue { float32: clear_color },
+                            color: vk::ClearColorValue {
+                                float32: clear_color,
+                            },
                         })
                 };
 

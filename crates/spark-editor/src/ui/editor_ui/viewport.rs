@@ -193,7 +193,10 @@ impl EditorUI {
 
                     if let Some(selected_key) = self.selected_node {
                         let (view, projection, model, parent_key, locked) = {
-                            let node = scene.nodes.get(selected_key).unwrap();
+                            let node = scene
+                                .nodes
+                                .get(selected_key)
+                                .expect("Selected node missing from scene");
                             let view = scene.last_view_matrix;
 
                             let mut fov = 45.0f32.to_radians();
@@ -266,8 +269,13 @@ impl EditorUI {
                                 return;
                             }
                             if self.initial_gizmo_transform.is_none() {
-                                self.initial_gizmo_transform =
-                                    Some(scene.nodes.get(selected_key).unwrap().local_transform);
+                                self.initial_gizmo_transform = Some(
+                                    scene
+                                        .nodes
+                                        .get(selected_key)
+                                        .expect("Selected node missing from scene")
+                                        .local_transform,
+                                );
                             }
 
                             let m = response.transform();

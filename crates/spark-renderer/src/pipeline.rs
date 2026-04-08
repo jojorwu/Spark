@@ -45,25 +45,8 @@ impl Pipeline {
         let ds_layout = Self::create_pass_ds_layout(device, params);
         let layout = Self::create_pipeline_layout(device, params, ds_layout);
 
-        let mut color_blend_attachments = Vec::new();
-        let color_formats = if !params.is_deferred_lighting {
-            vec![
-                vk::Format::R8G8B8A8_UNORM,
-                vk::Format::A2B10G10R10_UNORM_PACK32,
-                vk::Format::R8G8B8A8_UNORM,
-                vk::Format::R16G16_SFLOAT,
-            ]
-        } else {
-            vec![vk::Format::R16G16B16A16_SFLOAT]
-        };
-
-        for _ in 0..color_formats.len() {
-            color_blend_attachments.push(
-                vk::PipelineColorBlendAttachmentState::default()
-                    .color_write_mask(vk::ColorComponentFlags::RGBA)
-                    .blend_enable(false),
-            );
-        }
+        let color_formats = Self::get_color_formats(params);
+        let color_blend_attachments = Self::create_color_blend_attachments(color_formats.len());
 
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
@@ -73,26 +56,36 @@ impl Pipeline {
             .scissor_count(1);
 
         let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
-            .cull_mode(if params.is_deferred_lighting { vk::CullModeFlags::NONE } else { vk::CullModeFlags::BACK })
+            .cull_mode(if params.is_deferred_lighting {
+                vk::CullModeFlags::NONE
+            } else {
+                vk::CullModeFlags::BACK
+            })
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .line_width(1.0);
 
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(if params.is_deferred_lighting { vk::SampleCountFlags::TYPE_1 } else { params.msaa_samples });
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(
+            if params.is_deferred_lighting {
+                vk::SampleCountFlags::TYPE_1
+            } else {
+                params.msaa_samples
+            },
+        );
 
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(!params.is_deferred_lighting)
             .depth_write_enable(!params.is_deferred_lighting)
             .depth_compare_op(vk::CompareOp::LESS);
 
-        let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
-            .attachments(&color_blend_attachments);
+        let color_blending =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&color_blend_attachments);
 
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic_state = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let dynamic_state =
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-        let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(&color_formats);
+        let mut rendering_info =
+            vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
         if !params.is_deferred_lighting {
             rendering_info = rendering_info.depth_attachment_format(vk::Format::D32_SFLOAT);
         }
@@ -128,14 +121,43 @@ impl Pipeline {
         }
     }
 
-    fn create_shader_modules(device: &Device, params: &PipelineCreateParams) -> (vk::ShaderModule, vk::ShaderModule) {
+    fn get_color_formats(params: &PipelineCreateParams) -> Vec<vk::Format> {
+        if !params.is_deferred_lighting {
+            vec![
+                vk::Format::R8G8B8A8_UNORM,
+                vk::Format::A2B10G10R10_UNORM_PACK32,
+                vk::Format::R8G8B8A8_UNORM,
+                vk::Format::R16G16_SFLOAT,
+            ]
+        } else {
+            vec![vk::Format::R16G16B16A16_SFLOAT]
+        }
+    }
+
+    fn create_color_blend_attachments(count: usize) -> Vec<vk::PipelineColorBlendAttachmentState> {
+        (0..count)
+            .map(|_| {
+                vk::PipelineColorBlendAttachmentState::default()
+                    .color_write_mask(vk::ColorComponentFlags::RGBA)
+                    .blend_enable(false)
+            })
+            .collect()
+    }
+
+    fn create_shader_modules(
+        device: &Device,
+        params: &PipelineCreateParams,
+    ) -> (vk::ShaderModule, vk::ShaderModule) {
         (
             Self::create_shader_module(device, params.vert_shader_code),
             Self::create_shader_module(device, params.frag_shader_code),
         )
     }
 
-    fn create_pass_ds_layout(device: &Device, params: &PipelineCreateParams) -> vk::DescriptorSetLayout {
+    fn create_pass_ds_layout(
+        device: &Device,
+        params: &PipelineCreateParams,
+    ) -> vk::DescriptorSetLayout {
         let mut bindings = Vec::new();
         if params.is_deferred_lighting {
             for i in 0..params.input_attachments_count {
@@ -148,25 +170,61 @@ impl Pipeline {
                 );
             }
             let next = params.input_attachments_count;
-            bindings.push(vk::DescriptorSetLayoutBinding::default().binding(next).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::FRAGMENT));
-            bindings.push(vk::DescriptorSetLayoutBinding::default().binding(next + 1).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::FRAGMENT));
-            bindings.push(vk::DescriptorSetLayoutBinding::default().binding(next + 2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT));
+            bindings.push(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(next)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            );
+            bindings.push(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(next + 1)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            );
+            bindings.push(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(next + 2)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+            );
         }
 
         unsafe {
-            device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings), None)
+            device
+                .create_descriptor_set_layout(
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+                    None,
+                )
                 .expect("Failed to create pass descriptor set layout")
         }
     }
 
-    fn create_pipeline_layout(device: &Device, params: &PipelineCreateParams, ds_layout: vk::DescriptorSetLayout) -> vk::PipelineLayout {
+    fn create_pipeline_layout(
+        device: &Device,
+        params: &PipelineCreateParams,
+        ds_layout: vk::DescriptorSetLayout,
+    ) -> vk::PipelineLayout {
         let push_ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .size(128)];
-        let layouts = [params.global_ds_layout, params.bindless_ds_layout, ds_layout];
+        let layouts = [
+            params.global_ds_layout,
+            params.bindless_ds_layout,
+            ds_layout,
+        ];
 
         unsafe {
-            device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts).push_constant_ranges(&push_ranges), None)
+            device
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default()
+                        .set_layouts(&layouts)
+                        .push_constant_ranges(&push_ranges),
+                    None,
+                )
                 .expect("Failed to create pipeline layout")
         }
     }

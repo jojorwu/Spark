@@ -537,7 +537,10 @@ impl Engine {
             ) -> (bool, Option<(egui::FullOutput, egui::Context)>)
             + 'static,
     {
-        let event_loop = self.event_loop.take().expect("Engine event loop already taken or not initialized");
+        let event_loop = self
+            .event_loop
+            .take()
+            .expect("Engine event loop already taken or not initialized");
 
         {
             let mut init_ctx = InitContext {

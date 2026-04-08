@@ -167,10 +167,11 @@ impl RenderPass for ForwardPass {
 
     fn destroy(&mut self, renderer: &mut Renderer) {
         unsafe {
-            renderer
-                .device
-                .device
-                .destroy_pipeline(self.pipeline.unwrap(), None);
+            renderer.device.device.destroy_pipeline(
+                self.pipeline
+                    .expect("Forward pipeline missing during cleanup"),
+                None,
+            );
             renderer
                 .device
                 .device
@@ -208,7 +209,8 @@ impl ForwardPass {
 
         let vert_module = crate::pipeline::Pipeline::create_shader_module(device, vert_spirv);
         let frag_module = crate::pipeline::Pipeline::create_shader_module(device, frag_spirv);
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
 
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -277,7 +279,7 @@ impl ForwardPass {
         let pipeline = unsafe {
             device
                 .create_graphics_pipelines(renderer.pipeline_cache, &[info], None)
-                .unwrap()[0]
+                .expect("Failed to create forward graphics pipeline")[0]
         };
 
         unsafe {

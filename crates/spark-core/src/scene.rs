@@ -565,7 +565,9 @@ impl Scene {
     pub fn update_all_transforms(&mut self) {
         use rayon::prelude::*;
 
-        let current_version = self.nodes_version.load(std::sync::atomic::Ordering::Acquire);
+        let current_version = self
+            .nodes_version
+            .load(std::sync::atomic::Ordering::Acquire);
         if current_version != self.layers_version {
             let mut layers = Vec::new();
             let mut current_layer = vec![self.root];
@@ -595,9 +597,13 @@ impl Scene {
                 // Parallel access within a layer is safe because each node key in the layer is unique,
                 // ensuring disjoint mutable access to node data.
                 let nodes = &*(nodes_ptr as *const SlotMap<NodeKey, Node>);
-                let node = nodes.get(key).expect("Node not found in SlotMap during transform update");
+                let node = nodes
+                    .get(key)
+                    .expect("Node not found in SlotMap during transform update");
                 let (parent_global, parent_dirty) = if let Some(parent_key) = node.parent {
-                    let p = nodes.get(parent_key).expect("Parent node not found during transform update");
+                    let p = nodes
+                        .get(parent_key)
+                        .expect("Parent node not found during transform update");
                     (p.global_transform, p.is_dirty)
                 } else {
                     (Mat4::IDENTITY, false)
@@ -850,24 +856,26 @@ impl Scene {
 
         lights
             .into_par_iter()
-            .map(|(t, light_type, color, intensity, range, spot_inner, spot_outer)| {
-                let position = spark_math::Vec3::new(t.w_axis.x, t.w_axis.y, t.w_axis.z);
-                let direction =
-                    -spark_math::Vec3::new(t.z_axis.x, t.z_axis.y, t.z_axis.z).normalize();
-                spark_renderer::resource::LightDraw {
-                    position,
-                    direction,
-                    color,
-                    intensity,
-                    range,
-                    light_type: match light_type {
-                        LightType::Directional => 0,
-                        LightType::Point => 1,
-                        LightType::Spot => 2,
-                    },
-                    spot_angles: [spot_inner.cos(), spot_outer.cos()],
-                }
-            })
+            .map(
+                |(t, light_type, color, intensity, range, spot_inner, spot_outer)| {
+                    let position = spark_math::Vec3::new(t.w_axis.x, t.w_axis.y, t.w_axis.z);
+                    let direction =
+                        -spark_math::Vec3::new(t.z_axis.x, t.z_axis.y, t.z_axis.z).normalize();
+                    spark_renderer::resource::LightDraw {
+                        position,
+                        direction,
+                        color,
+                        intensity,
+                        range,
+                        light_type: match light_type {
+                            LightType::Directional => 0,
+                            LightType::Point => 1,
+                            LightType::Spot => 2,
+                        },
+                        spot_angles: [spot_inner.cos(), spot_outer.cos()],
+                    }
+                },
+            )
             .collect()
     }
 

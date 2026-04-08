@@ -214,7 +214,8 @@ impl SSRPass {
         };
 
         let module = crate::pipeline::Pipeline::create_shader_module(device, shader_spirv);
-        let entry_point = std::ffi::CString::new("main").expect("Failed to create entry point name");
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create entry point name");
         let stage_info = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(module)

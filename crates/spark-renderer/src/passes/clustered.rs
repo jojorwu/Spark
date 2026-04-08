@@ -54,8 +54,14 @@ impl RenderPass for ClusteredPass {
             renderer.swapchain.extent.height as f32,
         ];
 
-        let mut last_p = self.last_proj.lock().expect("Failed to lock last projection in ClusteredPass");
-        let mut last_s = self.last_screen_size.lock().expect("Failed to lock last screen size in ClusteredPass");
+        let mut last_p = self
+            .last_proj
+            .lock()
+            .expect("Failed to lock last projection in ClusteredPass");
+        let mut last_s = self
+            .last_screen_size
+            .lock()
+            .expect("Failed to lock last screen size in ClusteredPass");
 
         if *last_p != proj || *last_s != screen_size {
             self.record_build_commands(
@@ -226,7 +232,8 @@ impl ClusteredPass {
             )?
         };
 
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
 
         let build_pipeline = unsafe {
             device

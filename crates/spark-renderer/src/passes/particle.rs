@@ -228,7 +228,8 @@ impl ParticlePass {
 
         let vert_module = crate::pipeline::Pipeline::create_shader_module(device, vert_spirv);
         let frag_module = crate::pipeline::Pipeline::create_shader_module(device, frag_spirv);
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
 
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -288,7 +289,7 @@ impl ParticlePass {
         let graphics_pipeline = unsafe {
             device
                 .create_graphics_pipelines(renderer.pipeline_cache, &[info], None)
-                .unwrap()[0]
+                .expect("Failed to create particle graphics pipeline")[0]
         };
 
         unsafe {

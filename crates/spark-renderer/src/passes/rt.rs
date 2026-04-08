@@ -406,7 +406,8 @@ impl RayTracingPass {
         let rmiss_module = crate::pipeline::Pipeline::create_shader_module(device, rmiss_spirv);
         let rchit_module = crate::pipeline::Pipeline::create_shader_module(device, rchit_spirv);
 
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::RAYGEN_KHR)

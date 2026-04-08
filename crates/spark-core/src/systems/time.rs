@@ -19,8 +19,12 @@ impl System for TimeSystem {
     }
     fn update(&mut self, ctx: &FrameContext) {
         if let Some(time_res) = ctx.get_resource::<Time>() {
-            let mut time = time_res.write().unwrap();
-            let time = time.downcast_mut::<Time>().unwrap();
+            let mut time = time_res
+                .write()
+                .expect("Failed to lock time resource for writing");
+            let time = time
+                .downcast_mut::<Time>()
+                .expect("Failed to downcast time resource");
             time.delta = ctx.delta;
             time.elapsed += ctx.delta;
         }

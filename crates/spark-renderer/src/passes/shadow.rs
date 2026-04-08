@@ -75,14 +75,19 @@ impl RenderPass for ShadowPass {
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            if let Some(alloc) = self.allocation.lock().unwrap().take() {
+            if let Some(alloc) = self
+                .allocation
+                .lock()
+                .expect("Failed to lock shadow allocation")
+                .take()
+            {
                 renderer
                     .device
                     .allocator
                     .lock()
-                    .unwrap()
+                    .expect("Failed to lock allocator")
                     .free(alloc)
-                    .unwrap();
+                    .expect("Failed to free shadow allocation");
             }
         }
     }
@@ -117,7 +122,7 @@ impl ShadowPass {
         let allocation = device_wrapper
             .allocator
             .lock()
-            .unwrap()
+            .expect("Failed to lock allocator")
             .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
                 name: "Shadow Map",
                 requirements: reqs,
@@ -204,7 +209,8 @@ impl ShadowPass {
     ) {
         let vert_module = Pipeline::create_shader_module(device, vert_spirv);
         let frag_module = Pipeline::create_shader_module(device, frag_spirv);
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::VERTEX)

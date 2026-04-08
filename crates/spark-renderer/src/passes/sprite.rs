@@ -64,7 +64,7 @@ impl RenderPass for SpritePass {
 
         let sprite_view = renderer
             .get_pass_resource_view("SpritePass", "SpriteColor", cf)
-            .unwrap();
+            .expect("Failed to get SpriteColor view");
 
         unsafe {
             let color_attachment = vk::RenderingAttachmentInfo::default()
@@ -242,7 +242,8 @@ impl SpritePass {
 
         let vert_module = crate::pipeline::Pipeline::create_shader_module(device, vert_spirv);
         let frag_module = crate::pipeline::Pipeline::create_shader_module(device, frag_spirv);
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
 
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -309,7 +310,7 @@ impl SpritePass {
         let pipeline = unsafe {
             device
                 .create_graphics_pipelines(renderer.pipeline_cache, &[info], None)
-                .unwrap()[0]
+                .expect("Failed to create sprite graphics pipeline")[0]
         };
 
         unsafe {
