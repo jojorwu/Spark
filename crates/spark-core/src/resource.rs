@@ -167,13 +167,18 @@ impl ResourceManager {
         path: &Path,
         renderer: &mut spark_renderer::Renderer,
         asset_manager: &mut crate::asset::AssetManager,
-    ) -> Result<Handle<spark_renderer::vulkan::texture::Texture>, Box<dyn std::error::Error>> {
+    ) -> Result<Handle<spark_renderer::vulkan::texture::Texture>, spark_renderer::error::RendererError> {
         if let Some(&handle) = asset_manager.texture_path_map.get(path) {
             return Ok(handle);
         }
 
         log::debug!("Loading texture from disk: {:?}", path);
-        let img = image::open(path)?;
+        let img = image::open(path).map_err(|e| {
+            spark_renderer::error::RendererError::ResourceLoading(format!(
+                "Failed to open texture {:?}: {}",
+                path, e
+            ))
+        })?;
 
         let texture = renderer.create_texture_from_image(&img);
         let handle = self.gpu_textures.add(texture);

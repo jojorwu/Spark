@@ -62,10 +62,10 @@ impl RenderPass for SSAOPass {
 
     fn bindings(&self) -> Vec<super::ResourceBinding> {
         vec![
-            super::ResourceBinding::SampledImage(0, "GBufferNormal".to_string()),
-            super::ResourceBinding::SampledImage(1, "GBufferDepth".to_string()),
-            super::ResourceBinding::SampledImage(2, "Noise".to_string()),
-            super::ResourceBinding::UniformBuffer(3, "SSAOParams".to_string()),
+            super::ResourceBinding::SampledImage(0, "GBufferNormal"),
+            super::ResourceBinding::SampledImage(1, "GBufferDepth"),
+            super::ResourceBinding::SampledImage(2, "Noise"),
+            super::ResourceBinding::UniformBuffer(3, "SSAOParams"),
         ]
     }
     fn dependencies(&self) -> Vec<&'static str> {
@@ -77,10 +77,10 @@ impl RenderPass for SSAOPass {
     fn outputs(&self) -> Vec<&'static str> {
         vec!["SSAO", "SSAO_Intermediary"]
     }
-    fn declared_resources(&self) -> HashMap<String, super::ResourceDesc> {
+    fn declared_resources(&self) -> HashMap<&'static str, super::ResourceDesc> {
         let mut res = HashMap::new();
         res.insert(
-            "SSAO".to_string(),
+            "SSAO",
             super::ResourceDesc::Image(super::AttachmentDesc {
                 format: vk::Format::R8_UNORM,
                 usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
@@ -88,7 +88,7 @@ impl RenderPass for SSAOPass {
             }),
         );
         res.insert(
-            "SSAO_Intermediary".to_string(),
+            "SSAO_Intermediary",
             super::ResourceDesc::Image(super::AttachmentDesc {
                 format: vk::Format::R8_UNORM,
                 usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
@@ -457,16 +457,9 @@ impl SSAOPass {
         let device = &renderer.device.device;
         unsafe {
             // 1. SSAO Pass
-            let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(ssao_target_view)
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [1.0, 1.0, 1.0, 1.0],
-                    },
-                });
+            let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(ssao_target_view)
+                .with_clear_color([1.0, 1.0, 1.0, 1.0])
+                .build();
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {
@@ -498,16 +491,9 @@ impl SSAOPass {
             // Wait, if I declare both as outputs, I can have them managed?
             // For now let's keep manual barriers if logic is sub-pass.
 
-            let blur_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(blur_target_view)
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [1.0, 1.0, 1.0, 1.0],
-                    },
-                });
+            let blur_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(blur_target_view)
+                .with_clear_color([1.0, 1.0, 1.0, 1.0])
+                .build();
 
             let blur_rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {

@@ -542,55 +542,87 @@ impl Engine {
             .take()
             .expect("Engine event loop already taken or not initialized");
 
-        {
-            let mut init_ctx = InitContext {
-                scene: &mut self.scene,
-                renderer: &mut self.renderer,
-                resource_manager: &mut self.resource_manager,
-                asset_manager: &mut self.asset_manager,
-                resources: &mut self.resources,
-                task_system: &self.task_system,
-            };
-            crate::systems::Scheduler::init(&mut self.system_registry, &mut init_ctx);
-        }
+        self.initialize_scheduler();
 
         event_loop
             .run(move |event, elwt| {
-                let (ui_consumed, egui_output) = ui_callback(
-                    &self.window,
-                    &event,
-                    &mut self.scene,
-                    &mut self.resource_manager,
-                    &mut self.asset_manager,
-                    &mut self.renderer,
-                    &mut self.project,
-                    &mut self.resources,
-                    self.current_fps,
-                );
+                let (ui_consumed, egui_output) = self.process_ui(&mut ui_callback, &event);
                 if ui_consumed {
                     // UI consumed the event
                 }
 
-                match &event {
-                    Event::WindowEvent { event, .. } => {
-                        self.handle_window_event(event, elwt);
-                    }
-                    Event::AboutToWait => {
-                        let now = instant::Instant::now();
-                        let delta = now.duration_since(self.last_frame_time).as_secs_f32();
-                        self.last_frame_time = now;
-                        self.current_fps = 0.9 * self.current_fps + 0.1 * (1.0 / delta.max(0.001));
-
-                        self.on_frame_start(delta, egui_output);
-                    }
-                    _ => (),
-                }
+                self.process_event(&event, elwt, egui_output);
 
                 if elwt.exiting() {
                     self.on_shutdown();
                 }
             })
             .expect("Event loop failed");
+    }
+
+    fn initialize_scheduler(&mut self) {
+        let mut init_ctx = InitContext {
+            scene: &mut self.scene,
+            renderer: &mut self.renderer,
+            resource_manager: &mut self.resource_manager,
+            asset_manager: &mut self.asset_manager,
+            resources: &mut self.resources,
+            task_system: &self.task_system,
+        };
+        crate::systems::Scheduler::init(&mut self.system_registry, &mut init_ctx);
+    }
+
+    fn process_ui<F>(
+        &mut self,
+        ui_callback: &mut F,
+        event: &winit::event::Event<()>,
+    ) -> (bool, Option<(egui::FullOutput, egui::Context)>)
+    where
+        F: FnMut(
+            &winit::window::Window,
+            &winit::event::Event<()>,
+            &mut Scene,
+            &mut ResourceManager,
+            &mut crate::asset::AssetManager,
+            &mut Renderer,
+            &mut Project,
+            &mut crate::resource_container::Resources,
+            f32,
+        ) -> (bool, Option<(egui::FullOutput, egui::Context)>),
+    {
+        ui_callback(
+            &self.window,
+            event,
+            &mut self.scene,
+            &mut self.resource_manager,
+            &mut self.asset_manager,
+            &mut self.renderer,
+            &mut self.project,
+            &mut self.resources,
+            self.current_fps,
+        )
+    }
+
+    fn process_event(
+        &mut self,
+        event: &winit::event::Event<()>,
+        elwt: &winit::event_loop::EventLoopWindowTarget<()>,
+        egui_output: Option<(egui::FullOutput, egui::Context)>,
+    ) {
+        match event {
+            Event::WindowEvent { event, .. } => {
+                self.handle_window_event(event, elwt);
+            }
+            Event::AboutToWait => {
+                let now = instant::Instant::now();
+                let delta = now.duration_since(self.last_frame_time).as_secs_f32();
+                self.last_frame_time = now;
+                self.current_fps = 0.9 * self.current_fps + 0.1 * (1.0 / delta.max(0.001));
+
+                self.on_frame_start(delta, egui_output);
+            }
+            _ => (),
+        }
     }
 
     /// Handles the transition at the start of a frame, including event buffer swapping,

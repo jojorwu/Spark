@@ -21,13 +21,13 @@ impl RenderPass for ShadowPass {
     fn name(&self) -> &str {
         "ShadowPass"
     }
-    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
-        vec![(
-            "ShadowMap".to_string(),
-            vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+    fn gpu_resource_access(&self) -> Vec<super::GpuResourceAccess> {
+        vec![super::GpuResourceAccess {
+            resource_name: "ShadowMap",
+            access_flags: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            stage_flags: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
                 | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-        )]
+        }]
     }
     fn is_enabled(&self, renderer: &Renderer) -> bool {
         renderer.settings.enable_shadows
@@ -35,10 +35,10 @@ impl RenderPass for ShadowPass {
     fn outputs(&self) -> Vec<&'static str> {
         vec!["ShadowMap"]
     }
-    fn declared_resources(&self) -> std::collections::HashMap<String, super::ResourceDesc> {
+    fn declared_resources(&self) -> std::collections::HashMap<&'static str, super::ResourceDesc> {
         let mut res = std::collections::HashMap::new();
         res.insert(
-            "ShadowMap".to_string(),
+            "ShadowMap",
             super::ResourceDesc::Image(super::AttachmentDesc {
                 format: vk::Format::D32_SFLOAT,
                 usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
@@ -348,13 +348,13 @@ impl ShadowPass {
             device.cmd_set_scissor(command_buffer, 0, &[shadow_scissor]);
 
             #[repr(C)]
-            struct PC {
+            struct ShadowPushConstants {
                 lvp: spark_math::Mat4,
                 address: u64,
                 vertex_address: u64,
             }
             let frame = &renderer.frame_manager.frames[renderer.frame_manager.current_frame];
-            let pc = PC {
+            let pc = ShadowPushConstants {
                 lvp,
                 address: frame.object_data_buffer.as_ref().map_or(0, |b| b.address),
                 vertex_address: renderer
@@ -363,8 +363,10 @@ impl ShadowPass {
                     .as_ref()
                     .map_or(0, |b| b.address),
             };
-            let pc_bytes =
-                std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+            let pc_bytes = std::slice::from_raw_parts(
+                &pc as *const _ as *const u8,
+                std::mem::size_of::<ShadowPushConstants>(),
+            );
 
             device.cmd_push_constants(
                 command_buffer,

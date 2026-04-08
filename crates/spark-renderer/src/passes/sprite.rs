@@ -49,12 +49,12 @@ impl RenderPass for SpritePass {
         vec!["SpriteColor"]
     }
 
-    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
-        vec![(
-            "SpriteColor".to_string(),
-            vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-        )]
+    fn gpu_resource_access(&self) -> Vec<super::GpuResourceAccess> {
+        vec![super::GpuResourceAccess {
+            resource_name: "SpriteColor",
+            access_flags: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            stage_flags: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        }]
     }
 
     fn record_commands(&self, ctx: &RenderContext) {
@@ -67,16 +67,9 @@ impl RenderPass for SpritePass {
             .expect("Failed to get SpriteColor view");
 
         unsafe {
-            let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(sprite_view)
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [0.0, 0.0, 0.0, 0.0],
-                    },
-                });
+            let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(sprite_view)
+                .with_clear_color([0.0, 0.0, 0.0, 0.0])
+                .build();
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {

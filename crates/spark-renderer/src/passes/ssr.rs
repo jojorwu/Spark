@@ -28,10 +28,10 @@ impl RenderPass for SSRPass {
         vec!["SSR"]
     }
 
-    fn declared_resources(&self) -> std::collections::HashMap<String, super::ResourceDesc> {
+    fn declared_resources(&self) -> std::collections::HashMap<&'static str, super::ResourceDesc> {
         let mut res = std::collections::HashMap::new();
         res.insert(
-            "SSR".to_string(),
+            "SSR",
             super::ResourceDesc::Image(super::AttachmentDesc {
                 format: vk::Format::R16G16B16A16_SFLOAT,
                 usage: vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
@@ -43,13 +43,13 @@ impl RenderPass for SSRPass {
 
     fn bindings(&self) -> Vec<super::ResourceBinding> {
         vec![
-            super::ResourceBinding::SampledImage(0, "GBufferAlbedo".to_string()),
-            super::ResourceBinding::SampledImage(1, "GBufferNormal".to_string()),
-            super::ResourceBinding::SampledImage(2, "GBufferPBR".to_string()),
-            super::ResourceBinding::SampledImage(3, "GBufferDepth".to_string()),
-            super::ResourceBinding::SampledImage(4, "GBufferHDR".to_string()),
-            super::ResourceBinding::SampledImage(5, "HiZ".to_string()),
-            super::ResourceBinding::StorageImage(6, "SSR".to_string()),
+            super::ResourceBinding::SampledImage(0, "GBufferAlbedo"),
+            super::ResourceBinding::SampledImage(1, "GBufferNormal"),
+            super::ResourceBinding::SampledImage(2, "GBufferPBR"),
+            super::ResourceBinding::SampledImage(3, "GBufferDepth"),
+            super::ResourceBinding::SampledImage(4, "GBufferHDR"),
+            super::ResourceBinding::SampledImage(5, "HiZ"),
+            super::ResourceBinding::StorageImage(6, "SSR"),
         ]
     }
 

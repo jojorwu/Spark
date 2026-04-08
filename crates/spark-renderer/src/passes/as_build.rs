@@ -16,12 +16,12 @@ impl RenderPass for AccelerationStructurePass {
         vec!["SceneTLAS"]
     }
 
-    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
-        vec![(
-            "SceneTLAS".to_string(),
-            vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
-            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-        )]
+    fn gpu_resource_access(&self) -> Vec<super::GpuResourceAccess> {
+        vec![super::GpuResourceAccess {
+            resource_name: "SceneTLAS",
+            access_flags: vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+            stage_flags: vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+        }]
     }
 
     fn record_commands(&self, ctx: &RenderContext) {

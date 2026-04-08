@@ -105,6 +105,16 @@ impl Renderer {
         self.current_view_proj
     }
 
+    /// Returns the current rendering settings.
+    pub fn get_settings(&self) -> &RenderSettings {
+        &self.settings
+    }
+
+    /// Updates the rendering settings.
+    pub fn update_settings(&mut self, settings: RenderSettings) {
+        self.settings = settings;
+    }
+
     /// Creates a new Renderer instance.
     /// Initializes Vulkan context, device, swapchain, and core resource managers.
     pub fn new(
@@ -850,94 +860,133 @@ impl Renderer {
         _object_count: u32,
         delta: f32,
     ) {
-        // Retrieve view_proj and light_view_proj from the current frame's global buffer
-        // For simplicity, we'll keep them as parameters or fetch from UBO.
-        // Since prepare_frame just uploaded them, we can use them from there or just pass them.
-        // Let's modify prepare_frame to store them in the Renderer.
-        let (image_available, in_flight, command_buffer, render_finished) = {
-            let frame = &self.frame_manager.frames[self.frame_manager.current_frame];
-            (
-                frame.image_available,
-                frame.in_flight,
-                frame.command_buffer,
-                frame.render_finished,
-            )
+        let frame_idx = self.frame_manager.current_frame;
+        let in_flight_fence = self.frame_manager.frames[frame_idx].in_flight;
+        let image_available = self.frame_manager.frames[frame_idx].image_available;
+
+        // 1. Wait for GPU and acquire next image
+        self.wait_for_frame(in_flight_fence);
+        let Some(image_index) = self.acquire_next_image(window, image_available) else {
+            return;
         };
 
+        // 2. Prepare frame resources (resets and pools)
+        self.prepare_gpu_resources(frame_idx);
+
+        // 3. Record and submit commands
+        self.record_and_submit_frame(image_index, egui_output, delta);
+
+        // 4. Present and advance
+        self.present_frame(window, image_index);
+        self.advance_frame();
+    }
+
+    fn wait_for_frame(&self, fence: vk::Fence) {
         unsafe {
-            // Ожидание завершения предыдущего кадра, использующего те же ресурсы.
-            // Wait for the previous frame using these resources to finish.
             self.device
                 .device
-                .wait_for_fences(&[in_flight], true, u64::MAX)
+                .wait_for_fences(&[fence], true, u64::MAX)
                 .expect("Failed to wait for fence");
-            // Получение индекса следующего доступного изображения из swapchain.
-            // Acquire the next available image from the swapchain.
-            log::trace!("Acquiring next swapchain image");
+        }
+    }
+
+    fn acquire_next_image(&mut self, window: &Window, semaphore: vk::Semaphore) -> Option<u32> {
+        unsafe {
             let result = self.swapchain.loader.acquire_next_image(
                 self.swapchain.handle,
                 u64::MAX,
-                image_available,
+                semaphore,
                 vk::Fence::null(),
             );
-            let image_index = match result {
+
+            match result {
                 Ok((index, _)) => {
                     self.current_image_index = index;
-                    index
+                    Some(index)
                 }
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                     let _ = self.recreate_swapchain(window);
-                    return;
+                    None
                 }
                 Err(e) => panic!("Failed to acquire swapchain image: {:?}", e),
-            };
+            }
+        }
+    }
+
+    fn prepare_gpu_resources(&self, frame_idx: usize) {
+        unsafe {
+            let frame = &self.frame_manager.frames[frame_idx];
             self.device
                 .device
-                .reset_fences(&[in_flight])
+                .reset_fences(&[frame.in_flight])
                 .expect("Failed to reset fence");
+
             self.device
                 .device
-                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
+                .reset_command_buffer(frame.command_buffer, vk::CommandBufferResetFlags::empty())
                 .expect("Failed to reset command buffer");
 
-            // Clean up secondary command buffers for the current frame
             for pools in &self.device.thread_command_pools {
-                let pool = pools[self.frame_manager.current_frame];
+                let pool = pools[frame_idx];
                 self.device
                     .device
                     .reset_command_pool(pool, vk::CommandPoolResetFlags::empty())
                     .expect("Failed to reset thread command pool");
             }
-            self.record_command_buffer(image_index, egui_output, delta);
-            let s_finished = [render_finished];
-            let c_buffers = [command_buffer];
-            let s_wait = [
-                image_available,
-                self.frame_manager.culling_finished_semaphores[self.frame_manager.current_frame],
-            ];
-            let w_stages = [
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::DRAW_INDIRECT,
-            ];
+        }
+    }
 
-            let submit_info = vk::SubmitInfo::default()
-                .wait_semaphores(&s_wait)
-                .wait_dst_stage_mask(&w_stages)
-                .command_buffers(&c_buffers)
-                .signal_semaphores(&s_finished);
-            // Отправка командного буфера в очередь графики.
-            // Submit the command buffer to the graphics queue.
+    fn record_and_submit_frame(
+        &mut self,
+        image_index: u32,
+        egui_output: Option<(egui::FullOutput, egui::Context)>,
+        delta: f32,
+    ) {
+        let frame_idx = self.frame_manager.current_frame;
+
+        self.record_command_buffer(image_index, egui_output, delta);
+
+        let frame = &self.frame_manager.frames[frame_idx];
+        let wait_semaphores = [
+            frame.image_available,
+            self.frame_manager.culling_finished_semaphores[frame_idx],
+        ];
+        let wait_stages = [
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::DRAW_INDIRECT,
+        ];
+        let signal_semaphores = [frame.render_finished];
+        let command_buffers = [frame.command_buffer];
+
+        let submit_info = vk::SubmitInfo::default()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .command_buffers(&command_buffers)
+            .signal_semaphores(&signal_semaphores);
+
+        unsafe {
             self.device
                 .device
-                .queue_submit(self.device.graphics_queue, &[submit_info], in_flight)
-                .expect("Failed to submit queue");
-            let result = self.swapchain.loader.queue_present(
-                self.device.graphics_queue,
-                &vk::PresentInfoKHR::default()
-                    .wait_semaphores(&s_finished)
-                    .swapchains(&[self.swapchain.handle])
-                    .image_indices(&[image_index]),
-            );
+                .queue_submit(self.device.graphics_queue, &[submit_info], frame.in_flight)
+                .expect("Failed to submit frame to graphics queue");
+        }
+    }
+
+    fn present_frame(&mut self, window: &Window, image_index: u32) {
+        let frame_idx = self.frame_manager.current_frame;
+        let signal_semaphores = [self.frame_manager.frames[frame_idx].render_finished];
+
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(&signal_semaphores)
+            .swapchains(std::slice::from_ref(&self.swapchain.handle))
+            .image_indices(std::slice::from_ref(&image_index));
+
+        unsafe {
+            let result = self
+                .swapchain
+                .loader
+                .queue_present(self.device.graphics_queue, &present_info);
+
             match result {
                 Ok(_) => {}
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
@@ -945,12 +994,14 @@ impl Renderer {
                 }
                 Err(e) => panic!("Failed to present swapchain image: {:?}", e),
             }
-            let cvp = self.current_view_proj;
-            self.prev_view_proj = cvp;
-            self.frame_manager.frame_index += 1;
-            self.frame_manager.current_frame =
-                (self.frame_manager.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
         }
+    }
+
+    fn advance_frame(&mut self) {
+        self.prev_view_proj = self.current_view_proj;
+        self.frame_manager.frame_index += 1;
+        self.frame_manager.current_frame =
+            (self.frame_manager.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
     pub fn set_common_shadow_view(&mut self, view: vk::ImageView) {

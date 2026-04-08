@@ -79,15 +79,13 @@ impl RenderPass for ParticlePass {
             );
 
             // 2. Rendering
-            let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(
-                    renderer
-                        .get_pass_resource_view("", "GBufferHDR", cf)
-                        .unwrap_or(renderer.common_shadow_view),
-                )
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::LOAD)
-                .store_op(vk::AttachmentStoreOp::STORE);
+            let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(
+                renderer
+                    .get_pass_resource_view("", "GBufferHDR", cf)
+                    .unwrap_or(renderer.common_shadow_view),
+            )
+            .with_load_op(vk::AttachmentLoadOp::LOAD)
+            .build();
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {

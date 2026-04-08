@@ -26,7 +26,7 @@ impl GBufferPass {
         current_frame: usize,
     ) {
         #[repr(C)]
-        struct PC {
+        struct GBufferPushConstants {
             count: u32,
             metallic: f32,
             roughness: f32,
@@ -37,7 +37,7 @@ impl GBufferPass {
             prev_view_proj: spark_math::Mat4,
             vertex_buffer_address: u64,
         }
-        let pc = PC {
+        let pc = GBufferPushConstants {
             count: renderer.light_count,
             metallic: 0.5,
             roughness: 0.5,
@@ -56,7 +56,10 @@ impl GBufferPass {
                 .map_or(0, |b| b.address),
         };
         let pc_bytes = unsafe {
-            std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>())
+            std::slice::from_raw_parts(
+                &pc as *const _ as *const u8,
+                std::mem::size_of::<GBufferPushConstants>(),
+            )
         };
 
         let extent = renderer.get_extent();
@@ -89,45 +92,40 @@ impl GBufferPass {
                     pc_bytes,
                 );
 
-                let create_attachment = |name: &str, clear_color: [f32; 4]| {
-                    vk::RenderingAttachmentInfo::default()
-                        .image_view(
-                            renderer
-                                .get_pass_resource_view(self.name(), name, current_frame)
-                                .expect("Failed to retrieve G-Buffer attachment"),
-                        )
-                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                        .load_op(vk::AttachmentLoadOp::CLEAR)
-                        .store_op(vk::AttachmentStoreOp::STORE)
-                        .clear_value(vk::ClearValue {
-                            color: vk::ClearColorValue {
-                                float32: clear_color,
-                            },
-                        })
-                };
-
                 let color_attachments = [
-                    create_attachment("GBufferAlbedo", [0.0, 0.0, 0.0, 1.0]),
-                    create_attachment("GBufferNormal", [0.0, 0.0, 0.0, 1.0]),
-                    create_attachment("GBufferPBR", [0.0, 0.0, 0.0, 1.0]),
-                    create_attachment("GBufferVelocity", [0.0, 0.0, 0.0, 1.0]),
+                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
+                        renderer
+                            .get_pass_resource_view(self.name(), "GBufferAlbedo", current_frame)
+                            .expect("GBufferAlbedo missing"),
+                    )
+                    .build(),
+                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
+                        renderer
+                            .get_pass_resource_view(self.name(), "GBufferNormal", current_frame)
+                            .expect("GBufferNormal missing"),
+                    )
+                    .build(),
+                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
+                        renderer
+                            .get_pass_resource_view(self.name(), "GBufferPBR", current_frame)
+                            .expect("GBufferPBR missing"),
+                    )
+                    .build(),
+                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
+                        renderer
+                            .get_pass_resource_view(self.name(), "GBufferVelocity", current_frame)
+                            .expect("GBufferVelocity missing"),
+                    )
+                    .build(),
                 ];
 
-                let depth_attachment = vk::RenderingAttachmentInfo::default()
-                    .image_view(
-                        renderer
-                            .get_pass_resource_view(self.name(), "GBufferDepth", current_frame)
-                            .expect("Failed to retrieve G-Buffer depth attachment"),
-                    )
-                    .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                    .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::STORE)
-                    .clear_value(vk::ClearValue {
-                        depth_stencil: vk::ClearDepthStencilValue {
-                            depth: 1.0,
-                            stencil: 0,
-                        },
-                    });
+                let depth_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(
+                    renderer
+                        .get_pass_resource_view(self.name(), "GBufferDepth", current_frame)
+                        .expect("GBufferDepth missing"),
+                )
+                .with_clear_depth(1.0)
+                .build();
 
                 let rendering_info = vk::RenderingInfo::default()
                     .render_area(vk::Rect2D {
@@ -148,8 +146,8 @@ impl GBufferPass {
                         vk::PipelineBindPoint::GRAPHICS,
                         pipeline.layout,
                         0,
-                        &[global_ds, renderer.gpu_resource_manager.bindless.set],
-                        &[],
+                    &[global_ds, renderer.gpu_resource_manager.bindless.set],
+                    &[],
                     );
 
                     if let Some(ib) = renderer.gpu_resource_manager.global_index_buffer.as_ref() {
@@ -214,34 +212,34 @@ impl RenderPass for GBufferPass {
         ]
     }
 
-    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+    fn gpu_resource_access(&self) -> Vec<super::GpuResourceAccess> {
         vec![
-            (
-                "GBufferAlbedo".to_string(),
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            ),
-            (
-                "GBufferNormal".to_string(),
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            ),
-            (
-                "GBufferPBR".to_string(),
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            ),
-            (
-                "GBufferVelocity".to_string(),
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            ),
-            (
-                "GBufferDepth".to_string(),
-                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+            super::GpuResourceAccess {
+                resource_name: "GBufferAlbedo",
+                access_flags: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                stage_flags: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            },
+            super::GpuResourceAccess {
+                resource_name: "GBufferNormal",
+                access_flags: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                stage_flags: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            },
+            super::GpuResourceAccess {
+                resource_name: "GBufferPBR",
+                access_flags: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                stage_flags: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            },
+            super::GpuResourceAccess {
+                resource_name: "GBufferVelocity",
+                access_flags: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                stage_flags: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            },
+            super::GpuResourceAccess {
+                resource_name: "GBufferDepth",
+                access_flags: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                stage_flags: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
                     | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-            ),
+            },
         ]
     }
 
