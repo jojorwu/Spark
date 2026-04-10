@@ -155,15 +155,24 @@ impl EditorUI {
             };
 
             ui.label(icon);
-            let response = ui.selectable_label(is_selected, egui::RichText::new(label).color(text_color));
+            let response =
+                ui.selectable_label(is_selected, egui::RichText::new(label).color(text_color));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button(if visible { "👁" } else { "👓" }).on_hover_text("Toggle Visibility").clicked() {
+                if ui
+                    .small_button(if visible { "👁" } else { "👓" })
+                    .on_hover_text("Toggle Visibility")
+                    .clicked()
+                {
                     if let Some(node) = scene.nodes.get_mut(node_key) {
                         node.visible = !node.visible;
                     }
                 }
-                if ui.small_button(if locked { "🔒" } else { "🔓" }).on_hover_text("Toggle Lock").clicked() {
+                if ui
+                    .small_button(if locked { "🔒" } else { "🔓" })
+                    .on_hover_text("Toggle Lock")
+                    .clicked()
+                {
                     if let Some(node) = scene.nodes.get_mut(node_key) {
                         node.locked = !node.locked;
                     }

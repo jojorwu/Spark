@@ -247,10 +247,18 @@ impl EditorUI {
         for (idx, component) in node.components.iter_mut().enumerate() {
             ui.add_space(6.0);
             let (header, icon) = match component.as_any().type_id() {
-                t if t == std::any::TypeId::of::<spark_core::scene::MeshComponent>() => ("Mesh", "📦"),
-                t if t == std::any::TypeId::of::<spark_core::scene::LightComponent>() => ("Light", "💡"),
-                t if t == std::any::TypeId::of::<spark_core::scene::CameraComponent>() => ("Camera", "🎥"),
-                t if t == std::any::TypeId::of::<spark_core::scene::SpriteComponent>() => ("Sprite", "🖼"),
+                t if t == std::any::TypeId::of::<spark_core::scene::MeshComponent>() => {
+                    ("Mesh", "📦")
+                }
+                t if t == std::any::TypeId::of::<spark_core::scene::LightComponent>() => {
+                    ("Light", "💡")
+                }
+                t if t == std::any::TypeId::of::<spark_core::scene::CameraComponent>() => {
+                    ("Camera", "🎥")
+                }
+                t if t == std::any::TypeId::of::<spark_core::scene::SpriteComponent>() => {
+                    ("Sprite", "🖼")
+                }
                 _ => ("Unknown", "❓"),
             };
 

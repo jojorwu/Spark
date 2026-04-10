@@ -1677,17 +1677,22 @@ impl Renderer {
     }
 
     fn prepare_passes(&mut self) {
+        use rayon::prelude::*;
+
         let cf = self.frame_manager.current_frame;
-        for i in 0..self.render_graph.passes.len() {
-            if self.render_graph.passes[i].pass.is_enabled(self) {
-                // We use a little unsafe here because we know prepare doesn't mutate the pass list itself
-                let pass_ptr =
-                    &self.render_graph.passes[i].pass as *const Box<dyn crate::passes::RenderPass>;
-                unsafe {
-                    (*pass_ptr).prepare(self, cf);
+        let renderer_ptr = self as *const Renderer as usize;
+
+        self.render_graph.passes.par_iter().for_each(|pass_node| {
+            // SAFETY: prepare() typically uploads small UBOs or updates metadata.
+            // Passes are responsible for disjoint resource access within their prepare() logic.
+            // We use a raw pointer to bypass mutable borrow of Renderer.
+            unsafe {
+                let renderer = &*(renderer_ptr as *const Renderer);
+                if pass_node.pass.is_enabled(renderer) {
+                    pass_node.pass.prepare(renderer, cf);
                 }
             }
-        }
+        });
     }
 
     /// Prepares mesh-related buffers (indirect commands, SSBOs).
