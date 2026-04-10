@@ -13,7 +13,8 @@ pub struct Texture {
 impl Texture {
     /// Creates a shallow copy of the texture handles.
     ///
-    /// SAFETY: This does NOT clone the underlying allocation. The caller must ensure
+    /// # Safety
+    /// This does NOT clone the underlying allocation. The caller must ensure
     /// that the original texture remains valid for the lifetime of this copy, or that
     /// this copy is not used to free resources.
     pub unsafe fn shallow_copy(&self) -> Self {

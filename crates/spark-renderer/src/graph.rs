@@ -286,14 +286,17 @@ impl RenderGraph {
             if let Some(alias) =
                 self.find_compatible_alias(&transient_pool, format, usage, width, height, start)
             {
-                self.aliased_resources.insert(res_name.clone(), alias.clone());
+                self.aliased_resources
+                    .insert(res_name.clone(), alias.clone());
                 // Update the end lifetime of the alias in the pool
                 if let Some(pool_entry) = transient_pool.iter_mut().find(|e| e.0 == alias) {
                     pool_entry.5 = end;
                 }
             } else {
-                let attachments = self.create_transient_attachments(renderer, width, height, format, usage);
-                self.transient_attachments.insert(res_name.clone(), attachments);
+                let attachments =
+                    self.create_transient_attachments(renderer, width, height, format, usage);
+                self.transient_attachments
+                    .insert(res_name.clone(), attachments);
                 transient_pool.push((res_name.clone(), format, usage, width, height, end));
             }
         }

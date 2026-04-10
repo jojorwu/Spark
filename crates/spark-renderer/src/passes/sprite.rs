@@ -67,9 +67,10 @@ impl RenderPass for SpritePass {
             .expect("Failed to get SpriteColor view");
 
         unsafe {
-            let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(sprite_view)
-                .with_clear_color([0.0, 0.0, 0.0, 0.0])
-                .build();
+            let color_attachment =
+                crate::vulkan::utils::RenderingAttachmentBuilder::new(sprite_view)
+                    .with_clear_color([0.0, 0.0, 0.0, 0.0])
+                    .build();
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {

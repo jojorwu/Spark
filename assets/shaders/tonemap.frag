@@ -33,6 +33,8 @@ layout(push_constant) uniform PostProcessParams {
     float rt_shadows_enabled;
     float rt_ao_enabled;
     float rt_gi_enabled;
+    float bloom_intensity;
+    float bloom_threshold;
 } params;
 
 // ACES Tone Mapping
@@ -98,7 +100,7 @@ void main() {
 
     // Add Bloom
     if (params.bloom_enabled > 0.5) {
-        color += bloomColor;
+        color += bloomColor * params.bloom_intensity;
     }
 
     // Exposure

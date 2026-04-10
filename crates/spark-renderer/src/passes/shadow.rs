@@ -376,7 +376,7 @@ impl ShadowPass {
                 pc_bytes,
             );
 
-            if let (Some(ref indirect_buffer), Some(ref index_buffer)) = (
+            if let (Some(indirect_buffer), Some(index_buffer)) = (
                 frame.indirect_commands_buffer.as_ref(),
                 renderer.gpu_resource_manager.global_index_buffer.as_ref(),
             ) {

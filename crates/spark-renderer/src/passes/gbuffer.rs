@@ -146,8 +146,8 @@ impl GBufferPass {
                         vk::PipelineBindPoint::GRAPHICS,
                         pipeline.layout,
                         0,
-                    &[global_ds, renderer.gpu_resource_manager.bindless.set],
-                    &[],
+                        &[global_ds, renderer.gpu_resource_manager.bindless.set],
+                        &[],
                     );
 
                     if let Some(ib) = renderer.gpu_resource_manager.global_index_buffer.as_ref() {

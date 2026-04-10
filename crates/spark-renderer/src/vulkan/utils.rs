@@ -42,10 +42,7 @@ impl RenderingAttachmentBuilder {
 
     pub fn with_clear_depth(mut self, depth: f32) -> Self {
         self.clear_value = vk::ClearValue {
-            depth_stencil: vk::ClearDepthStencilValue {
-                depth,
-                stencil: 0,
-            },
+            depth_stencil: vk::ClearDepthStencilValue { depth, stencil: 0 },
         };
         self.image_layout = vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL;
         self

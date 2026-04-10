@@ -23,6 +23,7 @@ pub struct PassShaders {
     pub taa_frag: Vec<u32>,
     pub fullscreen_vert: Vec<u32>,
     pub tonemap_frag: Vec<u32>,
+    pub bloom_filter: Vec<u32>,
     pub bloom_downsample: Vec<u32>,
     pub bloom_upsample: Vec<u32>,
     pub forward_vert: Vec<u32>,
@@ -270,6 +271,7 @@ impl Renderer {
         Ok(pass)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn init_lighting_pass(
         &self,
         shaders: &PassShaders,
@@ -305,18 +307,22 @@ impl Renderer {
         let mut pass =
             crate::passes::post_process::PostProcessPass::new(self, self.swapchain.format, extent)
                 .map_err(|_| RendererError::NoSuitableDevice)?;
-        pass.create_pipelines(crate::passes::post_process::PostProcessPipelineParams {
-            device: &self.device.device,
-            pipeline_cache: cache,
-            extent,
-            vert_spirv: &shaders.fullscreen_vert,
-            frag_spirv: &shaders.tonemap_frag,
-            downsample_spirv: &shaders.bloom_downsample,
-            upsample_spirv: &shaders.bloom_upsample,
-        });
+        pass.create_pipelines(
+            crate::passes::post_process::PostProcessPipelineParams {
+                device: &self.device.device,
+                pipeline_cache: cache,
+                extent,
+                vert_spirv: &shaders.fullscreen_vert,
+                frag_spirv: &shaders.tonemap_frag,
+                downsample_spirv: &shaders.bloom_downsample,
+                upsample_spirv: &shaders.bloom_upsample,
+            },
+            &shaders.bloom_filter,
+        );
         Ok(pass)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn init_main_pipeline(
         &mut self,
         extent: vk::Extent2D,

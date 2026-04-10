@@ -4,11 +4,39 @@ layout(location = 0) out vec4 outColor;
 
 layout(binding = 0) uniform sampler2D hdrSampler;
 
+layout(push_constant) uniform PushConstants {
+    float exposure;
+    float gamma;
+    float bloom_enabled;
+    float vignette_intensity;
+    float vignette_smoothness;
+    float chromatic_aberration;
+    float film_grain;
+    float motion_blur_strength;
+    float auto_exposure_enabled;
+    float dof_enabled;
+    float lut_index;
+    float time;
+    float rt_reflections_enabled;
+    float rt_shadows_enabled;
+    float rt_ao_enabled;
+    float rt_gi_enabled;
+    float bloom_intensity;
+    float bloom_threshold;
+} params;
+
 void main() {
     vec3 color = texture(hdrSampler, inUV).rgb;
-    float brightness = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    if(brightness > 1.0)
-        outColor = vec4(color, 1.0);
-    else
-        outColor = vec4(0.0, 0.0, 0.0, 1.0);
+
+    // Smooth thresholding (Karis 2013)
+    float brightness = max(color.r, max(color.g, color.b));
+    float threshold = params.bloom_threshold;
+    float knee = 0.1;
+    float soft = brightness - threshold + knee;
+    soft = clamp(soft, 0.0, 2.0 * knee);
+    soft = soft * soft / (4.0 * knee + 0.00001);
+    float contribution = max(soft, brightness - threshold);
+    contribution /= max(brightness, 0.00001);
+
+    outColor = vec4(color * contribution, 1.0);
 }
