@@ -121,25 +121,7 @@ impl Renderer {
         window: &Window,
         ui_shaders: Option<(&[u32], &[u32])>,
     ) -> Result<Self, RendererError> {
-        let context = VulkanContext::new(window)?;
-        let device =
-            VulkanDevice::new(&context.instance, &context.surface_loader, context.surface)?;
-        let swapchain = VulkanSwapchain::new(
-            &context.instance,
-            &device.device,
-            device.pdevice,
-            &context.surface_loader,
-            context.surface,
-            window.inner_size().width,
-            window.inner_size().height,
-        )?;
-
-        let gbuffer = GBuffer::new(
-            &device,
-            swapchain.extent,
-            device.msaa_samples,
-            device.depth_format,
-        )?;
+        let (context, device, swapchain) = Self::init_core_vulkan(window)?;
 
         let common_sampler = Self::create_common_sampler(&device.device)?;
         let dummy_buffer = Self::create_dummy_buffer(&device)?;
@@ -210,11 +192,36 @@ impl Renderer {
             current_zfar: 100.0,
         };
 
+        let gbuffer = GBuffer::new(
+            &renderer.device,
+            renderer.swapchain.extent,
+            renderer.device.msaa_samples,
+            renderer.device.depth_format,
+        )?;
+
         renderer.init_gbuffer_attachments(gbuffer);
         renderer.init_default_resources();
         renderer.init_common_views();
 
         Ok(renderer)
+    }
+
+    fn init_core_vulkan(
+        window: &Window,
+    ) -> Result<(VulkanContext, VulkanDevice, VulkanSwapchain), RendererError> {
+        let context = VulkanContext::new(window)?;
+        let device =
+            VulkanDevice::new(&context.instance, &context.surface_loader, context.surface)?;
+        let swapchain = VulkanSwapchain::new(
+            &context.instance,
+            &device.device,
+            device.pdevice,
+            &context.surface_loader,
+            context.surface,
+            window.inner_size().width,
+            window.inner_size().height,
+        )?;
+        Ok((context, device, swapchain))
     }
 
     fn allocate_global_descriptor_sets(

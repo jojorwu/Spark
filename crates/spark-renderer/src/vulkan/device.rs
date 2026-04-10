@@ -41,18 +41,10 @@ impl VulkanDevice {
         surface_loader: &Surface,
         surface: vk::SurfaceKHR,
     ) -> Result<Self, RendererError> {
-        let pdevices = unsafe { instance.enumerate_physical_devices()? };
+        let (pdevice, graphics_family, compute_family) =
+            Self::select_physical_device(instance, surface_loader, surface)?;
 
-        let (pdevice, graphics_family, compute_family) = pdevices
-            .iter()
-            .map(|&p| (p, Self::score_device(instance, p)))
-            .filter(|&(_, score)| score > 0)
-            .max_by_key(|&(_, score)| score)
-            .and_then(|(p, _)| {
-                Self::find_queue_families(instance, surface_loader, surface, p)
-                    .map(|(g, c)| (p, g, c))
-            })
-            .ok_or(RendererError::NoSuitableDevice)?;
+        let rt_supported = Self::check_raytracing_support(instance, pdevice);
 
         let queue_priorities = [1.0];
         let mut queue_infos = vec![vk::DeviceQueueCreateInfo::default()
@@ -67,70 +59,8 @@ impl VulkanDevice {
             );
         }
 
-        let available_extensions =
-            unsafe { instance.enumerate_device_extension_properties(pdevice)? };
-        let mut rt_supported = true;
-        for ext in &[
-            ash::khr::acceleration_structure::NAME,
-            ash::khr::ray_tracing_pipeline::NAME,
-            ash::khr::deferred_host_operations::NAME,
-        ] {
-            if !available_extensions.iter().any(|e| {
-                let name = unsafe { std::ffi::CStr::from_ptr(e.extension_name.as_ptr()) };
-                name == *ext
-            }) {
-                rt_supported = false;
-                break;
-            }
-        }
-
-        let mut device_extension_names_raw = vec![ash::khr::swapchain::NAME.as_ptr()];
-        if rt_supported {
-            device_extension_names_raw.push(ash::khr::acceleration_structure::NAME.as_ptr());
-            device_extension_names_raw.push(ash::khr::ray_tracing_pipeline::NAME.as_ptr());
-            device_extension_names_raw.push(ash::khr::deferred_host_operations::NAME.as_ptr());
-        }
-
-        let mut features_as = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
-            .acceleration_structure(rt_supported);
-        let mut features_rt = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default()
-            .ray_tracing_pipeline(rt_supported);
-
-        let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
-            .dynamic_rendering(true)
-            .synchronization2(true);
-        let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
-            .descriptor_indexing(true)
-            .shader_sampled_image_array_non_uniform_indexing(true)
-            .descriptor_binding_partially_bound(true)
-            .descriptor_binding_variable_descriptor_count(true)
-            .runtime_descriptor_array(true)
-            .draw_indirect_count(true)
-            .buffer_device_address(true);
-
-        let mut features11 =
-            vk::PhysicalDeviceVulkan11Features::default().shader_draw_parameters(true);
-
-        let device_create_info = vk::DeviceCreateInfo::default()
-            .queue_create_infos(&queue_infos)
-            .enabled_extension_names(&device_extension_names_raw);
-
-        let mut device_create_info = device_create_info
-            .push_next(&mut features11)
-            .push_next(&mut features12)
-            .push_next(&mut features13);
-
-        if rt_supported {
-            device_create_info = device_create_info
-                .push_next(&mut features_as)
-                .push_next(&mut features_rt);
-        }
-
-        let device = unsafe {
-            instance
-                .create_device(pdevice, &device_create_info, None)
-                .expect("Failed to create logical Vulkan device")
-        };
+        let device =
+            Self::create_logical_device(instance, pdevice, &queue_infos, rt_supported)?;
 
         let graphics_queue = unsafe { device.get_device_queue(graphics_family, 0) };
         let compute_queue = unsafe { device.get_device_queue(compute_family, 0) };
@@ -139,46 +69,9 @@ impl VulkanDevice {
         let depth_format = Self::find_depth_format(instance, pdevice);
         let memory_properties = unsafe { instance.get_physical_device_memory_properties(pdevice) };
 
-        let command_pool = unsafe {
-            device
-                .create_command_pool(
-                    &vk::CommandPoolCreateInfo::default()
-                        .queue_family_index(graphics_family)
-                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
-                    None,
-                )
-                .expect("Failed to create main command pool")
-        };
-
-        let compute_command_pool = unsafe {
-            device
-                .create_command_pool(
-                    &vk::CommandPoolCreateInfo::default()
-                        .queue_family_index(compute_family)
-                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
-                    None,
-                )
-                .expect("Failed to create compute command pool")
-        };
-
-        let mut thread_command_pools = Vec::new();
-        let thread_count = num_cpus::get();
-        for _ in 0..thread_count {
-            let mut pools = [vk::CommandPool::null(); crate::MAX_FRAMES_IN_FLIGHT];
-            for p in pools.iter_mut() {
-                *p = unsafe {
-                    device
-                        .create_command_pool(
-                            &vk::CommandPoolCreateInfo::default()
-                                .queue_family_index(graphics_family)
-                                .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
-                            None,
-                        )
-                        .expect("Failed to create thread command pool")
-                };
-            }
-            thread_command_pools.push(pools);
-        }
+        let command_pool = Self::create_command_pool_basic(&device, graphics_family)?;
+        let compute_command_pool = Self::create_command_pool_basic(&device, compute_family)?;
+        let thread_command_pools = Self::create_thread_command_pools(&device, graphics_family)?;
 
         let allocator = Allocator::new(&AllocatorCreateDesc {
             instance: instance.clone(),
@@ -224,6 +117,141 @@ impl VulkanDevice {
             as_loader,
             rt_loader,
         })
+    }
+
+    fn select_physical_device(
+        instance: &Instance,
+        surface_loader: &Surface,
+        surface: vk::SurfaceKHR,
+    ) -> Result<(vk::PhysicalDevice, u32, u32), RendererError> {
+        let pdevices = unsafe { instance.enumerate_physical_devices()? };
+
+        pdevices
+            .iter()
+            .map(|&p| (p, Self::score_device(instance, p)))
+            .filter(|&(_, score)| score > 0)
+            .max_by_key(|&(_, score)| score)
+            .and_then(|(p, _)| {
+                Self::find_queue_families(instance, surface_loader, surface, p)
+                    .map(|(g, c)| (p, g, c))
+            })
+            .ok_or(RendererError::NoSuitableDevice)
+    }
+
+    fn check_raytracing_support(instance: &Instance, pdevice: vk::PhysicalDevice) -> bool {
+        let available_extensions = unsafe {
+            instance
+                .enumerate_device_extension_properties(pdevice)
+                .unwrap_or_default()
+        };
+
+        let required_extensions = [
+            ash::khr::acceleration_structure::NAME,
+            ash::khr::ray_tracing_pipeline::NAME,
+            ash::khr::deferred_host_operations::NAME,
+        ];
+
+        for ext in &required_extensions {
+            if !available_extensions.iter().any(|e| {
+                let name = unsafe { std::ffi::CStr::from_ptr(e.extension_name.as_ptr()) };
+                name == *ext
+            }) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn get_required_device_extensions(rt_supported: bool) -> Vec<&'static std::ffi::CStr> {
+        let mut extensions = vec![ash::khr::swapchain::NAME];
+        if rt_supported {
+            extensions.push(ash::khr::acceleration_structure::NAME);
+            extensions.push(ash::khr::ray_tracing_pipeline::NAME);
+            extensions.push(ash::khr::deferred_host_operations::NAME);
+        }
+        extensions
+    }
+
+    fn create_command_pool_basic(
+        device: &Device,
+        family_index: u32,
+    ) -> Result<vk::CommandPool, RendererError> {
+        unsafe {
+            device
+                .create_command_pool(
+                    &vk::CommandPoolCreateInfo::default()
+                        .queue_family_index(family_index)
+                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                    None,
+                )
+                .map_err(|_| RendererError::NoSuitableDevice)
+        }
+    }
+
+    fn create_thread_command_pools(
+        device: &Device,
+        graphics_family: u32,
+    ) -> Result<Vec<[vk::CommandPool; crate::MAX_FRAMES_IN_FLIGHT]>, RendererError> {
+        let mut thread_command_pools = Vec::new();
+        let thread_count = num_cpus::get();
+        for _ in 0..thread_count {
+            let mut pools = [vk::CommandPool::null(); crate::MAX_FRAMES_IN_FLIGHT];
+            for p in pools.iter_mut() {
+                *p = Self::create_command_pool_basic(device, graphics_family)?;
+            }
+            thread_command_pools.push(pools);
+        }
+        Ok(thread_command_pools)
+    }
+
+    fn create_logical_device(
+        instance: &Instance,
+        pdevice: vk::PhysicalDevice,
+        queue_infos: &[vk::DeviceQueueCreateInfo],
+        rt_supported: bool,
+    ) -> Result<Device, RendererError> {
+        let device_extension_names = Self::get_required_device_extensions(rt_supported);
+        let device_extension_names_raw: Vec<*const i8> =
+            device_extension_names.iter().map(|s| s.as_ptr()).collect();
+
+        let mut features_as = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
+            .acceleration_structure(rt_supported);
+        let mut features_rt = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default()
+            .ray_tracing_pipeline(rt_supported);
+
+        let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
+            .dynamic_rendering(true)
+            .synchronization2(true);
+        let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
+            .descriptor_indexing(true)
+            .shader_sampled_image_array_non_uniform_indexing(true)
+            .descriptor_binding_partially_bound(true)
+            .descriptor_binding_variable_descriptor_count(true)
+            .runtime_descriptor_array(true)
+            .draw_indirect_count(true)
+            .buffer_device_address(true);
+
+        let mut features11 =
+            vk::PhysicalDeviceVulkan11Features::default().shader_draw_parameters(true);
+
+        let mut device_create_info = vk::DeviceCreateInfo::default()
+            .queue_create_infos(queue_infos)
+            .enabled_extension_names(&device_extension_names_raw)
+            .push_next(&mut features11)
+            .push_next(&mut features12)
+            .push_next(&mut features13);
+
+        if rt_supported {
+            device_create_info = device_create_info
+                .push_next(&mut features_as)
+                .push_next(&mut features_rt);
+        }
+
+        unsafe {
+            instance
+                .create_device(pdevice, &device_create_info, None)
+                .map_err(|_| RendererError::NoSuitableDevice)
+        }
     }
 
     pub fn create_buffer(

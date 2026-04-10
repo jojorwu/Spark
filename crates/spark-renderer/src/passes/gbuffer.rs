@@ -97,40 +97,24 @@ impl GBufferPass {
                     pc_bytes,
                 );
 
+                let get_attachment = |name: &str| {
+                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
+                        renderer
+                            .get_pass_resource_view(self.name(), name, current_frame)
+                            .expect(name),
+                    )
+                };
+
                 let color_attachments = [
-                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
-                        renderer
-                            .get_pass_resource_view(self.name(), "GBufferAlbedo", current_frame)
-                            .expect("GBufferAlbedo missing"),
-                    )
-                    .build(),
-                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
-                        renderer
-                            .get_pass_resource_view(self.name(), "GBufferNormal", current_frame)
-                            .expect("GBufferNormal missing"),
-                    )
-                    .build(),
-                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
-                        renderer
-                            .get_pass_resource_view(self.name(), "GBufferPBR", current_frame)
-                            .expect("GBufferPBR missing"),
-                    )
-                    .build(),
-                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
-                        renderer
-                            .get_pass_resource_view(self.name(), "GBufferVelocity", current_frame)
-                            .expect("GBufferVelocity missing"),
-                    )
-                    .build(),
+                    get_attachment("GBufferAlbedo").build(),
+                    get_attachment("GBufferNormal").build(),
+                    get_attachment("GBufferPBR").build(),
+                    get_attachment("GBufferVelocity").build(),
                 ];
 
-                let depth_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(
-                    renderer
-                        .get_pass_resource_view(self.name(), "GBufferDepth", current_frame)
-                        .expect("GBufferDepth missing"),
-                )
-                .with_clear_depth(1.0)
-                .build();
+                let depth_attachment = get_attachment("GBufferDepth")
+                    .with_clear_depth(1.0)
+                    .build();
 
                 let rendering_info = vk::RenderingInfo::default()
                     .render_area(vk::Rect2D {
