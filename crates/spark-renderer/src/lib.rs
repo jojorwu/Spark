@@ -105,6 +105,16 @@ impl Renderer {
         self.current_view_proj
     }
 
+    /// Returns the current rendering settings.
+    pub fn get_settings(&self) -> &RenderSettings {
+        &self.settings
+    }
+
+    /// Updates the rendering settings.
+    pub fn update_settings(&mut self, settings: RenderSettings) {
+        self.settings = settings;
+    }
+
     /// Creates a new Renderer instance.
     /// Initializes Vulkan context, device, swapchain, and core resource managers.
     pub fn new(
@@ -130,97 +140,22 @@ impl Renderer {
             device.msaa_samples,
             device.depth_format,
         )?;
-        let common_sampler = unsafe {
-            device.device.create_sampler(
-                &vk::SamplerCreateInfo::default()
-                    .mag_filter(vk::Filter::LINEAR)
-                    .min_filter(vk::Filter::LINEAR)
-                    .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_BORDER)
-                    .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_BORDER)
-                    .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_BORDER)
-                    .border_color(vk::BorderColor::FLOAT_OPAQUE_WHITE)
-                    .mipmap_mode(vk::SamplerMipmapMode::LINEAR),
-                None,
-            )?
-        };
 
-        let dummy_buffer = device
-            .create_buffer(
-                64,
-                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            )
-            .map_err(|_| RendererError::NoSuitableDevice)?;
-        let pipeline_cache = unsafe {
-            device
-                .device
-                .create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)?
-        };
-
-        let global_descriptor_set_layout = unsafe {
-            device.device.create_descriptor_set_layout(
-                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(0)
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(1)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(2)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(3)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(4)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::COMPUTE),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(5)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(6)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(7)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-                ]),
-                None,
-            )?
-        };
+        let common_sampler = Self::create_common_sampler(&device.device)?;
+        let dummy_buffer = Self::create_dummy_buffer(&device)?;
+        let pipeline_cache = Self::create_pipeline_cache(&device.device)?;
+        let global_descriptor_set_layout = Self::create_global_ds_layout(&device.device)?;
 
         let gpu_resource_manager =
             crate::vulkan::resource_manager::GpuResourceManager::new(&device)?;
         let mut frame_manager = crate::vulkan::frame_manager::FrameManager::new(&device)?;
 
-        let global_layouts = vec![global_descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
-        let global_descriptor_sets = unsafe {
-            device.device.allocate_descriptor_sets(
-                &vk::DescriptorSetAllocateInfo::default()
-                    .descriptor_pool(gpu_resource_manager.descriptor_pool)
-                    .set_layouts(&global_layouts),
-            )?
-        };
-
-        for (i, frame) in frame_manager.frames.iter_mut().enumerate() {
-            frame.global_descriptor_set = global_descriptor_sets[i];
-        }
+        Self::allocate_global_descriptor_sets(
+            &device,
+            &gpu_resource_manager,
+            &mut frame_manager,
+            global_descriptor_set_layout,
+        )?;
 
         let egui_renderer = ui_shaders.map(|(v, f)| {
             EguiRenderer::new(
@@ -275,38 +210,144 @@ impl Renderer {
             current_zfar: 100.0,
         };
 
-        renderer
-            .render_graph
-            .physical_attachments
-            .insert("GBufferHDR".to_string(), gbuffer.hdr);
-        renderer
-            .render_graph
-            .physical_attachments
-            .insert("GBufferAlbedo".to_string(), gbuffer.albedo);
-        renderer
-            .render_graph
-            .physical_attachments
-            .insert("GBufferNormal".to_string(), gbuffer.normal);
-        renderer
-            .render_graph
-            .physical_attachments
-            .insert("GBufferPBR".to_string(), gbuffer.pbr);
-        renderer
-            .render_graph
-            .physical_attachments
-            .insert("GBufferVelocity".to_string(), gbuffer.velocity);
-        renderer
-            .render_graph
-            .physical_attachments
-            .insert("GBufferDepth".to_string(), gbuffer.depth);
-
+        renderer.init_gbuffer_attachments(gbuffer);
         renderer.init_default_resources();
-        if let Some(ref tex) = renderer.gpu_resource_manager.default_texture {
-            renderer.common_shadow_view = tex.view;
-            renderer.hiz_view = tex.view;
-        }
+        renderer.init_common_views();
 
         Ok(renderer)
+    }
+
+    fn allocate_global_descriptor_sets(
+        device: &VulkanDevice,
+        gpu_resource_manager: &crate::vulkan::resource_manager::GpuResourceManager,
+        frame_manager: &mut crate::vulkan::frame_manager::FrameManager,
+        layout: vk::DescriptorSetLayout,
+    ) -> Result<(), RendererError> {
+        let global_layouts = vec![layout; MAX_FRAMES_IN_FLIGHT];
+        let global_descriptor_sets = unsafe {
+            device.device.allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(gpu_resource_manager.descriptor_pool)
+                    .set_layouts(&global_layouts),
+            )?
+        };
+
+        for (i, frame) in frame_manager.frames.iter_mut().enumerate() {
+            frame.global_descriptor_set = global_descriptor_sets[i];
+        }
+        Ok(())
+    }
+
+    fn init_common_views(&mut self) {
+        if let Some(ref tex) = self.gpu_resource_manager.default_texture {
+            self.common_shadow_view = tex.view;
+            self.hiz_view = tex.view;
+        }
+    }
+
+    fn create_common_sampler(device: &ash::Device) -> Result<vk::Sampler, vk::Result> {
+        unsafe {
+            device.create_sampler(
+                &vk::SamplerCreateInfo::default()
+                    .mag_filter(vk::Filter::LINEAR)
+                    .min_filter(vk::Filter::LINEAR)
+                    .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                    .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                    .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                    .border_color(vk::BorderColor::FLOAT_OPAQUE_WHITE)
+                    .mipmap_mode(vk::SamplerMipmapMode::LINEAR),
+                None,
+            )
+        }
+    }
+
+    fn create_dummy_buffer(device: &VulkanDevice) -> Result<Buffer, RendererError> {
+        device
+            .create_buffer(
+                64,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )
+            .map_err(|_| RendererError::NoSuitableDevice)
+    }
+
+    fn create_pipeline_cache(device: &ash::Device) -> Result<vk::PipelineCache, vk::Result> {
+        unsafe { device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None) }
+    }
+
+    fn create_global_ds_layout(
+        device: &ash::Device,
+    ) -> Result<vk::DescriptorSetLayout, vk::Result> {
+        let bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(5)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(6)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(7)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        ];
+
+        unsafe {
+            device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+                None,
+            )
+        }
+    }
+
+    fn init_gbuffer_attachments(&mut self, gbuffer: GBuffer) {
+        self.render_graph
+            .physical_attachments
+            .insert("GBufferHDR".to_string(), gbuffer.hdr);
+        self.render_graph
+            .physical_attachments
+            .insert("GBufferAlbedo".to_string(), gbuffer.albedo);
+        self.render_graph
+            .physical_attachments
+            .insert("GBufferNormal".to_string(), gbuffer.normal);
+        self.render_graph
+            .physical_attachments
+            .insert("GBufferPBR".to_string(), gbuffer.pbr);
+        self.render_graph
+            .physical_attachments
+            .insert("GBufferVelocity".to_string(), gbuffer.velocity);
+        self.render_graph
+            .physical_attachments
+            .insert("GBufferDepth".to_string(), gbuffer.depth);
     }
 
     pub fn set_global_buffers(&mut self, vertex: Buffer, index: Buffer) {
@@ -332,7 +373,8 @@ impl Renderer {
         if self.gpu_resource_manager.default_texture.is_none() {
             let white_pixel = [255u8, 255, 255, 255];
             let img = image::DynamicImage::ImageRgba8(
-                image::RgbaImage::from_raw(1, 1, white_pixel.to_vec()).unwrap(),
+                image::RgbaImage::from_raw(1, 1, white_pixel.to_vec())
+                    .expect("Failed to create 1x1 white texture"),
             );
             let tex = self.create_texture_from_image(&img);
             self.gpu_resource_manager.default_texture = Some(tex);
@@ -411,7 +453,7 @@ impl Renderer {
             // the pass is now up-to-date with whatever resource it tracked in needs_descriptor_update.
             self.pass_descriptor_versions[current_frame]
                 .lock()
-                .unwrap()
+                .expect("Failed to lock pass descriptor versions")
                 .insert(pass_name, 1);
         }
     }
@@ -423,19 +465,8 @@ impl Renderer {
             self.common_shadow_view
         };
 
-        let (grid_buf, index_buf) = {
-            let mut g = None;
-            let mut idx = None;
-            for pass_node in &self.render_graph.passes {
-                if let Some(b) = pass_node.pass.get_resource_buffer("light_grid", 0) {
-                    g = Some(b);
-                }
-                if let Some(b) = pass_node.pass.get_resource_buffer("index_list", 0) {
-                    idx = Some(b);
-                }
-            }
-            (g, idx)
-        };
+        let grid_buf = self.get_resource_buffer("ClusteredPass", "light_grid", 0);
+        let index_buf = self.get_resource_buffer("ClusteredPass", "index_list", 0);
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let frame = &self.frame_manager.frames[i];
@@ -613,7 +644,7 @@ impl Renderer {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let needs_new_buffer = {
                 let frame = &self.frame_manager.frames[i];
-                frame.light_buffer.is_none() || frame.light_buffer.as_ref().unwrap().size < sz
+                frame.light_buffer.as_ref().map_or(true, |b| b.size < sz)
             };
 
             if needs_new_buffer {
@@ -670,7 +701,7 @@ impl Renderer {
         let mut buffer = self.frame_manager.frames[frame_idx]
             .transparent_indirect_buffer
             .clone();
-        if buffer.is_none() || buffer.as_ref().unwrap().size < cmd_sz {
+        if buffer.as_ref().map_or(true, |b| b.size < cmd_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .transparent_indirect_buffer
                 .take()
@@ -684,13 +715,16 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].transparent_indirect_buffer = buffer.clone();
         }
-        self.upload_to_buffer(&buffer.unwrap(), commands);
+        self.upload_to_buffer(
+            &buffer.expect("Transparent indirect buffer missing"),
+            commands,
+        );
 
         let obj_sz = std::mem::size_of_val(object_data) as u64;
         let mut obj_buffer = self.frame_manager.frames[frame_idx]
             .transparent_object_buffer
             .clone();
-        if obj_buffer.is_none() || obj_buffer.as_ref().unwrap().size < obj_sz {
+        if obj_buffer.as_ref().map_or(true, |b| b.size < obj_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .transparent_object_buffer
                 .take()
@@ -704,7 +738,10 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].transparent_object_buffer = obj_buffer.clone();
         }
-        self.upload_to_buffer(&obj_buffer.unwrap(), object_data);
+        self.upload_to_buffer(
+            &obj_buffer.expect("Transparent object buffer missing"),
+            object_data,
+        );
     }
 
     pub fn update_indirect_buffers(
@@ -722,7 +759,7 @@ impl Renderer {
         let mut buffer = self.frame_manager.frames[frame_idx]
             .indirect_commands_buffer
             .clone();
-        if buffer.is_none() || buffer.as_ref().unwrap().size < cmd_sz {
+        if buffer.as_ref().map_or(true, |b| b.size < cmd_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .indirect_commands_buffer
                 .take()
@@ -736,13 +773,13 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].indirect_commands_buffer = buffer.clone();
         }
-        self.upload_to_buffer(&buffer.unwrap(), commands);
+        self.upload_to_buffer(&buffer.expect("Indirect commands buffer missing"), commands);
 
         let obj_sz = std::mem::size_of_val(object_data) as u64;
         let mut obj_buffer = self.frame_manager.frames[frame_idx]
             .object_data_buffer
             .clone();
-        if obj_buffer.is_none() || obj_buffer.as_ref().unwrap().size < obj_sz {
+        if obj_buffer.as_ref().map_or(true, |b| b.size < obj_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .object_data_buffer
                 .take()
@@ -756,7 +793,10 @@ impl Renderer {
             ));
             self.frame_manager.frames[frame_idx].object_data_buffer = obj_buffer.clone();
         }
-        self.upload_to_buffer(&obj_buffer.unwrap(), object_data);
+        self.upload_to_buffer(
+            &obj_buffer.expect("Object data buffer missing"),
+            object_data,
+        );
 
         if self.frame_manager.frames[frame_idx]
             .draw_count_buffer
@@ -820,94 +860,133 @@ impl Renderer {
         _object_count: u32,
         delta: f32,
     ) {
-        // Retrieve view_proj and light_view_proj from the current frame's global buffer
-        // For simplicity, we'll keep them as parameters or fetch from UBO.
-        // Since prepare_frame just uploaded them, we can use them from there or just pass them.
-        // Let's modify prepare_frame to store them in the Renderer.
-        let (image_available, in_flight, command_buffer, render_finished) = {
-            let frame = &self.frame_manager.frames[self.frame_manager.current_frame];
-            (
-                frame.image_available,
-                frame.in_flight,
-                frame.command_buffer,
-                frame.render_finished,
-            )
+        let frame_idx = self.frame_manager.current_frame;
+        let in_flight_fence = self.frame_manager.frames[frame_idx].in_flight;
+        let image_available = self.frame_manager.frames[frame_idx].image_available;
+
+        // 1. Wait for GPU and acquire next image
+        self.wait_for_frame(in_flight_fence);
+        let Some(image_index) = self.acquire_next_image(window, image_available) else {
+            return;
         };
 
+        // 2. Prepare frame resources (resets and pools)
+        self.prepare_gpu_resources(frame_idx);
+
+        // 3. Record and submit commands
+        self.record_and_submit_frame(image_index, egui_output, delta);
+
+        // 4. Present and advance
+        self.present_frame(window, image_index);
+        self.advance_frame();
+    }
+
+    fn wait_for_frame(&self, fence: vk::Fence) {
         unsafe {
-            // Ожидание завершения предыдущего кадра, использующего те же ресурсы.
-            // Wait for the previous frame using these resources to finish.
             self.device
                 .device
-                .wait_for_fences(&[in_flight], true, u64::MAX)
+                .wait_for_fences(&[fence], true, u64::MAX)
                 .expect("Failed to wait for fence");
-            // Получение индекса следующего доступного изображения из swapchain.
-            // Acquire the next available image from the swapchain.
-            log::trace!("Acquiring next swapchain image");
+        }
+    }
+
+    fn acquire_next_image(&mut self, window: &Window, semaphore: vk::Semaphore) -> Option<u32> {
+        unsafe {
             let result = self.swapchain.loader.acquire_next_image(
                 self.swapchain.handle,
                 u64::MAX,
-                image_available,
+                semaphore,
                 vk::Fence::null(),
             );
-            let image_index = match result {
+
+            match result {
                 Ok((index, _)) => {
                     self.current_image_index = index;
-                    index
+                    Some(index)
                 }
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                     let _ = self.recreate_swapchain(window);
-                    return;
+                    None
                 }
                 Err(e) => panic!("Failed to acquire swapchain image: {:?}", e),
-            };
+            }
+        }
+    }
+
+    fn prepare_gpu_resources(&self, frame_idx: usize) {
+        unsafe {
+            let frame = &self.frame_manager.frames[frame_idx];
             self.device
                 .device
-                .reset_fences(&[in_flight])
+                .reset_fences(&[frame.in_flight])
                 .expect("Failed to reset fence");
+
             self.device
                 .device
-                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
+                .reset_command_buffer(frame.command_buffer, vk::CommandBufferResetFlags::empty())
                 .expect("Failed to reset command buffer");
 
-            // Clean up secondary command buffers for the current frame
             for pools in &self.device.thread_command_pools {
-                let pool = pools[self.frame_manager.current_frame];
+                let pool = pools[frame_idx];
                 self.device
                     .device
                     .reset_command_pool(pool, vk::CommandPoolResetFlags::empty())
-                    .unwrap();
+                    .expect("Failed to reset thread command pool");
             }
-            self.record_command_buffer(image_index, egui_output, delta);
-            let s_finished = [render_finished];
-            let c_buffers = [command_buffer];
-            let s_wait = [
-                image_available,
-                self.frame_manager.culling_finished_semaphores[self.frame_manager.current_frame],
-            ];
-            let w_stages = [
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::DRAW_INDIRECT,
-            ];
+        }
+    }
 
-            let submit_info = vk::SubmitInfo::default()
-                .wait_semaphores(&s_wait)
-                .wait_dst_stage_mask(&w_stages)
-                .command_buffers(&c_buffers)
-                .signal_semaphores(&s_finished);
-            // Отправка командного буфера в очередь графики.
-            // Submit the command buffer to the graphics queue.
+    fn record_and_submit_frame(
+        &mut self,
+        image_index: u32,
+        egui_output: Option<(egui::FullOutput, egui::Context)>,
+        delta: f32,
+    ) {
+        let frame_idx = self.frame_manager.current_frame;
+
+        self.record_command_buffer(image_index, egui_output, delta);
+
+        let frame = &self.frame_manager.frames[frame_idx];
+        let wait_semaphores = [
+            frame.image_available,
+            self.frame_manager.culling_finished_semaphores[frame_idx],
+        ];
+        let wait_stages = [
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::DRAW_INDIRECT,
+        ];
+        let signal_semaphores = [frame.render_finished];
+        let command_buffers = [frame.command_buffer];
+
+        let submit_info = vk::SubmitInfo::default()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .command_buffers(&command_buffers)
+            .signal_semaphores(&signal_semaphores);
+
+        unsafe {
             self.device
                 .device
-                .queue_submit(self.device.graphics_queue, &[submit_info], in_flight)
-                .unwrap();
-            let result = self.swapchain.loader.queue_present(
-                self.device.graphics_queue,
-                &vk::PresentInfoKHR::default()
-                    .wait_semaphores(&s_finished)
-                    .swapchains(&[self.swapchain.handle])
-                    .image_indices(&[image_index]),
-            );
+                .queue_submit(self.device.graphics_queue, &[submit_info], frame.in_flight)
+                .expect("Failed to submit frame to graphics queue");
+        }
+    }
+
+    fn present_frame(&mut self, window: &Window, image_index: u32) {
+        let frame_idx = self.frame_manager.current_frame;
+        let signal_semaphores = [self.frame_manager.frames[frame_idx].render_finished];
+
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(&signal_semaphores)
+            .swapchains(std::slice::from_ref(&self.swapchain.handle))
+            .image_indices(std::slice::from_ref(&image_index));
+
+        unsafe {
+            let result = self
+                .swapchain
+                .loader
+                .queue_present(self.device.graphics_queue, &present_info);
+
             match result {
                 Ok(_) => {}
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
@@ -915,12 +994,14 @@ impl Renderer {
                 }
                 Err(e) => panic!("Failed to present swapchain image: {:?}", e),
             }
-            let cvp = self.current_view_proj;
-            self.prev_view_proj = cvp;
-            self.frame_manager.frame_index += 1;
-            self.frame_manager.current_frame =
-                (self.frame_manager.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
         }
+    }
+
+    fn advance_frame(&mut self) {
+        self.prev_view_proj = self.current_view_proj;
+        self.frame_manager.frame_index += 1;
+        self.frame_manager.current_frame =
+            (self.frame_manager.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
     pub fn set_common_shadow_view(&mut self, view: vk::ImageView) {
@@ -950,7 +1031,7 @@ impl Renderer {
             self.device
                 .device
                 .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
-                .unwrap();
+                .expect("Failed to begin command buffer");
 
             use crate::passes::RenderContext;
 
@@ -982,7 +1063,7 @@ impl Renderer {
             self.device
                 .device
                 .end_command_buffer(command_buffer)
-                .unwrap();
+                .expect("Failed to end command buffer");
         }
     }
 
@@ -1022,82 +1103,24 @@ impl Renderer {
             )?;
             let extent = self.swapchain.extent;
             // Recreate G-Buffer attachments
-            if let Some(hdr) = self.render_graph.physical_attachments.get_mut("GBufferHDR") {
-                for a in hdr {
-                    a.recreate(
-                        &self.device,
-                        extent.width,
-                        extent.height,
-                        vk::Format::R16G16B16A16_SFLOAT,
-                    )?;
-                }
-            }
-            if let Some(albedo) = self
-                .render_graph
-                .physical_attachments
-                .get_mut("GBufferAlbedo")
-            {
-                for a in albedo {
-                    a.recreate(
-                        &self.device,
-                        extent.width,
-                        extent.height,
-                        vk::Format::R8G8B8A8_UNORM,
-                    )?;
-                }
-            }
-            if let Some(normal) = self
-                .render_graph
-                .physical_attachments
-                .get_mut("GBufferNormal")
-            {
-                for a in normal {
-                    a.recreate(
-                        &self.device,
-                        extent.width,
-                        extent.height,
-                        vk::Format::R16G16B16A16_SFLOAT,
-                    )?;
-                }
-            }
-            if let Some(pbr) = self.render_graph.physical_attachments.get_mut("GBufferPBR") {
-                for a in pbr {
-                    a.recreate(
-                        &self.device,
-                        extent.width,
-                        extent.height,
-                        vk::Format::R8G8B8A8_UNORM,
-                    )?;
-                }
-            }
-            if let Some(velocity) = self
-                .render_graph
-                .physical_attachments
-                .get_mut("GBufferVelocity")
-            {
-                for a in velocity {
-                    a.recreate(
-                        &self.device,
-                        extent.width,
-                        extent.height,
-                        vk::Format::R16G16_SFLOAT,
-                    )?;
-                }
-            }
-            if let Some(depth) = self
-                .render_graph
-                .physical_attachments
-                .get_mut("GBufferDepth")
-            {
-                for a in depth {
-                    a.recreate(
-                        &self.device,
-                        extent.width,
-                        extent.height,
-                        self.device.depth_format,
-                    )?;
-                }
-            }
+            self.recreate_physical_attachment(
+                "GBufferHDR",
+                extent,
+                vk::Format::R16G16B16A16_SFLOAT,
+            )?;
+            self.recreate_physical_attachment("GBufferAlbedo", extent, vk::Format::R8G8B8A8_UNORM)?;
+            self.recreate_physical_attachment(
+                "GBufferNormal",
+                extent,
+                vk::Format::A2B10G10R10_UNORM_PACK32,
+            )?;
+            self.recreate_physical_attachment("GBufferPBR", extent, vk::Format::R8G8B8A8_UNORM)?;
+            self.recreate_physical_attachment(
+                "GBufferVelocity",
+                extent,
+                vk::Format::R16G16_SFLOAT,
+            )?;
+            self.recreate_physical_attachment("GBufferDepth", extent, self.device.depth_format)?;
 
             if self.viewport_attachment.is_some() {
                 self.create_viewport_attachment(extent.width, extent.height);
@@ -1135,10 +1158,89 @@ impl Renderer {
         let (w, h) = (img.width(), img.height());
         let mip = (((w.max(h) as f32).log2().floor()) as u32) + 1;
         let rgba = img.to_rgba8();
-        let pix = rgba.as_raw();
-        let sz = pix.len() as u64;
+        let pixels = rgba.as_raw();
+        let size = pixels.len() as u64;
 
         let frame_idx = self.frame_manager.current_frame;
+        self.ensure_staging_buffer_capacity(frame_idx, size);
+
+        let staging = self.frame_manager.frames[frame_idx]
+            .texture_staging_buffer
+            .as_ref()
+            .expect("Staging buffer missing after ensure");
+        unsafe {
+            std::ptr::copy_nonoverlapping(pixels.as_ptr(), staging.ptr as *mut u8, pixels.len());
+        }
+
+        let (image, allocation) =
+            self.create_image_basic(&crate::vulkan::device::ImageCreateParams {
+                width: w,
+                height: h,
+                mip_levels: mip,
+                format: vk::Format::R8G8B8A8_SRGB,
+                tiling: vk::ImageTiling::OPTIMAL,
+                usage: vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST
+                    | vk::ImageUsageFlags::SAMPLED,
+                properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                samples: vk::SampleCountFlags::TYPE_1,
+            });
+
+        self.transition_image_layout_basic(
+            image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            mip,
+        );
+
+        let cb = self.begin_single_time_commands();
+        let region = vk::BufferImageCopy::default()
+            .image_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .image_extent(vk::Extent3D {
+                width: w,
+                height: h,
+                depth: 1,
+            });
+
+        unsafe {
+            self.device.device.cmd_copy_buffer_to_image(
+                cb,
+                staging.handle,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
+        }
+        self.end_single_time_commands(cb);
+
+        self.generate_mipmaps(image, vk::Format::R8G8B8A8_SRGB, w, h, mip);
+        let view = self.create_image_view_basic(image, vk::Format::R8G8B8A8_SRGB, mip);
+        let sampler = self.create_texture_sampler(mip);
+
+        let bindless_index = self.gpu_resource_manager.bindless.allocate_index();
+        self.gpu_resource_manager.bindless.update_texture(
+            &self.device.device,
+            bindless_index,
+            view,
+            sampler,
+        );
+
+        Texture {
+            image,
+            allocation: Some(allocation),
+            view,
+            sampler,
+            mip_levels: mip,
+            bindless_index,
+        }
+    }
+
+    fn ensure_staging_buffer_capacity(&mut self, frame_idx: usize, sz: u64) {
         let needs_new = {
             let f = &self.frame_manager.frames[frame_idx];
             f.texture_staging_buffer
@@ -1147,89 +1249,18 @@ impl Renderer {
         };
 
         if needs_new {
-            let old_buffer = self.frame_manager.frames[frame_idx]
+            if let Some(old) = self.frame_manager.frames[frame_idx]
                 .texture_staging_buffer
-                .take();
-            if let Some(old) = old_buffer {
+                .take()
+            {
                 self.device.destroy_buffer(old);
             }
-
-            let new_buffer = self.create_buffer(
-                sz.max(1024 * 1024), // Min 1MB
+            let b = self.create_buffer(
+                sz.max(1024 * 1024),
                 vk::BufferUsageFlags::TRANSFER_SRC,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             );
-            self.frame_manager.frames[frame_idx].texture_staging_buffer = Some(new_buffer);
-        }
-
-        let frame = &self.frame_manager.frames[frame_idx];
-        let st = frame.texture_staging_buffer.as_ref().unwrap();
-        let st_ptr = st.ptr;
-        let st_handle = st.handle;
-
-        unsafe {
-            std::ptr::copy_nonoverlapping(pix.as_ptr(), st_ptr as *mut u8, pix.len());
-        }
-
-        let (i, m) = self.create_image_basic(&crate::vulkan::device::ImageCreateParams {
-            width: w,
-            height: h,
-            mip_levels: mip,
-            format: vk::Format::R8G8B8A8_SRGB,
-            tiling: vk::ImageTiling::OPTIMAL,
-            usage: vk::ImageUsageFlags::TRANSFER_SRC
-                | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::SAMPLED,
-            properties: vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            samples: vk::SampleCountFlags::TYPE_1,
-        });
-        self.transition_image_layout_basic(
-            i,
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            mip,
-        );
-        let cb = self.begin_single_time_commands();
-        unsafe {
-            self.device.device.cmd_copy_buffer_to_image(
-                cb,
-                st_handle,
-                i,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[vk::BufferImageCopy::default()
-                    .image_subresource(vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        mip_level: 0,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    })
-                    .image_extent(vk::Extent3D {
-                        width: w,
-                        height: h,
-                        depth: 1,
-                    })],
-            );
-        }
-        self.end_single_time_commands(cb);
-        self.generate_mipmaps(i, vk::Format::R8G8B8A8_SRGB, w, h, mip);
-        let v = self.create_image_view_basic(i, vk::Format::R8G8B8A8_SRGB, mip);
-        let s = self.create_texture_sampler(mip);
-
-        let bindless_index = self.gpu_resource_manager.bindless.allocate_index();
-        self.gpu_resource_manager.bindless.update_texture(
-            &self.device.device,
-            bindless_index,
-            v,
-            s,
-        );
-
-        Texture {
-            image: i,
-            allocation: Some(m),
-            view: v,
-            sampler: s,
-            mip_levels: mip,
-            bindless_index,
+            self.frame_manager.frames[frame_idx].texture_staging_buffer = Some(b);
         }
     }
 
@@ -1247,7 +1278,12 @@ impl Renderer {
             self.device.device.destroy_image_view(t.view, None);
             self.device.device.destroy_image(t.image, None);
             if let Some(alloc) = t.allocation.take() {
-                self.device.allocator.lock().unwrap().free(alloc).unwrap();
+                self.device
+                    .allocator
+                    .lock()
+                    .expect("Failed to lock allocator")
+                    .free(alloc)
+                    .expect("Failed to free texture allocation");
             }
         }
     }
@@ -1285,7 +1321,7 @@ impl Renderer {
                         .max_lod(mip as f32),
                     None,
                 )
-                .unwrap()
+                .expect("Failed to create texture sampler")
         }
     }
 
@@ -1570,7 +1606,8 @@ impl Renderer {
         asset_manager: &impl RenderableAssetManager,
     ) -> u32 {
         let extent = self.get_extent();
-        let (_view_matrix, projection_matrix, frustum) = self.calculate_view_constants(scene, extent);
+        let (_view_matrix, projection_matrix, frustum) =
+            self.calculate_view_constants(scene, extent);
 
         let mut packet = scene.collect_frame_packet(frustum.as_ref(), asset_manager);
         packet.projection_matrix = projection_matrix;
@@ -1594,12 +1631,20 @@ impl Renderer {
         &mut self,
         scene: &impl RenderableScene,
         extent: vk::Extent2D,
-    ) -> (spark_math::Mat4, spark_math::Mat4, Option<spark_math::Frustum>) {
+    ) -> (
+        spark_math::Mat4,
+        spark_math::Mat4,
+        Option<spark_math::Frustum>,
+    ) {
         if let Some((view, proj, near, far)) = scene.get_active_camera_matrices(extent) {
             self.current_znear = near;
             self.current_zfar = far;
             let camera_matrix = proj * view;
-            return (view, proj, Some(spark_math::Frustum::from_matrix(camera_matrix)));
+            return (
+                view,
+                proj,
+                Some(spark_math::Frustum::from_matrix(camera_matrix)),
+            );
         }
         (spark_math::Mat4::IDENTITY, spark_math::Mat4::IDENTITY, None)
     }
@@ -1635,7 +1680,8 @@ impl Renderer {
         for i in 0..self.render_graph.passes.len() {
             if self.render_graph.passes[i].pass.is_enabled(self) {
                 // We use a little unsafe here because we know prepare doesn't mutate the pass list itself
-                let pass_ptr = &self.render_graph.passes[i].pass as *const Box<dyn crate::passes::RenderPass>;
+                let pass_ptr =
+                    &self.render_graph.passes[i].pass as *const Box<dyn crate::passes::RenderPass>;
                 unsafe {
                     (*pass_ptr).prepare(self, cf);
                 }
@@ -1657,50 +1703,21 @@ impl Renderer {
 
             self.ensure_indirect_buffers_capacity(frame_idx, cmd_sz, obj_sz);
 
-            let frame = &self.frame_manager.frames[frame_idx];
-            let cmd_ptr = frame.indirect_commands_buffer.as_ref().unwrap().ptr as usize;
-            let obj_ptr = frame.object_data_buffer.as_ref().unwrap().ptr as usize;
+            let (icb, odb) = {
+                let frame = &self.frame_manager.frames[frame_idx];
+                (
+                    frame
+                        .indirect_commands_buffer
+                        .clone()
+                        .expect("Indirect commands buffer missing"),
+                    frame
+                        .object_data_buffer
+                        .clone()
+                        .expect("Object data buffer missing"),
+                )
+            };
 
-            packet
-                .opaque_meshes
-                .par_iter()
-                .enumerate()
-                .for_each(|(i, mesh)| {
-                    let m = mesh.model.transpose();
-                    unsafe {
-                        let obj_ptr = obj_ptr as *mut ObjectDataSSBO;
-                        let cmd_ptr = cmd_ptr as *mut vk::DrawIndexedIndirectCommand;
-                        *obj_ptr.add(i) = ObjectDataSSBO {
-                            model_row0: m.row(0),
-                            model_row1: m.row(1),
-                            model_row2: m.row(2),
-                            sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
-                            index_count: mesh.index_count,
-                            first_index: mesh.first_index,
-                            vertex_offset: mesh.vertex_offset,
-                            material_index: mesh.material_index,
-                        };
-                        *cmd_ptr.add(i) = vk::DrawIndexedIndirectCommand {
-                            index_count: mesh.index_count,
-                            instance_count: 1,
-                            first_index: mesh.first_index,
-                            vertex_offset: mesh.vertex_offset,
-                            first_instance: i as u32,
-                        };
-                    }
-                });
-            frame
-                .indirect_commands_buffer
-                .as_ref()
-                .unwrap()
-                .version
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            frame
-                .object_data_buffer
-                .as_ref()
-                .unwrap()
-                .version
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Self::fill_mesh_data_buffers(&packet.opaque_meshes, &icb, &odb);
         }
 
         // 2. Transparent meshes.
@@ -1713,54 +1730,69 @@ impl Renderer {
 
             self.ensure_transparent_buffers_capacity(frame_idx, cmd_sz, obj_sz);
 
-            let frame = &self.frame_manager.frames[frame_idx];
-            let cmd_ptr = frame.transparent_indirect_buffer.as_ref().unwrap().ptr as usize;
-            let obj_ptr = frame.transparent_object_buffer.as_ref().unwrap().ptr as usize;
+            let (ticb, todb) = {
+                let frame = &self.frame_manager.frames[frame_idx];
+                (
+                    frame
+                        .transparent_indirect_buffer
+                        .clone()
+                        .expect("Transparent indirect buffer missing"),
+                    frame
+                        .transparent_object_buffer
+                        .clone()
+                        .expect("Transparent object buffer missing"),
+                )
+            };
 
-            packet
-                .transparent_meshes
-                .par_iter()
-                .enumerate()
-                .for_each(|(i, mesh)| {
-                    let m = mesh.model.transpose();
-                    unsafe {
-                        let obj_ptr = obj_ptr as *mut ObjectDataSSBO;
-                        let cmd_ptr = cmd_ptr as *mut vk::DrawIndexedIndirectCommand;
-                        *obj_ptr.add(i) = ObjectDataSSBO {
-                            model_row0: m.row(0),
-                            model_row1: m.row(1),
-                            model_row2: m.row(2),
-                            sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
-                            index_count: mesh.index_count,
-                            first_index: mesh.first_index,
-                            vertex_offset: mesh.vertex_offset,
-                            material_index: mesh.material_index,
-                        };
-                        *cmd_ptr.add(i) = vk::DrawIndexedIndirectCommand {
-                            index_count: mesh.index_count,
-                            instance_count: 1,
-                            first_index: mesh.first_index,
-                            vertex_offset: mesh.vertex_offset,
-                            first_instance: i as u32,
-                        };
-                    }
-                });
-            frame
-                .transparent_indirect_buffer
-                .as_ref()
-                .unwrap()
-                .version
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            frame
-                .transparent_object_buffer
-                .as_ref()
-                .unwrap()
-                .version
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Self::fill_mesh_data_buffers(&packet.transparent_meshes, &ticb, &todb);
         }
         self.last_transparent_count = trans_count;
 
         opaque_count
+    }
+
+    /// Fills the indirect command and object data buffers for a list of meshes.
+    fn fill_mesh_data_buffers(
+        meshes: &[crate::resource::MeshDraw],
+        indirect_buffer: &Buffer,
+        object_buffer: &Buffer,
+    ) {
+        use rayon::prelude::*;
+
+        let cmd_ptr = indirect_buffer.ptr as usize;
+        let obj_ptr = object_buffer.ptr as usize;
+
+        meshes.par_iter().enumerate().for_each(|(i, mesh)| {
+            let m = &mesh.model;
+            unsafe {
+                let obj_ptr = obj_ptr as *mut ObjectDataSSBO;
+                let cmd_ptr = cmd_ptr as *mut vk::DrawIndexedIndirectCommand;
+                *obj_ptr.add(i) = ObjectDataSSBO {
+                    model_row0: m.col(0),
+                    model_row1: m.col(1),
+                    model_row2: m.col(2),
+                    sphere: spark_math::Vec4::new(0.0, 0.0, 0.0, mesh.bounding_radius),
+                    index_count: mesh.index_count,
+                    first_index: mesh.first_index,
+                    vertex_offset: mesh.vertex_offset,
+                    material_index: mesh.material_index,
+                };
+                *cmd_ptr.add(i) = vk::DrawIndexedIndirectCommand {
+                    index_count: mesh.index_count,
+                    instance_count: 1,
+                    first_index: mesh.first_index,
+                    vertex_offset: mesh.vertex_offset,
+                    first_instance: i as u32,
+                };
+            }
+        });
+
+        indirect_buffer
+            .version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        object_buffer
+            .version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn ensure_indirect_buffers_capacity(&mut self, frame_idx: usize, cmd_sz: u64, obj_sz: u64) {
@@ -2063,6 +2095,20 @@ impl Renderer {
     pub fn end_single_time_commands(&self, cb: vk::CommandBuffer) {
         self.device.end_single_time_commands(cb);
     }
+
+    fn recreate_physical_attachment(
+        &mut self,
+        name: &str,
+        extent: vk::Extent2D,
+        format: vk::Format,
+    ) -> Result<(), RendererError> {
+        if let Some(attachments) = self.render_graph.physical_attachments.get_mut(name) {
+            for a in attachments {
+                a.recreate(&self.device, extent.width, extent.height, format)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Renderer {
@@ -2103,7 +2149,10 @@ impl Drop for Renderer {
                 .device
                 .destroy_descriptor_set_layout(self.global_descriptor_set_layout, None);
 
-            self.as_manager.lock().unwrap().cleanup(&self.device);
+            self.as_manager
+                .lock()
+                .expect("Failed to lock AS manager during cleanup")
+                .cleanup(&self.device);
 
             self.device
                 .device

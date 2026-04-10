@@ -20,7 +20,7 @@ impl<'a> EventProxy<'a> {
     pub fn publish_custom(&self, name: &str, data: serde_json::Value) {
         self.outgoing
             .lock()
-            .unwrap()
+            .expect("Failed to lock event bus outgoing queue")
             .push(SystemEvent::Custom(name.to_string(), data));
     }
 }

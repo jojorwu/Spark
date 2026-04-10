@@ -10,23 +10,23 @@ impl RenderPass for ClusteredPass {
         "ClusteredPass"
     }
 
-    fn gpu_resource_buffer_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+    fn gpu_resource_buffer_access(&self) -> Vec<super::GpuResourceAccess> {
         vec![
-            (
-                "light_grid".to_string(),
-                vk::AccessFlags::SHADER_WRITE,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-            ),
-            (
-                "index_list".to_string(),
-                vk::AccessFlags::SHADER_WRITE,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-            ),
-            (
-                "Lights".to_string(),
-                vk::AccessFlags::SHADER_READ,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-            ),
+            super::GpuResourceAccess {
+                resource_name: "light_grid",
+                access_flags: vk::AccessFlags::SHADER_WRITE,
+                stage_flags: vk::PipelineStageFlags::COMPUTE_SHADER,
+            },
+            super::GpuResourceAccess {
+                resource_name: "index_list",
+                access_flags: vk::AccessFlags::SHADER_WRITE,
+                stage_flags: vk::PipelineStageFlags::COMPUTE_SHADER,
+            },
+            super::GpuResourceAccess {
+                resource_name: "Lights",
+                access_flags: vk::AccessFlags::SHADER_READ,
+                stage_flags: vk::PipelineStageFlags::COMPUTE_SHADER,
+            },
         ]
     }
 
@@ -54,8 +54,14 @@ impl RenderPass for ClusteredPass {
             renderer.swapchain.extent.height as f32,
         ];
 
-        let mut last_p = self.last_proj.lock().unwrap();
-        let mut last_s = self.last_screen_size.lock().unwrap();
+        let mut last_p = self
+            .last_proj
+            .lock()
+            .expect("Failed to lock last projection in ClusteredPass");
+        let mut last_s = self
+            .last_screen_size
+            .lock()
+            .expect("Failed to lock last screen size in ClusteredPass");
 
         if *last_p != proj || *last_s != screen_size {
             self.record_build_commands(
@@ -226,12 +232,13 @@ impl ClusteredPass {
             )?
         };
 
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
 
         let build_pipeline = unsafe {
             device
                 .create_compute_pipelines(
-                    vk::PipelineCache::null(),
+                    renderer.pipeline_cache,
                     &[vk::ComputePipelineCreateInfo::default()
                         .stage(
                             vk::PipelineShaderStageCreateInfo::default()
@@ -242,13 +249,13 @@ impl ClusteredPass {
                         .layout(layout)],
                     None,
                 )
-                .unwrap()[0]
+                .expect("Failed to create ClusteredPass build pipeline")[0]
         };
 
         let cull_pipeline = unsafe {
             device
                 .create_compute_pipelines(
-                    vk::PipelineCache::null(),
+                    renderer.pipeline_cache,
                     &[vk::ComputePipelineCreateInfo::default()
                         .stage(
                             vk::PipelineShaderStageCreateInfo::default()
@@ -259,7 +266,7 @@ impl ClusteredPass {
                         .layout(layout)],
                     None,
                 )
-                .unwrap()[0]
+                .expect("Failed to create ClusteredPass cull pipeline")[0]
         };
 
         unsafe {
@@ -357,20 +364,22 @@ impl ClusteredPass {
             );
 
             #[repr(C)]
-            struct PC {
+            struct ClusteredBuildPushConstants {
                 inv_proj: Mat4,
                 screen_size: [f32; 2],
                 z_near: f32,
                 z_far: f32,
             }
-            let pc = PC {
+            let pc = ClusteredBuildPushConstants {
                 inv_proj,
                 screen_size,
                 z_near,
                 z_far,
             };
-            let pc_bytes =
-                std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+            let pc_bytes = std::slice::from_raw_parts(
+                &pc as *const _ as *const u8,
+                std::mem::size_of::<ClusteredBuildPushConstants>(),
+            );
             device.cmd_push_constants(
                 command_buffer,
                 self.layout,
@@ -424,13 +433,15 @@ impl ClusteredPass {
             );
 
             #[repr(C)]
-            struct PC {
+            struct ClusteredCullPushConstants {
                 view: Mat4,
                 light_count: u32,
             }
-            let pc = PC { view, light_count };
-            let pc_bytes =
-                std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+            let pc = ClusteredCullPushConstants { view, light_count };
+            let pc_bytes = std::slice::from_raw_parts(
+                &pc as *const _ as *const u8,
+                std::mem::size_of::<ClusteredCullPushConstants>(),
+            );
             device.cmd_push_constants(
                 command_buffer,
                 self.layout,

@@ -14,4 +14,10 @@ pub enum RendererError {
 
     #[error("Failed to create surface")]
     SurfaceCreation,
+
+    #[error("Shader compilation error: {0}")]
+    ShaderCompilation(String),
+
+    #[error("Resource loading failed: {0}")]
+    ResourceLoading(String),
 }

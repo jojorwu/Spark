@@ -1,5 +1,6 @@
 use ash::vk;
 
+/// Represents a GPU-resident texture.
 pub struct Texture {
     pub image: vk::Image,
     pub allocation: Option<gpu_allocator::vulkan::Allocation>,
@@ -9,11 +10,16 @@ pub struct Texture {
     pub bindless_index: u32,
 }
 
-impl Clone for Texture {
-    fn clone(&self) -> Self {
+impl Texture {
+    /// Creates a shallow copy of the texture handles.
+    ///
+    /// SAFETY: This does NOT clone the underlying allocation. The caller must ensure
+    /// that the original texture remains valid for the lifetime of this copy, or that
+    /// this copy is not used to free resources.
+    pub unsafe fn shallow_copy(&self) -> Self {
         Self {
             image: self.image,
-            allocation: None, // Allocations cannot be trivially cloned
+            allocation: None,
             view: self.view,
             sampler: self.sampler,
             mip_levels: self.mip_levels,

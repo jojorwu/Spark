@@ -46,17 +46,17 @@ impl RenderPass for RayTracingPass {
 
     fn bindings(&self) -> Vec<ResourceBinding> {
         vec![
-            ResourceBinding::AccelerationStructure(BINDING_TLAS, "SceneTLAS".to_string()),
-            ResourceBinding::StorageImage(BINDING_IMAGE, "RTOutput".to_string()),
-            ResourceBinding::StorageBuffer(BINDING_VERTICES, "Vertices".to_string()),
-            ResourceBinding::StorageBuffer(BINDING_INDICES, "Indices".to_string()),
-            ResourceBinding::StorageBuffer(BINDING_MESHES, "MeshData".to_string()),
-            ResourceBinding::StorageBuffer(BINDING_MATERIALS, "Materials".to_string()),
-            ResourceBinding::StorageBuffer(BINDING_LIGHTS, "Lights".to_string()),
-            ResourceBinding::SampledImage(BINDING_GBUFFER_DEPTH, "GBufferDepth".to_string()),
-            ResourceBinding::SampledImage(BINDING_GBUFFER_NORMAL, "GBufferNormal".to_string()),
-            ResourceBinding::SampledImage(BINDING_GBUFFER_ALBEDO, "GBufferAlbedo".to_string()),
-            ResourceBinding::SampledImage(BINDING_GBUFFER_PBR, "GBufferPBR".to_string()),
+            ResourceBinding::AccelerationStructure(BINDING_TLAS, "SceneTLAS"),
+            ResourceBinding::StorageImage(BINDING_IMAGE, "RTOutput"),
+            ResourceBinding::StorageBuffer(BINDING_VERTICES, "Vertices"),
+            ResourceBinding::StorageBuffer(BINDING_INDICES, "Indices"),
+            ResourceBinding::StorageBuffer(BINDING_MESHES, "MeshData"),
+            ResourceBinding::StorageBuffer(BINDING_MATERIALS, "Materials"),
+            ResourceBinding::StorageBuffer(BINDING_LIGHTS, "Lights"),
+            ResourceBinding::SampledImage(BINDING_GBUFFER_DEPTH, "GBufferDepth"),
+            ResourceBinding::SampledImage(BINDING_GBUFFER_NORMAL, "GBufferNormal"),
+            ResourceBinding::SampledImage(BINDING_GBUFFER_ALBEDO, "GBufferAlbedo"),
+            ResourceBinding::SampledImage(BINDING_GBUFFER_PBR, "GBufferPBR"),
         ]
     }
 
@@ -71,38 +71,38 @@ impl RenderPass for RayTracingPass {
             }
         }
     }
-    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+    fn gpu_resource_access(&self) -> Vec<super::GpuResourceAccess> {
         vec![
-            (
-                "SceneTLAS".to_string(),
-                vk::AccessFlags::SHADER_READ,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-            ),
-            (
-                "GBufferDepth".to_string(),
-                vk::AccessFlags::SHADER_READ,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-            ),
-            (
-                "GBufferNormal".to_string(),
-                vk::AccessFlags::SHADER_READ,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-            ),
-            (
-                "GBufferAlbedo".to_string(),
-                vk::AccessFlags::SHADER_READ,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-            ),
-            (
-                "GBufferPBR".to_string(),
-                vk::AccessFlags::SHADER_READ,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-            ),
-            (
-                "RTOutput".to_string(),
-                vk::AccessFlags::SHADER_WRITE,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-            ),
+            super::GpuResourceAccess {
+                resource_name: "SceneTLAS",
+                access_flags: vk::AccessFlags::SHADER_READ,
+                stage_flags: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            },
+            super::GpuResourceAccess {
+                resource_name: "GBufferDepth",
+                access_flags: vk::AccessFlags::SHADER_READ,
+                stage_flags: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            },
+            super::GpuResourceAccess {
+                resource_name: "GBufferNormal",
+                access_flags: vk::AccessFlags::SHADER_READ,
+                stage_flags: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            },
+            super::GpuResourceAccess {
+                resource_name: "GBufferAlbedo",
+                access_flags: vk::AccessFlags::SHADER_READ,
+                stage_flags: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            },
+            super::GpuResourceAccess {
+                resource_name: "GBufferPBR",
+                access_flags: vk::AccessFlags::SHADER_READ,
+                stage_flags: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            },
+            super::GpuResourceAccess {
+                resource_name: "RTOutput",
+                access_flags: vk::AccessFlags::SHADER_WRITE,
+                stage_flags: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            },
         ]
     }
     fn outputs(&self) -> Vec<&'static str> {
@@ -406,7 +406,8 @@ impl RayTracingPass {
         let rmiss_module = crate::pipeline::Pipeline::create_shader_module(device, rmiss_spirv);
         let rchit_module = crate::pipeline::Pipeline::create_shader_module(device, rchit_spirv);
 
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::RAYGEN_KHR)
@@ -447,7 +448,7 @@ impl RayTracingPass {
             rt_loader
                 .create_ray_tracing_pipelines(
                     vk::DeferredOperationKHR::null(),
-                    vk::PipelineCache::null(),
+                    renderer.pipeline_cache,
                     &[vk::RayTracingPipelineCreateInfoKHR::default()
                         .stages(&stages)
                         .groups(&groups)
@@ -455,7 +456,8 @@ impl RayTracingPass {
                         .layout(layout)],
                     None,
                 )
-                .unwrap()[0]
+                .map_err(|e| e.1)
+                .expect("Failed to create RayTracing pipeline")[0]
         };
 
         unsafe {
@@ -497,7 +499,7 @@ impl RayTracingPass {
                     groups.len() as u32,
                     (groups.len() as u32 * handle_size) as usize,
                 )
-                .unwrap()
+                .expect("Failed to get ray tracing shader group handles")
         };
 
         let mut sbt_regions = [vk::StridedDeviceAddressRegionKHR::default(); 4];

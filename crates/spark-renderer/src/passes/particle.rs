@@ -79,15 +79,13 @@ impl RenderPass for ParticlePass {
             );
 
             // 2. Rendering
-            let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(
-                    renderer
-                        .get_pass_resource_view("", "GBufferHDR", cf)
-                        .unwrap_or(renderer.common_shadow_view),
-                )
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::LOAD)
-                .store_op(vk::AttachmentStoreOp::STORE);
+            let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(
+                renderer
+                    .get_pass_resource_view("", "GBufferHDR", cf)
+                    .unwrap_or(renderer.common_shadow_view),
+            )
+            .with_load_op(vk::AttachmentLoadOp::LOAD)
+            .build();
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {
@@ -228,7 +226,8 @@ impl ParticlePass {
 
         let vert_module = crate::pipeline::Pipeline::create_shader_module(device, vert_spirv);
         let frag_module = crate::pipeline::Pipeline::create_shader_module(device, frag_spirv);
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
 
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -288,7 +287,7 @@ impl ParticlePass {
         let graphics_pipeline = unsafe {
             device
                 .create_graphics_pipelines(renderer.pipeline_cache, &[info], None)
-                .unwrap()[0]
+                .expect("Failed to create particle graphics pipeline")[0]
         };
 
         unsafe {

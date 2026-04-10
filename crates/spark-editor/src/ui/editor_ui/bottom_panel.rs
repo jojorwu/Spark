@@ -66,7 +66,7 @@ impl EditorUI {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Clear").clicked() {
-                    self.logs.lock().unwrap().clear();
+                    self.logs.lock().expect("Failed to lock logs").clear();
                 }
             });
         });
@@ -74,7 +74,7 @@ impl EditorUI {
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                let logs = self.logs.lock().unwrap();
+                let logs = self.logs.lock().expect("Failed to lock logs");
                 for log in logs.iter() {
                     let (color, visible) = if log.contains("ERROR") {
                         (egui::Color32::LIGHT_RED, self.log_filter_error)
@@ -129,7 +129,10 @@ impl EditorUI {
 
                 for entry in sorted_entries {
                     let path = entry.path();
-                    let label = path.file_name().unwrap().to_string_lossy();
+                    let label = path
+                        .file_name()
+                        .expect("Asset entry has no file name")
+                        .to_string_lossy();
 
                     if !self.asset_search.is_empty()
                         && !label
@@ -242,7 +245,12 @@ impl EditorUI {
                 }
 
                 if matches {
-                    let mat_name = asset_manager.materials.get(handle).unwrap().name.clone();
+                    let mat_name = asset_manager
+                        .materials
+                        .get(handle)
+                        .expect("Material handle invalid")
+                        .name
+                        .clone();
                     ui.collapsing(format!("Material: {}", mat_name), |ui| {
                         if let Some(mat) = asset_manager.materials.get_mut(handle) {
                             Self::draw_material_editor_static(
@@ -341,7 +349,12 @@ impl EditorUI {
                     texture_path_map
                         .iter()
                         .find(|(_, &handle)| handle == h)
-                        .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+                        .map(|(path, _)| {
+                            path.file_name()
+                                .expect("Texture path has no file name")
+                                .to_string_lossy()
+                                .into_owned()
+                        })
                         .unwrap_or_else(|| format!("Texture ID: {}", h.id()))
                 })
                 .unwrap_or_else(|| "None".to_string());
@@ -356,7 +369,10 @@ impl EditorUI {
                             .iter()
                             .find(|(_, &handle)| handle == h)
                             .map(|(path, _)| {
-                                path.file_name().unwrap().to_string_lossy().into_owned()
+                                path.file_name()
+                                    .expect("Texture path has no file name")
+                                    .to_string_lossy()
+                                    .into_owned()
                             })
                             .unwrap_or_else(|| format!("ID: {}", t_idx));
                         ui.selectable_value(texture_handle, Some(h), name);

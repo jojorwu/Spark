@@ -64,7 +64,7 @@ impl SSGIPass {
                     vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
                     vk::SampleCountFlags::TYPE_1,
                 )
-                .unwrap()
+                .expect("Failed to create SSGI attachment texture")
             })
             .collect::<Vec<_>>();
 

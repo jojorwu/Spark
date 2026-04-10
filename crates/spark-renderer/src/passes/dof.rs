@@ -213,7 +213,8 @@ impl DoFPass {
         }
 
         let module = crate::pipeline::Pipeline::create_shader_module(device, shader_spirv);
-        let entry = std::ffi::CString::new("main").unwrap();
+        let entry =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(module)

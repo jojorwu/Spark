@@ -466,8 +466,9 @@ impl EditorUI {
                                 .add_filter("Spark Scene", &["json"])
                                 .pick_file()
                             {
-                                if let Ok(new_scene) = Scene::load_from_file(path.to_str().unwrap())
-                                {
+                                if let Ok(new_scene) = Scene::load_from_file(
+                                    path.to_str().expect("Scene path is not valid UTF-8"),
+                                ) {
                                     *scene = new_scene;
                                 }
                             }
@@ -494,7 +495,9 @@ impl EditorUI {
                                 .add_filter("Spark Scene", &["json"])
                                 .save_file()
                             {
-                                let _ = scene.save_to_file(path.to_str().unwrap());
+                                let _ = scene.save_to_file(
+                                    path.to_str().expect("Save path is not valid UTF-8"),
+                                );
                             }
                             ui.close_menu();
                         }
@@ -598,8 +601,12 @@ impl EditorUI {
                     .clicked()
                 {
                     if self.sim_state == SimulationState::Stopped {
-                        let json = serde_json::to_string(scene).unwrap();
-                        self.scene_snapshot = Some(serde_json::from_str(&json).unwrap());
+                        let json = serde_json::to_string(scene)
+                            .expect("Failed to serialize scene for snapshot");
+                        self.scene_snapshot = Some(
+                            serde_json::from_str(&json)
+                                .expect("Failed to deserialize scene snapshot"),
+                        );
                     }
                     self.sim_state = if self.sim_state == SimulationState::Playing {
                         SimulationState::Paused

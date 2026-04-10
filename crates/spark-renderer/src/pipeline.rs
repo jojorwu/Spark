@@ -26,162 +26,103 @@ pub struct PipelineCreateParams<'a> {
 }
 
 impl Pipeline {
+    /// Creates a new graphics pipeline with the specified parameters.
     pub fn new(device: &Device, params: &PipelineCreateParams) -> Self {
-        let vert_shader_code = params.vert_shader_code;
-        let frag_shader_code = params.frag_shader_code;
-        let msaa_samples = params.msaa_samples;
-        let is_deferred_lighting = params.is_deferred_lighting;
-        let input_attachments_count = params.input_attachments_count;
-        let pipeline_cache = params.pipeline_cache;
-        let global_ds_layout = params.global_ds_layout;
-        let bindless_ds_layout = params.bindless_ds_layout;
-        let vert_shader_module = Self::create_shader_module(device, vert_shader_code);
-        let frag_shader_module = Self::create_shader_module(device, frag_shader_code);
+        let (vert_module, frag_module) = Self::create_shader_modules(device, params);
+        let entry_point = CString::new("main").expect("Failed to create entry point CString");
 
-        let main_function_name = CString::new("main").unwrap();
-
-        let shader_stages = [
+        let stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vert_shader_module)
-                .name(&main_function_name),
+                .module(vert_module)
+                .name(&entry_point),
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(frag_shader_module)
-                .name(&main_function_name),
+                .module(frag_module)
+                .name(&entry_point),
         ];
 
-        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
+        let ds_layout = Self::create_pass_ds_layout(device, params);
+        let layout = Self::create_pipeline_layout(device, params, ds_layout);
 
+        let color_formats = Self::get_color_formats(params);
+        let color_blend_attachments = Self::create_color_blend_attachments(color_formats.len());
+
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .primitive_restart_enable(false);
-
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
 
         let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
-            .depth_clamp_enable(false)
-            .rasterizer_discard_enable(false)
-            .polygon_mode(vk::PolygonMode::FILL)
-            .line_width(1.0)
-            .cull_mode(if is_deferred_lighting {
+            .cull_mode(if params.is_deferred_lighting {
                 vk::CullModeFlags::NONE
             } else {
                 vk::CullModeFlags::BACK
             })
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-            .depth_bias_enable(false);
+            .line_width(1.0);
 
-        let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
-            .sample_shading_enable(false)
-            .rasterization_samples(if is_deferred_lighting {
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(
+            if params.is_deferred_lighting {
                 vk::SampleCountFlags::TYPE_1
             } else {
-                msaa_samples
-            });
+                params.msaa_samples
+            },
+        );
 
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(!is_deferred_lighting)
-            .depth_write_enable(!is_deferred_lighting)
-            .depth_compare_op(vk::CompareOp::LESS)
-            .depth_bounds_test_enable(false)
-            .stencil_test_enable(false);
+            .depth_test_enable(!params.is_deferred_lighting)
+            .depth_write_enable(!params.is_deferred_lighting)
+            .depth_compare_op(vk::CompareOp::LESS);
+
+        let color_blending =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&color_blend_attachments);
 
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic_state_info =
+        let dynamic_state =
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-        let mut color_blend_attachments = Vec::new();
-        if !is_deferred_lighting {
-            for _ in 0..3 {
-                // Albedo, Normal, PBR
-                color_blend_attachments.push(
-                    vk::PipelineColorBlendAttachmentState::default()
-                        .color_write_mask(vk::ColorComponentFlags::RGBA)
-                        .blend_enable(false),
-                );
-            }
-        } else {
-            // Lighting pass output (HDR)
-            color_blend_attachments.push(
-                vk::PipelineColorBlendAttachmentState::default()
-                    .color_write_mask(vk::ColorComponentFlags::RGBA)
-                    .blend_enable(false),
-            );
+        let mut rendering_info =
+            vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
+        if !params.is_deferred_lighting {
+            rendering_info = rendering_info.depth_attachment_format(vk::Format::D32_SFLOAT);
         }
 
-        let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
-            .logic_op_enable(false)
-            .logic_op(vk::LogicOp::COPY)
-            .attachments(&color_blend_attachments)
-            .blend_constants([0.0, 0.0, 0.0, 0.0]);
+        let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisample)
+            .depth_stencil_state(&depth_stencil)
+            .color_blend_state(&color_blending)
+            .dynamic_state(&dynamic_state)
+            .layout(layout)
+            .push_next(&mut rendering_info);
 
-        let push_constant_ranges = [vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
-            .offset(0)
-            .size(128)];
+        let pipeline = unsafe {
+            device
+                .create_graphics_pipelines(params.pipeline_cache, &[pipeline_info], None)
+                .expect("Failed to create graphics pipeline")[0]
+        };
 
-        let mut descriptor_set_layout_bindings = Vec::new();
-        if is_deferred_lighting {
-            for i in 0..input_attachments_count {
-                descriptor_set_layout_bindings.push(
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(i)
-                        .descriptor_type(vk::DescriptorType::INPUT_ATTACHMENT)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-                );
-            }
-            // Binding for Shadow Map
-            descriptor_set_layout_bindings.push(
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(input_attachments_count)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            );
-            // Binding for Light Buffer
-            descriptor_set_layout_bindings.push(
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(input_attachments_count + 1)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            );
-            // Binding for Object Data SSBO
-            descriptor_set_layout_bindings.push(
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(input_attachments_count + 2)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-            );
+        unsafe {
+            device.destroy_shader_module(vert_module, None);
+            device.destroy_shader_module(frag_module, None);
         }
 
-        let descriptor_set_layout_info =
-            vk::DescriptorSetLayoutCreateInfo::default().bindings(&descriptor_set_layout_bindings);
+        Self {
+            layout,
+            graphics_pipeline: pipeline,
+            descriptor_set_layout: ds_layout,
+        }
+    }
 
-        let descriptor_set_layout = unsafe {
-            device
-                .create_descriptor_set_layout(&descriptor_set_layout_info, None)
-                .expect("Failed to create descriptor set layout")
-        };
-
-        let set_layouts = [global_ds_layout, bindless_ds_layout, descriptor_set_layout];
-
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-            .push_constant_ranges(&push_constant_ranges)
-            .set_layouts(&set_layouts);
-        let pipeline_layout = unsafe {
-            device
-                .create_pipeline_layout(&pipeline_layout_info, None)
-                .expect("Failed to create pipeline layout")
-        };
-
-        let mut rendering_info = vk::PipelineRenderingCreateInfo::default();
-        let color_formats = if !is_deferred_lighting {
+    fn get_color_formats(params: &PipelineCreateParams) -> Vec<vk::Format> {
+        if !params.is_deferred_lighting {
             vec![
                 vk::Format::R8G8B8A8_UNORM,
                 vk::Format::A2B10G10R10_UNORM_PACK32,
@@ -190,40 +131,101 @@ impl Pipeline {
             ]
         } else {
             vec![vk::Format::R16G16B16A16_SFLOAT]
-        };
-        rendering_info = rendering_info.color_attachment_formats(&color_formats);
-        if !is_deferred_lighting {
-            rendering_info = rendering_info.depth_attachment_format(vk::Format::D32_SFLOAT);
         }
+    }
 
-        let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&shader_stages)
-            .vertex_input_state(&vertex_input_info)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer)
-            .multisample_state(&multisampling)
-            .depth_stencil_state(&depth_stencil)
-            .color_blend_state(&color_blending)
-            .dynamic_state(&dynamic_state_info)
-            .layout(pipeline_layout)
-            .push_next(&mut rendering_info);
+    fn create_color_blend_attachments(count: usize) -> Vec<vk::PipelineColorBlendAttachmentState> {
+        (0..count)
+            .map(|_| {
+                vk::PipelineColorBlendAttachmentState::default()
+                    .color_write_mask(vk::ColorComponentFlags::RGBA)
+                    .blend_enable(false)
+            })
+            .collect()
+    }
 
-        let graphics_pipelines = unsafe {
-            device
-                .create_graphics_pipelines(pipeline_cache, &[pipeline_info], None)
-                .expect("Failed to create graphics pipeline")
-        };
+    fn create_shader_modules(
+        device: &Device,
+        params: &PipelineCreateParams,
+    ) -> (vk::ShaderModule, vk::ShaderModule) {
+        (
+            Self::create_shader_module(device, params.vert_shader_code),
+            Self::create_shader_module(device, params.frag_shader_code),
+        )
+    }
+
+    fn create_pass_ds_layout(
+        device: &Device,
+        params: &PipelineCreateParams,
+    ) -> vk::DescriptorSetLayout {
+        let mut bindings = Vec::new();
+        if params.is_deferred_lighting {
+            for i in 0..params.input_attachments_count {
+                bindings.push(
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(i)
+                        .descriptor_type(vk::DescriptorType::INPUT_ATTACHMENT)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                );
+            }
+            let next = params.input_attachments_count;
+            bindings.push(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(next)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            );
+            bindings.push(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(next + 1)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            );
+            bindings.push(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(next + 2)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+            );
+        }
 
         unsafe {
-            device.destroy_shader_module(vert_shader_module, None);
-            device.destroy_shader_module(frag_shader_module, None);
+            device
+                .create_descriptor_set_layout(
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+                    None,
+                )
+                .expect("Failed to create pass descriptor set layout")
         }
+    }
 
-        Self {
-            layout: pipeline_layout,
-            graphics_pipeline: graphics_pipelines[0],
-            descriptor_set_layout,
+    fn create_pipeline_layout(
+        device: &Device,
+        params: &PipelineCreateParams,
+        ds_layout: vk::DescriptorSetLayout,
+    ) -> vk::PipelineLayout {
+        let push_ranges = [vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .size(128)];
+        let layouts = [
+            params.global_ds_layout,
+            params.bindless_ds_layout,
+            ds_layout,
+        ];
+
+        unsafe {
+            device
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default()
+                        .set_layouts(&layouts)
+                        .push_constant_ranges(&push_ranges),
+                    None,
+                )
+                .expect("Failed to create pipeline layout")
         }
     }
 

@@ -34,25 +34,22 @@ impl RenderPass for ForwardPass {
         let extent = renderer.get_extent();
 
         unsafe {
-            let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(
-                    renderer
-                        .get_pass_resource_view("", "GBufferHDR", cf)
-                        .unwrap_or(renderer.common_shadow_view),
-                )
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::LOAD)
-                .store_op(vk::AttachmentStoreOp::STORE);
+            let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(
+                renderer
+                    .get_pass_resource_view("", "GBufferHDR", cf)
+                    .unwrap_or(renderer.common_shadow_view),
+            )
+            .with_load_op(vk::AttachmentLoadOp::LOAD)
+            .build();
 
-            let depth_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(
-                    renderer
-                        .get_pass_resource_view("", "GBufferDepth", cf)
-                        .unwrap_or(renderer.common_shadow_view),
-                )
-                .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::LOAD)
-                .store_op(vk::AttachmentStoreOp::STORE);
+            let depth_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(
+                renderer
+                    .get_pass_resource_view("", "GBufferDepth", cf)
+                    .unwrap_or(renderer.common_shadow_view),
+            )
+            .with_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+            .with_load_op(vk::AttachmentLoadOp::LOAD)
+            .build();
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {
@@ -88,7 +85,7 @@ impl RenderPass for ForwardPass {
                 .cmd_set_scissor(ctx.command_buffer, 0, &[scissor]);
 
             #[repr(C)]
-            struct PC {
+            struct ForwardPushConstants {
                 light_count: u32,
                 metallic: f32,
                 roughness: f32,
@@ -99,7 +96,7 @@ impl RenderPass for ForwardPass {
                 prev_view_proj: spark_math::Mat4,
                 vertex_buffer_address: u64,
             }
-            let pc = PC {
+            let pc = ForwardPushConstants {
                 light_count: renderer.light_count,
                 metallic: 0.5,
                 roughness: 0.5,
@@ -117,8 +114,10 @@ impl RenderPass for ForwardPass {
                     .as_ref()
                     .map_or(0, |b| b.address),
             };
-            let pc_bytes =
-                std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+            let pc_bytes = std::slice::from_raw_parts(
+                &pc as *const _ as *const u8,
+                std::mem::size_of::<ForwardPushConstants>(),
+            );
 
             renderer.device.device.cmd_push_constants(
                 ctx.command_buffer,
@@ -167,10 +166,11 @@ impl RenderPass for ForwardPass {
 
     fn destroy(&mut self, renderer: &mut Renderer) {
         unsafe {
-            renderer
-                .device
-                .device
-                .destroy_pipeline(self.pipeline.unwrap(), None);
+            renderer.device.device.destroy_pipeline(
+                self.pipeline
+                    .expect("Forward pipeline missing during cleanup"),
+                None,
+            );
             renderer
                 .device
                 .device
@@ -208,7 +208,8 @@ impl ForwardPass {
 
         let vert_module = crate::pipeline::Pipeline::create_shader_module(device, vert_spirv);
         let frag_module = crate::pipeline::Pipeline::create_shader_module(device, frag_spirv);
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
 
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -277,7 +278,7 @@ impl ForwardPass {
         let pipeline = unsafe {
             device
                 .create_graphics_pipelines(renderer.pipeline_cache, &[info], None)
-                .unwrap()[0]
+                .expect("Failed to create forward graphics pipeline")[0]
         };
 
         unsafe {

@@ -167,26 +167,24 @@ impl ResourceManager {
         path: &Path,
         renderer: &mut spark_renderer::Renderer,
         asset_manager: &mut crate::asset::AssetManager,
-    ) -> Handle<spark_renderer::vulkan::texture::Texture> {
+    ) -> Result<Handle<spark_renderer::vulkan::texture::Texture>, spark_renderer::error::RendererError> {
         if let Some(&handle) = asset_manager.texture_path_map.get(path) {
-            return handle;
+            return Ok(handle);
         }
 
         log::debug!("Loading texture from disk: {:?}", path);
-        let img = image::open(path).unwrap_or_else(|e| {
-            log::warn!("Failed to load texture {:?}: {}. Using fallback.", path, e);
-            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
-                1,
-                1,
-                image::Rgba([255, 0, 255, 255]),
+        let img = image::open(path).map_err(|e| {
+            spark_renderer::error::RendererError::ResourceLoading(format!(
+                "Failed to open texture {:?}: {}",
+                path, e
             ))
-        });
+        })?;
 
         let texture = renderer.create_texture_from_image(&img);
         let handle = self.gpu_textures.add(texture);
         asset_manager
             .texture_path_map
             .insert(path.to_path_buf(), handle);
-        handle
+        Ok(handle)
     }
 }

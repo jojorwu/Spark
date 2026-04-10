@@ -126,7 +126,11 @@ impl VulkanDevice {
                 .push_next(&mut features_rt);
         }
 
-        let device = unsafe { instance.create_device(pdevice, &device_create_info, None)? };
+        let device = unsafe {
+            instance
+                .create_device(pdevice, &device_create_info, None)
+                .expect("Failed to create logical Vulkan device")
+        };
 
         let graphics_queue = unsafe { device.get_device_queue(graphics_family, 0) };
         let compute_queue = unsafe { device.get_device_queue(compute_family, 0) };
@@ -136,21 +140,25 @@ impl VulkanDevice {
         let memory_properties = unsafe { instance.get_physical_device_memory_properties(pdevice) };
 
         let command_pool = unsafe {
-            device.create_command_pool(
-                &vk::CommandPoolCreateInfo::default()
-                    .queue_family_index(graphics_family)
-                    .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
-                None,
-            )?
+            device
+                .create_command_pool(
+                    &vk::CommandPoolCreateInfo::default()
+                        .queue_family_index(graphics_family)
+                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                    None,
+                )
+                .expect("Failed to create main command pool")
         };
 
         let compute_command_pool = unsafe {
-            device.create_command_pool(
-                &vk::CommandPoolCreateInfo::default()
-                    .queue_family_index(compute_family)
-                    .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
-                None,
-            )?
+            device
+                .create_command_pool(
+                    &vk::CommandPoolCreateInfo::default()
+                        .queue_family_index(compute_family)
+                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                    None,
+                )
+                .expect("Failed to create compute command pool")
         };
 
         let mut thread_command_pools = Vec::new();
@@ -159,12 +167,14 @@ impl VulkanDevice {
             let mut pools = [vk::CommandPool::null(); crate::MAX_FRAMES_IN_FLIGHT];
             for p in pools.iter_mut() {
                 *p = unsafe {
-                    device.create_command_pool(
-                        &vk::CommandPoolCreateInfo::default()
-                            .queue_family_index(graphics_family)
-                            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
-                        None,
-                    )?
+                    device
+                        .create_command_pool(
+                            &vk::CommandPoolCreateInfo::default()
+                                .queue_family_index(graphics_family)
+                                .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                            None,
+                        )
+                        .expect("Failed to create thread command pool")
                 };
             }
             thread_command_pools.push(pools);
@@ -239,7 +249,7 @@ impl VulkanDevice {
         let allocation = self
             .allocator
             .lock()
-            .unwrap()
+            .expect("Failed to lock allocator during buffer allocation")
             .allocate(&AllocationCreateDesc {
                 name: "Buffer",
                 requirements: mem_reqs,
@@ -314,7 +324,7 @@ impl VulkanDevice {
         let allocation = self
             .allocator
             .lock()
-            .unwrap()
+            .expect("Failed to lock allocator during image allocation")
             .allocate(&AllocationCreateDesc {
                 name: "Image",
                 requirements: reqs,
@@ -359,7 +369,11 @@ impl VulkanDevice {
                 layer_count: 1,
             });
 
-        unsafe { self.device.create_image_view(&view_info, None).unwrap() }
+        unsafe {
+            self.device
+                .create_image_view(&view_info, None)
+                .expect("Failed to create image view")
+        }
     }
 
     pub fn transition_image_layout(
@@ -451,7 +465,11 @@ impl VulkanDevice {
             .command_pool(pool)
             .command_buffer_count(1);
 
-        unsafe { self.device.allocate_command_buffers(&alloc_info).unwrap()[0] }
+        unsafe {
+            self.device
+                .allocate_command_buffers(&alloc_info)
+                .expect("Failed to allocate command buffer")[0]
+        }
     }
 
     pub fn submit_commands(
@@ -481,13 +499,19 @@ impl VulkanDevice {
             .command_pool(self.command_pool)
             .command_buffer_count(1);
 
-        let cb = unsafe { self.device.allocate_command_buffers(&alloc_info).unwrap()[0] };
+        let cb = unsafe {
+            self.device
+                .allocate_command_buffers(&alloc_info)
+                .expect("Failed to allocate single-time command buffer")[0]
+        };
 
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
         unsafe {
-            self.device.begin_command_buffer(cb, &begin_info).unwrap();
+            self.device
+                .begin_command_buffer(cb, &begin_info)
+                .expect("Failed to begin single-time command buffer");
         }
 
         cb
@@ -495,14 +519,18 @@ impl VulkanDevice {
 
     pub fn end_single_time_commands(&self, cb: vk::CommandBuffer) {
         unsafe {
-            self.device.end_command_buffer(cb).unwrap();
+            self.device
+                .end_command_buffer(cb)
+                .expect("Failed to end single-time command buffer");
 
             let submit_info = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cb));
 
             self.device
                 .queue_submit(self.graphics_queue, &[submit_info], vk::Fence::null())
                 .expect("Failed to submit single-time commands");
-            self.device.queue_wait_idle(self.graphics_queue).unwrap();
+            self.device
+                .queue_wait_idle(self.graphics_queue)
+                .expect("Failed to wait for graphics queue idle after single-time submission");
 
             self.device.free_command_buffers(self.command_pool, &[cb]);
         }
@@ -511,8 +539,17 @@ impl VulkanDevice {
     pub fn destroy_buffer(&self, buffer: Buffer) {
         unsafe {
             self.device.destroy_buffer(buffer.handle, None);
-            if let Some(alloc) = buffer.allocation.lock().unwrap().take() {
-                self.allocator.lock().unwrap().free(alloc).unwrap();
+            if let Some(alloc) = buffer
+                .allocation
+                .lock()
+                .expect("Failed to lock buffer allocation during destroy")
+                .take()
+            {
+                self.allocator
+                    .lock()
+                    .expect("Failed to lock allocator during buffer free")
+                    .free(alloc)
+                    .expect("Failed to free buffer memory");
             }
         }
     }

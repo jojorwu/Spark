@@ -35,7 +35,7 @@ impl EguiRenderer {
         let descriptor_set_layout = unsafe {
             device
                 .create_descriptor_set_layout(&layout_info, None)
-                .unwrap()
+                .expect("Failed to create UI descriptor set layout")
         };
 
         let push_constant_ranges = [vk::PushConstantRange::default()
@@ -51,7 +51,7 @@ impl EguiRenderer {
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(&pipeline_layout_info, None)
-                .unwrap()
+                .expect("Failed to create UI pipeline layout")
         };
 
         let pool_sizes = [vk::DescriptorPoolSize::default()
@@ -60,12 +60,20 @@ impl EguiRenderer {
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&pool_sizes)
             .max_sets(100);
-        let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None).unwrap() };
+        let descriptor_pool = unsafe {
+            device
+                .create_descriptor_pool(&pool_info, None)
+                .expect("Failed to create UI descriptor pool")
+        };
 
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&layouts);
-        let descriptor_set = unsafe { device.allocate_descriptor_sets(&alloc_info).unwrap()[0] };
+        let descriptor_set = unsafe {
+            device
+                .allocate_descriptor_sets(&alloc_info)
+                .expect("Failed to allocate UI descriptor set")[0]
+        };
 
         let pipeline = Self::create_pipeline(
             device,
@@ -129,7 +137,7 @@ impl EguiRenderer {
                                         "GBufferHDR",
                                         renderer.frame_manager.current_frame,
                                     )
-                                    .unwrap(),
+                                    .expect("Failed to get GBufferHDR for UI rendering"),
                             )
                             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                             .load_op(vk::AttachmentLoadOp::LOAD)
@@ -252,14 +260,23 @@ impl EguiRenderer {
     ) -> vk::Pipeline {
         let vert_module = {
             let info = vk::ShaderModuleCreateInfo::default().code(vert_code);
-            unsafe { device.create_shader_module(&info, None).unwrap() }
+            unsafe {
+                device
+                    .create_shader_module(&info, None)
+                    .expect("Failed to create UI vertex shader module")
+            }
         };
         let frag_module = {
             let info = vk::ShaderModuleCreateInfo::default().code(frag_code);
-            unsafe { device.create_shader_module(&info, None).unwrap() }
+            unsafe {
+                device
+                    .create_shader_module(&info, None)
+                    .expect("Failed to create UI fragment shader module")
+            }
         };
 
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for UI entry point");
 
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -345,7 +362,7 @@ impl EguiRenderer {
         let pipeline = unsafe {
             device
                 .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
-                .unwrap()[0]
+                .expect("Failed to create UI graphics pipeline")[0]
         };
 
         unsafe {
@@ -371,7 +388,7 @@ impl EguiRenderer {
             renderer
                 .get_device()
                 .allocate_descriptor_sets(&alloc_info)
-                .unwrap()[0]
+                .expect("Failed to allocate UI native texture descriptor set")[0]
         };
 
         let image_info = [vk::DescriptorImageInfo::default()
@@ -473,7 +490,7 @@ impl EguiRenderer {
                     renderer
                         .get_device()
                         .allocate_descriptor_sets(&alloc_info)
-                        .unwrap()[0]
+                        .expect("Failed to allocate UI texture descriptor set")[0]
                 };
 
                 let image_info = [vk::DescriptorImageInfo::default()

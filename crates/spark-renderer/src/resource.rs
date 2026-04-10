@@ -196,22 +196,33 @@ pub struct FramePacket {
     pub lights: Vec<LightDraw>,
 }
 
+/// Encapsulates all resources required to render a single frame in flight.
 #[derive(Debug)]
 pub struct RenderFrame {
     pub command_buffer: vk::CommandBuffer,
     pub image_available: vk::Semaphore,
     pub render_finished: vk::Semaphore,
     pub in_flight: vk::Fence,
+
+    // Uniform and Storage Buffers
     pub global_buffer: Option<Buffer>,
     pub light_buffer: Option<Buffer>,
     pub global_descriptor_set: vk::DescriptorSet,
+
+    // Dynamic Instance Data
     pub instance_pool: Vec<Buffer>,
     pub instance_index: usize,
+
+    // Indirect Drawing Resources
     pub indirect_commands_buffer: Option<Buffer>,
     pub object_data_buffer: Option<Buffer>,
     pub draw_count_buffer: Option<Buffer>,
+
+    // Transparency Rendering Resources
     pub transparent_indirect_buffer: Option<Buffer>,
     pub transparent_object_buffer: Option<Buffer>,
+
+    // Management & Temporary State
     pub secondary_command_buffers: Vec<vk::CommandBuffer>,
     pub light_view_projs: [spark_math::Mat4; 4],
     pub scratch_buffers: Vec<Buffer>,
@@ -296,7 +307,10 @@ impl ResourceTracker {
         dst_stage: vk::PipelineStageFlags,
         aspect_mask: vk::ImageAspectFlags,
     ) {
-        let mut layouts = self.image_layouts.lock().unwrap();
+        let mut layouts = self
+            .image_layouts
+            .lock()
+            .expect("Failed to lock image layouts");
         let old_layout = *layouts.get(&image).unwrap_or(&vk::ImageLayout::UNDEFINED);
         if old_layout == new_layout {
             return;
@@ -338,8 +352,17 @@ impl Attachment {
         unsafe {
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            if let Some(alloc) = self.allocation.lock().unwrap().take() {
-                allocator.lock().unwrap().free(alloc).unwrap();
+            if let Some(alloc) = self
+                .allocation
+                .lock()
+                .expect("Failed to lock attachment allocation during destroy")
+                .take()
+            {
+                allocator
+                    .lock()
+                    .expect("Failed to lock allocator during attachment free")
+                    .free(alloc)
+                    .expect("Failed to free attachment memory");
             }
         }
     }
@@ -373,6 +396,7 @@ impl Attachment {
         })
     }
 
+    /// Recreates the attachment with new dimensions or format.
     pub fn recreate(
         &mut self,
         device: &crate::vulkan::device::VulkanDevice,
@@ -383,8 +407,18 @@ impl Attachment {
         unsafe {
             device.device.destroy_image_view(self.view, None);
             device.device.destroy_image(self.image, None);
-            if let Some(alloc) = self.allocation.lock().unwrap().take() {
-                device.allocator.lock().unwrap().free(alloc).unwrap();
+            if let Some(alloc) = self
+                .allocation
+                .lock()
+                .expect("Failed to lock attachment allocation during recreate")
+                .take()
+            {
+                device
+                    .allocator
+                    .lock()
+                    .expect("Failed to lock allocator during attachment free")
+                    .free(alloc)
+                    .expect("Failed to free attachment memory");
             }
         }
 
@@ -415,7 +449,10 @@ impl Attachment {
         })?;
 
         self.image = img;
-        *self.allocation.lock().unwrap() = Some(allocation);
+        *self
+            .allocation
+            .lock()
+            .expect("Failed to lock attachment allocation for update") = Some(allocation);
         self.view = device.create_image_view(img, format, 1);
         self.extent = vk::Extent2D { width, height };
         self.version

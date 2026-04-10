@@ -49,12 +49,12 @@ impl RenderPass for SpritePass {
         vec!["SpriteColor"]
     }
 
-    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
-        vec![(
-            "SpriteColor".to_string(),
-            vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-        )]
+    fn gpu_resource_access(&self) -> Vec<super::GpuResourceAccess> {
+        vec![super::GpuResourceAccess {
+            resource_name: "SpriteColor",
+            access_flags: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            stage_flags: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        }]
     }
 
     fn record_commands(&self, ctx: &RenderContext) {
@@ -64,19 +64,12 @@ impl RenderPass for SpritePass {
 
         let sprite_view = renderer
             .get_pass_resource_view("SpritePass", "SpriteColor", cf)
-            .unwrap();
+            .expect("Failed to get SpriteColor view");
 
         unsafe {
-            let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(sprite_view)
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [0.0, 0.0, 0.0, 0.0],
-                    },
-                });
+            let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(sprite_view)
+                .with_clear_color([0.0, 0.0, 0.0, 0.0])
+                .build();
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {
@@ -242,7 +235,8 @@ impl SpritePass {
 
         let vert_module = crate::pipeline::Pipeline::create_shader_module(device, vert_spirv);
         let frag_module = crate::pipeline::Pipeline::create_shader_module(device, frag_spirv);
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
 
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -309,7 +303,7 @@ impl SpritePass {
         let pipeline = unsafe {
             device
                 .create_graphics_pipelines(renderer.pipeline_cache, &[info], None)
-                .unwrap()[0]
+                .expect("Failed to create sprite graphics pipeline")[0]
         };
 
         unsafe {

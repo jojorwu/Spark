@@ -60,12 +60,18 @@ pub enum ResourceDesc {
 /// A trait representing a modular rendering pass.
 #[derive(Debug, Clone)]
 pub enum ResourceBinding {
-    StorageImage(u32, String),
-    SampledImage(u32, String),
-    InputAttachment(u32, String),
-    StorageBuffer(u32, String),
-    UniformBuffer(u32, String),
-    AccelerationStructure(u32, String),
+    StorageImage(u32, &'static str),
+    SampledImage(u32, &'static str),
+    InputAttachment(u32, &'static str),
+    StorageBuffer(u32, &'static str),
+    UniformBuffer(u32, &'static str),
+    AccelerationStructure(u32, &'static str),
+}
+
+pub struct GpuResourceAccess {
+    pub resource_name: &'static str,
+    pub access_flags: vk::AccessFlags,
+    pub stage_flags: vk::PipelineStageFlags,
 }
 
 pub trait RenderPass: Send + Sync {
@@ -73,18 +79,18 @@ pub trait RenderPass: Send + Sync {
     fn name(&self) -> &str;
 
     /// Declarative GPU resource requirements for the pass.
-    fn gpu_resource_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
-        Vec::new()
+    fn gpu_resource_access(&self) -> Vec<GpuResourceAccess> {
+        vec![]
     }
 
     /// Declarative GPU buffer resource requirements for the pass.
-    fn gpu_resource_buffer_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
-        Vec::new()
+    fn gpu_resource_buffer_access(&self) -> Vec<GpuResourceAccess> {
+        vec![]
     }
 
     /// Returns the list of resource bindings required by this pass.
     fn bindings(&self) -> Vec<ResourceBinding> {
-        Vec::new()
+        vec![]
     }
 
     /// Returns true if the pass is currently enabled and should be executed.
@@ -155,7 +161,7 @@ pub trait RenderPass: Send + Sync {
     }
 
     /// Declarative specification of transient resources created by this pass.
-    fn declared_resources(&self) -> HashMap<String, ResourceDesc> {
+    fn declared_resources(&self) -> HashMap<&'static str, ResourceDesc> {
         HashMap::new()
     }
 }

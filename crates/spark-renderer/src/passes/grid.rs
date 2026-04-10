@@ -63,7 +63,8 @@ impl GridPass {
 
         let vert_module = Pipeline::create_shader_module(device, vert_spirv);
         let frag_module = Pipeline::create_shader_module(device, frag_spirv);
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create CString for entry point");
 
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -147,17 +148,14 @@ impl GridPass {
         depth_view: vk::ImageView,
     ) {
         unsafe {
-            let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(hdr_view)
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::LOAD)
-                .store_op(vk::AttachmentStoreOp::STORE);
+            let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(hdr_view)
+                .with_load_op(vk::AttachmentLoadOp::LOAD)
+                .build();
 
-            let depth_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(depth_view)
-                .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::LOAD)
-                .store_op(vk::AttachmentStoreOp::STORE);
+            let depth_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(depth_view)
+                .with_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                .with_load_op(vk::AttachmentLoadOp::LOAD)
+                .build();
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {

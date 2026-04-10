@@ -1,4 +1,5 @@
 use crate::resource::Buffer;
+use crate::vulkan::texture::Texture;
 use crate::Renderer;
 use crate::MAX_FRAMES_IN_FLIGHT;
 use ash::vk;
@@ -61,10 +62,10 @@ impl RenderPass for SSAOPass {
 
     fn bindings(&self) -> Vec<super::ResourceBinding> {
         vec![
-            super::ResourceBinding::SampledImage(0, "GBufferNormal".to_string()),
-            super::ResourceBinding::SampledImage(1, "GBufferDepth".to_string()),
-            super::ResourceBinding::SampledImage(2, "Noise".to_string()),
-            super::ResourceBinding::UniformBuffer(3, "SSAOParams".to_string()),
+            super::ResourceBinding::SampledImage(0, "GBufferNormal"),
+            super::ResourceBinding::SampledImage(1, "GBufferDepth"),
+            super::ResourceBinding::SampledImage(2, "Noise"),
+            super::ResourceBinding::UniformBuffer(3, "SSAOParams"),
         ]
     }
     fn dependencies(&self) -> Vec<&'static str> {
@@ -76,10 +77,10 @@ impl RenderPass for SSAOPass {
     fn outputs(&self) -> Vec<&'static str> {
         vec!["SSAO", "SSAO_Intermediary"]
     }
-    fn declared_resources(&self) -> HashMap<String, super::ResourceDesc> {
+    fn declared_resources(&self) -> HashMap<&'static str, super::ResourceDesc> {
         let mut res = HashMap::new();
         res.insert(
-            "SSAO".to_string(),
+            "SSAO",
             super::ResourceDesc::Image(super::AttachmentDesc {
                 format: vk::Format::R8_UNORM,
                 usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
@@ -87,7 +88,7 @@ impl RenderPass for SSAOPass {
             }),
         );
         res.insert(
-            "SSAO_Intermediary".to_string(),
+            "SSAO_Intermediary",
             super::ResourceDesc::Image(super::AttachmentDesc {
                 format: vk::Format::R8_UNORM,
                 usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
@@ -147,10 +148,10 @@ impl RenderPass for SSAOPass {
         );
         let ssao_view = renderer
             .get_pass_resource_view(self.name(), "SSAO_Intermediary", ctx.current_frame)
-            .unwrap();
+            .expect("Failed to retrieve SSAO_Intermediary view");
         let blur_view = renderer
             .get_pass_resource_view(self.name(), "SSAO", ctx.current_frame)
-            .unwrap();
+            .expect("Failed to retrieve SSAO view");
 
         let params = SSAORecordParams {
             renderer,
@@ -181,15 +182,16 @@ impl RenderPass for SSAOPass {
             for buffer in self.ssao_params_buffer.drain(..) {
                 renderer.destroy_buffer(buffer);
             }
-            let texture = std::mem::replace(
-                &mut self.noise_texture,
-                renderer
-                    .gpu_resource_manager
-                    .default_texture
-                    .as_ref()
-                    .unwrap()
-                    .clone(),
-            );
+            // Temporarily replace with dummy texture to take ownership
+            let dummy_tex = Texture {
+                image: vk::Image::null(),
+                allocation: None,
+                view: vk::ImageView::null(),
+                sampler: vk::Sampler::null(),
+                mip_levels: 0,
+                bindless_index: 0,
+            };
+            let texture = std::mem::replace(&mut self.noise_texture, dummy_tex);
             renderer.destroy_texture(texture);
         }
     }
@@ -197,11 +199,9 @@ impl RenderPass for SSAOPass {
 
 impl SSAOPass {
     pub fn new(
-        renderer: &Renderer,
+        renderer: &mut Renderer,
         descriptor_pool: vk::DescriptorPool,
     ) -> Result<Self, crate::error::RendererError> {
-        let device = &renderer.device.device;
-
         // 1. Generate Kernel Samples
         let mut rng = rand::thread_rng();
         let mut kernel_samples = [Vec4::ZERO; 64];
@@ -230,10 +230,10 @@ impl SSAOPass {
 
         let noise_img = image::DynamicImage::ImageRgba32F(
             image::Rgba32FImage::from_raw(4, 4, bytemuck::cast_slice(&ssao_noise).to_vec())
-                .unwrap(),
+                .expect("Failed to create SSAO noise image"),
         );
-        let renderer_ptr = renderer as *const Renderer as *mut Renderer;
-        let noise_texture = unsafe { (*renderer_ptr).create_texture_from_image(&noise_img) };
+
+        let noise_texture = renderer.create_texture_from_image(&noise_img);
 
         // 3. Create Buffers
         let mut ssao_params_buffer = Vec::new();
@@ -270,7 +270,7 @@ impl SSAOPass {
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
         let ds_layout = unsafe {
-            device.create_descriptor_set_layout(
+            renderer.device.device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
                 None,
             )?
@@ -289,7 +289,7 @@ impl SSAOPass {
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
         let blur_ds_layout = unsafe {
-            device.create_descriptor_set_layout(
+            renderer.device.device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&blur_bindings),
                 None,
             )?
@@ -297,20 +297,20 @@ impl SSAOPass {
 
         // 5. Pipelines
         let layout = unsafe {
-            device.create_pipeline_layout(
+            renderer.device.device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default().set_layouts(&[ds_layout]),
                 None,
             )?
         };
         let blur_layout = unsafe {
-            device.create_pipeline_layout(
+            renderer.device.device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default().set_layouts(&[blur_ds_layout]),
                 None,
             )?
         };
 
         let descriptor_sets = unsafe {
-            device.allocate_descriptor_sets(
+            renderer.device.device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(descriptor_pool)
                     .set_layouts(&[ds_layout; MAX_FRAMES_IN_FLIGHT]),
@@ -318,7 +318,7 @@ impl SSAOPass {
         };
 
         let blur_descriptor_sets = unsafe {
-            device.allocate_descriptor_sets(
+            renderer.device.device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(descriptor_pool)
                     .set_layouts(&[blur_ds_layout; MAX_FRAMES_IN_FLIGHT]),
@@ -352,7 +352,8 @@ impl SSAOPass {
         let blur_module =
             crate::pipeline::Pipeline::create_shader_module(device, params.blur_shader);
 
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create entry point name");
 
         // SSAO Pipeline
         let ssao_stages = [
@@ -407,7 +408,7 @@ impl SSAOPass {
         self.ssao_pipeline = unsafe {
             device
                 .create_graphics_pipelines(pipeline_cache, &[ssao_info], None)
-                .unwrap()[0]
+                .expect("Failed to create SSAO pipeline")[0]
         };
 
         // Blur Pipeline
@@ -436,7 +437,7 @@ impl SSAOPass {
         self.blur_pipeline = unsafe {
             device
                 .create_graphics_pipelines(pipeline_cache, &[blur_info], None)
-                .unwrap()[0]
+                .expect("Failed to create SSAO blur pipeline")[0]
         };
 
         unsafe {
@@ -456,16 +457,9 @@ impl SSAOPass {
         let device = &renderer.device.device;
         unsafe {
             // 1. SSAO Pass
-            let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(ssao_target_view)
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [1.0, 1.0, 1.0, 1.0],
-                    },
-                });
+            let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(ssao_target_view)
+                .with_clear_color([1.0, 1.0, 1.0, 1.0])
+                .build();
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {
@@ -497,16 +491,9 @@ impl SSAOPass {
             // Wait, if I declare both as outputs, I can have them managed?
             // For now let's keep manual barriers if logic is sub-pass.
 
-            let blur_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(blur_target_view)
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [1.0, 1.0, 1.0, 1.0],
-                    },
-                });
+            let blur_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(blur_target_view)
+                .with_clear_color([1.0, 1.0, 1.0, 1.0])
+                .build();
 
             let blur_rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {
@@ -592,7 +579,7 @@ impl SSAOPass {
                 .image_view(
                     renderer
                         .get_pass_resource_view(self.name(), "SSAO_Intermediary", i)
-                        .unwrap(),
+                        .expect("Failed to retrieve SSAO_Intermediary view for descriptor update"),
                 )
                 .sampler(sampler)];
             let depth_info = [vk::DescriptorImageInfo::default()

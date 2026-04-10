@@ -39,16 +39,16 @@ impl RenderPass for VolumetricPass {
 
     fn bindings(&self) -> Vec<super::ResourceBinding> {
         vec![
-            super::ResourceBinding::StorageImage(0, "VolumetricOutput".to_string()),
-            super::ResourceBinding::SampledImage(1, "GBufferDepth".to_string()),
-            super::ResourceBinding::SampledImage(2, "ShadowMap".to_string()),
+            super::ResourceBinding::StorageImage(0, "VolumetricOutput"),
+            super::ResourceBinding::SampledImage(1, "GBufferDepth"),
+            super::ResourceBinding::SampledImage(2, "ShadowMap"),
         ]
     }
 
-    fn declared_resources(&self) -> std::collections::HashMap<String, super::ResourceDesc> {
+    fn declared_resources(&self) -> std::collections::HashMap<&'static str, super::ResourceDesc> {
         let mut res = std::collections::HashMap::new();
         res.insert(
-            "VolumetricOutput".to_string(),
+            "VolumetricOutput",
             super::ResourceDesc::Image(super::AttachmentDesc {
                 format: vk::Format::R16G16B16A16_SFLOAT,
                 usage: vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
@@ -158,7 +158,7 @@ impl VolumetricPass {
                 None,
             )?
         };
-        let entry = std::ffi::CString::new("main").unwrap();
+        let entry = std::ffi::CString::new("main").expect("Failed to create entry point name");
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(shader_module)
@@ -167,25 +167,26 @@ impl VolumetricPass {
         let pipeline = unsafe {
             device
                 .create_compute_pipelines(
-                    vk::PipelineCache::null(),
+                    renderer.pipeline_cache,
                     &[vk::ComputePipelineCreateInfo::default()
                         .stage(stage)
                         .layout(layout)],
                     None,
                 )
-                .map_err(|e| e.1)?[0]
+                .map_err(|e| e.1)
+                .expect("Failed to create VolumetricPass compute pipeline")[0]
         };
 
         unsafe {
             device.destroy_shader_module(shader_module, None);
         }
 
-        let layouts = vec![ds_layout; crate::MAX_FRAMES_IN_FLIGHT];
+        let ds_layouts = [ds_layout; crate::MAX_FRAMES_IN_FLIGHT];
         let descriptor_sets = unsafe {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(renderer.gpu_resource_manager.descriptor_pool)
-                    .set_layouts(&layouts),
+                    .set_layouts(&ds_layouts),
             )?
         };
 

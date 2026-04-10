@@ -33,6 +33,7 @@ pub struct RenderGraphPassNode {
 
 /// Граф рендеринга, управляющий зависимостями между проходами и ресурсами.
 /// The RenderGraph manages dependencies between rendering passes and GPU resources.
+/// It performs topological sorting of passes and automatic resource lifecycle management.
 pub struct RenderGraph {
     pub passes: Vec<RenderGraphPassNode>,
     pub resources: HashMap<String, RenderGraphResource>,
@@ -100,6 +101,7 @@ impl RenderGraph {
     }
 
     pub fn compile(&mut self, renderer: &mut crate::Renderer) {
+        log::debug!("Compiling RenderGraph with {} passes", self.passes.len());
         self.ensure_descriptor_pool(renderer);
         self.sort_passes();
         self.allocate_pass_descriptors(renderer);
@@ -258,29 +260,8 @@ impl RenderGraph {
 
     fn analyze_resources_and_alias(&mut self, renderer: &crate::Renderer) {
         let extent = renderer.get_extent();
-
-        let mut declared_resources: HashMap<String, crate::passes::ResourceDesc> = HashMap::new();
-        for pass_node in &self.passes {
-            declared_resources.extend(pass_node.pass.declared_resources());
-        }
-
-        let mut resource_lifetimes: HashMap<String, (usize, usize)> = HashMap::new();
-
-        for (order_idx, &pass_idx) in self.sorted_passes.iter().enumerate() {
-            let pass = &self.passes[pass_idx];
-            for input in &pass.inputs {
-                resource_lifetimes
-                    .entry(input.clone())
-                    .and_modify(|lt| lt.1 = order_idx)
-                    .or_insert((order_idx, order_idx));
-            }
-            for output in &pass.outputs {
-                resource_lifetimes
-                    .entry(output.clone())
-                    .and_modify(|lt| lt.1 = order_idx)
-                    .or_insert((order_idx, order_idx));
-            }
-        }
+        let declared_resources = self.collect_declared_resources();
+        let resource_lifetimes = self.calculate_resource_lifetimes();
 
         self.aliased_resources.clear();
         let mut transient_pool: Vec<(String, vk::Format, vk::ImageUsageFlags, u32, u32, usize)> =
@@ -295,81 +276,132 @@ impl RenderGraph {
             }
 
             let (start, end) = resource_lifetimes[&res_name];
+            let (format, usage, width, height) = self.resolve_resource_specs(
+                &res_name,
+                &declared_resources,
+                extent,
+                renderer.device.depth_format,
+            );
 
-            let (format, usage, width, height) =
-                if let Some(desc) = declared_resources.get(&res_name) {
-                    match desc {
-                        crate::passes::ResourceDesc::Image(img) => {
-                            let (w, h) = match img.size {
-                                crate::passes::AttachmentSize::Absolute(w, h) => (w, h),
-                                crate::passes::AttachmentSize::Relative(wf, hf) => (
-                                    (extent.width as f32 * wf) as u32,
-                                    (extent.height as f32 * hf) as u32,
-                                ),
-                            };
-                            (img.format, img.usage, w, h)
-                        }
-                        _ => continue,
-                    }
-                } else {
-                    let format = if res_name.contains("Depth") {
-                        renderer.device.depth_format
-                    } else if res_name.contains("Normal")
-                        || res_name.contains("HDR")
-                        || res_name.contains("RTOutput")
-                    {
-                        vk::Format::R16G16B16A16_SFLOAT
-                    } else {
-                        vk::Format::R8G8B8A8_UNORM
-                    };
-
-                    let usage = if res_name.contains("Depth") {
-                        vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED
-                    } else {
-                        vk::ImageUsageFlags::COLOR_ATTACHMENT
-                            | vk::ImageUsageFlags::SAMPLED
-                            | vk::ImageUsageFlags::STORAGE
-                    };
-                    (format, usage, extent.width, extent.height)
-                };
-
-            let mut found_alias = None;
-            for (pool_res_name, pool_format, pool_usage, pool_width, pool_height, pool_end) in
-                &mut transient_pool
+            if let Some(alias) =
+                self.find_compatible_alias(&transient_pool, format, usage, width, height, start)
             {
-                if *pool_format == format
-                    && *pool_usage == usage
-                    && *pool_width == width
-                    && *pool_height == height
-                    && *pool_end < start
-                {
-                    found_alias = Some(pool_res_name.clone());
-                    *pool_end = end;
-                    break;
+                self.aliased_resources.insert(res_name.clone(), alias.clone());
+                // Update the end lifetime of the alias in the pool
+                if let Some(pool_entry) = transient_pool.iter_mut().find(|e| e.0 == alias) {
+                    pool_entry.5 = end;
                 }
-            }
-
-            if let Some(alias) = found_alias {
-                self.aliased_resources.insert(res_name.clone(), alias);
             } else {
-                let attachments = (0..crate::MAX_FRAMES_IN_FLIGHT)
-                    .map(|_| {
-                        crate::resource::Attachment::create_image_resource(
-                            &renderer.device,
-                            width,
-                            height,
-                            format,
-                            usage,
-                            vk::SampleCountFlags::TYPE_1,
-                        )
-                        .expect("Failed to create transient attachment in RenderGraph")
-                    })
-                    .collect();
-                self.transient_attachments
-                    .insert(res_name.clone(), attachments);
+                let attachments = self.create_transient_attachments(renderer, width, height, format, usage);
+                self.transient_attachments.insert(res_name.clone(), attachments);
                 transient_pool.push((res_name.clone(), format, usage, width, height, end));
             }
         }
+    }
+
+    fn collect_declared_resources(&self) -> HashMap<&'static str, crate::passes::ResourceDesc> {
+        let mut declared_resources = HashMap::new();
+        for pass_node in &self.passes {
+            declared_resources.extend(pass_node.pass.declared_resources());
+        }
+        declared_resources
+    }
+
+    fn calculate_resource_lifetimes(&self) -> HashMap<String, (usize, usize)> {
+        let mut resource_lifetimes: HashMap<String, (usize, usize)> = HashMap::new();
+        for (order_idx, &pass_idx) in self.sorted_passes.iter().enumerate() {
+            let pass = &self.passes[pass_idx];
+            for name in pass.inputs.iter().chain(pass.outputs.iter()) {
+                resource_lifetimes
+                    .entry(name.clone())
+                    .and_modify(|lt| lt.1 = order_idx)
+                    .or_insert((order_idx, order_idx));
+            }
+        }
+        resource_lifetimes
+    }
+
+    fn resolve_resource_specs(
+        &self,
+        name: &str,
+        declared: &HashMap<&'static str, crate::passes::ResourceDesc>,
+        extent: vk::Extent2D,
+        depth_format: vk::Format,
+    ) -> (vk::Format, vk::ImageUsageFlags, u32, u32) {
+        if let Some(crate::passes::ResourceDesc::Image(img)) = declared.get(name) {
+            let (w, h) = match img.size {
+                crate::passes::AttachmentSize::Absolute(w, h) => (w, h),
+                crate::passes::AttachmentSize::Relative(wf, hf) => (
+                    (extent.width as f32 * wf) as u32,
+                    (extent.height as f32 * hf) as u32,
+                ),
+            };
+            return (img.format, img.usage, w, h);
+        }
+
+        // Heuristic defaults
+        let format = if name.contains("Depth") {
+            depth_format
+        } else if name.contains("Normal") || name.contains("HDR") || name.contains("RTOutput") {
+            vk::Format::R16G16B16A16_SFLOAT
+        } else {
+            vk::Format::R8G8B8A8_UNORM
+        };
+
+        let usage = if name.contains("Depth") {
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED
+        } else {
+            vk::ImageUsageFlags::COLOR_ATTACHMENT
+                | vk::ImageUsageFlags::SAMPLED
+                | vk::ImageUsageFlags::STORAGE
+        };
+
+        (format, usage, extent.width, extent.height)
+    }
+
+    fn find_compatible_alias(
+        &self,
+        pool: &[(String, vk::Format, vk::ImageUsageFlags, u32, u32, usize)],
+        format: vk::Format,
+        usage: vk::ImageUsageFlags,
+        width: u32,
+        height: u32,
+        start: usize,
+    ) -> Option<String> {
+        for (pool_res_name, pool_format, pool_usage, pool_width, pool_height, pool_end) in pool {
+            if *pool_format == format
+                && *pool_usage == usage
+                && *pool_width == width
+                && *pool_height == height
+                && *pool_end < start
+            {
+                return Some(pool_res_name.clone());
+            }
+        }
+        None
+    }
+
+    fn create_transient_attachments(
+        &self,
+        renderer: &crate::Renderer,
+        width: u32,
+        height: u32,
+        format: vk::Format,
+        usage: vk::ImageUsageFlags,
+    ) -> Vec<crate::resource::Attachment> {
+        (0..crate::MAX_FRAMES_IN_FLIGHT)
+            .map(|_| {
+                crate::resource::Attachment::create_image_resource(
+                    &renderer.device,
+                    width,
+                    height,
+                    format,
+                    usage,
+                    vk::SampleCountFlags::TYPE_1,
+                )
+                .expect("Failed to create transient attachment in RenderGraph")
+            })
+            .collect()
     }
 
     /// Выполняет граф рендеринга, проходя по отсортированным проходам.
@@ -419,12 +451,12 @@ impl RenderGraph {
 
         for binding in &bindings {
             let name = match binding {
-                crate::passes::ResourceBinding::SampledImage(_, n) => n,
-                crate::passes::ResourceBinding::InputAttachment(_, n) => n,
-                crate::passes::ResourceBinding::StorageImage(_, n) => n,
-                crate::passes::ResourceBinding::StorageBuffer(_, n) => n,
-                crate::passes::ResourceBinding::UniformBuffer(_, n) => n,
-                crate::passes::ResourceBinding::AccelerationStructure(_, n) => n,
+                crate::passes::ResourceBinding::SampledImage(_, n) => *n,
+                crate::passes::ResourceBinding::InputAttachment(_, n) => *n,
+                crate::passes::ResourceBinding::StorageImage(_, n) => *n,
+                crate::passes::ResourceBinding::StorageBuffer(_, n) => *n,
+                crate::passes::ResourceBinding::UniformBuffer(_, n) => *n,
+                crate::passes::ResourceBinding::AccelerationStructure(_, n) => *n,
             };
 
             let version = if let Some(attachments) = self
@@ -443,7 +475,7 @@ impl RenderGraph {
                 0
             };
 
-            current_versions.insert(name.clone(), version);
+            current_versions.insert(name.to_string(), version);
             let versions = pass_node.resource_versions[ctx.current_frame]
                 .lock()
                 .expect("Failed to lock resource versions");
@@ -461,6 +493,8 @@ impl RenderGraph {
         }
     }
 
+    /// Updates Vulkan descriptor sets for a specific pass using current frame resources.
+    /// Uses a robust resolution process to build descriptor writes from pass requirements.
     fn perform_descriptor_update(
         &self,
         ctx: &RenderContext,
@@ -469,33 +503,35 @@ impl RenderGraph {
         bindings: &[crate::passes::ResourceBinding],
     ) {
         let renderer = ctx.renderer;
+
+        // Use temporary storage to maintain lifetimes for `update_descriptor_sets`.
         let mut img_infos = Vec::new();
         let mut buf_infos = Vec::new();
         let mut as_infos = Vec::new();
         let mut as_handles = Vec::new();
 
+        // Pass 1: Resolve all resources.
         for binding in bindings {
             match binding {
                 crate::passes::ResourceBinding::SampledImage(_, name)
-                | crate::passes::ResourceBinding::InputAttachment(_, name) => {
+                | crate::passes::ResourceBinding::InputAttachment(_, name)
+                | crate::passes::ResourceBinding::StorageImage(_, name) => {
                     let view = renderer
                         .get_pass_resource_view(pass_node.pass.name(), name, ctx.current_frame)
                         .unwrap_or(renderer.common_shadow_view);
+
+                    let layout = match binding {
+                        crate::passes::ResourceBinding::StorageImage(_, _) => {
+                            vk::ImageLayout::GENERAL
+                        }
+                        _ => vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    };
+
                     img_infos.push(
                         vk::DescriptorImageInfo::default()
-                            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                            .image_layout(layout)
                             .image_view(view)
                             .sampler(renderer.common_sampler),
-                    );
-                }
-                crate::passes::ResourceBinding::StorageImage(_, name) => {
-                    let view = renderer
-                        .get_pass_resource_view(pass_node.pass.name(), name, ctx.current_frame)
-                        .unwrap_or(renderer.common_shadow_view);
-                    img_infos.push(
-                        vk::DescriptorImageInfo::default()
-                            .image_layout(vk::ImageLayout::GENERAL)
-                            .image_view(view),
                     );
                 }
                 crate::passes::ResourceBinding::StorageBuffer(_, name)
@@ -516,92 +552,98 @@ impl RenderGraph {
                         .lock()
                         .expect("Failed to lock AS manager during descriptor update");
                     if let Some(ref tlas) = as_manager.current_tlas[ctx.current_frame] {
-                        as_handles.push(tlas.handle);
+                        as_handles.push([tlas.handle]);
                     }
                 }
             }
         }
 
+        // Pass 2: Build writes.
         let mut writes = Vec::new();
-        let mut img_idx = 0;
-        let mut buf_idx = 0;
-        let mut as_idx = 0;
+        let mut img_ptr = 0;
+        let mut buf_ptr = 0;
+        let mut as_ptr = 0;
 
         for binding in bindings {
             match binding {
-                crate::passes::ResourceBinding::SampledImage(binding_idx, _) => {
+                crate::passes::ResourceBinding::SampledImage(binding_idx, _)
+                | crate::passes::ResourceBinding::InputAttachment(binding_idx, _)
+                | crate::passes::ResourceBinding::StorageImage(binding_idx, _) => {
+                    let ty = match binding {
+                        crate::passes::ResourceBinding::SampledImage(_, _) => {
+                            vk::DescriptorType::COMBINED_IMAGE_SAMPLER
+                        }
+                        crate::passes::ResourceBinding::InputAttachment(_, _) => {
+                            vk::DescriptorType::INPUT_ATTACHMENT
+                        }
+                        crate::passes::ResourceBinding::StorageImage(_, _) => {
+                            vk::DescriptorType::STORAGE_IMAGE
+                        }
+                        _ => unreachable!(),
+                    };
+
                     writes.push(
                         vk::WriteDescriptorSet::default()
                             .dst_set(ds)
                             .dst_binding(*binding_idx)
-                            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                            .descriptor_type(ty)
                             .descriptor_count(1)
-                            .image_info(std::slice::from_ref(&img_infos[img_idx])),
+                            .image_info(std::slice::from_ref(&img_infos[img_ptr])),
                     );
-                    img_idx += 1;
+                    img_ptr += 1;
                 }
-                crate::passes::ResourceBinding::InputAttachment(binding_idx, _) => {
-                    writes.push(
-                        vk::WriteDescriptorSet::default()
-                            .dst_set(ds)
-                            .dst_binding(*binding_idx)
-                            .descriptor_type(vk::DescriptorType::INPUT_ATTACHMENT)
-                            .descriptor_count(1)
-                            .image_info(std::slice::from_ref(&img_infos[img_idx])),
-                    );
-                    img_idx += 1;
-                }
-                crate::passes::ResourceBinding::StorageImage(binding_idx, _) => {
-                    writes.push(
-                        vk::WriteDescriptorSet::default()
-                            .dst_set(ds)
-                            .dst_binding(*binding_idx)
-                            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                            .descriptor_count(1)
-                            .image_info(std::slice::from_ref(&img_infos[img_idx])),
-                    );
-                    img_idx += 1;
-                }
-                crate::passes::ResourceBinding::StorageBuffer(binding_idx, name) => {
+                crate::passes::ResourceBinding::StorageBuffer(binding_idx, name)
+                | crate::passes::ResourceBinding::UniformBuffer(binding_idx, name) => {
                     if renderer
                         .get_resource_buffer(pass_node.pass.name(), name, ctx.current_frame)
                         .is_some()
                     {
+                        let ty = match binding {
+                            crate::passes::ResourceBinding::StorageBuffer(_, _) => {
+                                vk::DescriptorType::STORAGE_BUFFER
+                            }
+                            crate::passes::ResourceBinding::UniformBuffer(_, _) => {
+                                vk::DescriptorType::UNIFORM_BUFFER
+                            }
+                            _ => unreachable!(),
+                        };
+
                         writes.push(
                             vk::WriteDescriptorSet::default()
                                 .dst_set(ds)
                                 .dst_binding(*binding_idx)
-                                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                                .descriptor_type(ty)
                                 .descriptor_count(1)
-                                .buffer_info(std::slice::from_ref(&buf_infos[buf_idx])),
+                                .buffer_info(std::slice::from_ref(&buf_infos[buf_ptr])),
                         );
-                        buf_idx += 1;
+                        buf_ptr += 1;
                     }
                 }
-                crate::passes::ResourceBinding::UniformBuffer(binding_idx, name) => {
-                    if renderer
-                        .get_resource_buffer(pass_node.pass.name(), name, ctx.current_frame)
-                        .is_some()
-                    {
+                crate::passes::ResourceBinding::AccelerationStructure(binding_idx, _) => {
+                    if as_ptr < as_handles.len() {
+                        as_infos.push(
+                            vk::WriteDescriptorSetAccelerationStructureKHR::default()
+                                .acceleration_structures(&as_handles[as_ptr]),
+                        );
                         writes.push(
                             vk::WriteDescriptorSet::default()
                                 .dst_set(ds)
                                 .dst_binding(*binding_idx)
-                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                .descriptor_count(1)
-                                .buffer_info(std::slice::from_ref(&buf_infos[buf_idx])),
+                                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                                .descriptor_count(1),
                         );
-                        buf_idx += 1;
+                        as_ptr += 1;
                     }
                 }
-                crate::passes::ResourceBinding::AccelerationStructure(_binding_idx, _) => {
-                    if as_idx < as_handles.len() {
-                        let info = vk::WriteDescriptorSetAccelerationStructureKHR::default()
-                            .acceleration_structures(std::slice::from_ref(&as_handles[as_idx]));
-                        as_infos.push(info);
-                    }
-                    as_idx += 1;
-                }
+            }
+        }
+
+        // Link Acceleration Structure infos manually using pointers to maintain borrows.
+        let mut current_as_idx = 0;
+        for write in &mut writes {
+            if write.descriptor_type == vk::DescriptorType::ACCELERATION_STRUCTURE_KHR {
+                write.p_next = &as_infos[current_as_idx] as *const _ as *const _;
+                current_as_idx += 1;
             }
         }
 
@@ -610,40 +652,23 @@ impl RenderGraph {
                 renderer.device.device.update_descriptor_sets(&writes, &[]);
             }
         }
-
-        let mut as_idx_2 = 0;
-        for binding in pass_node.pass.bindings() {
-            if let crate::passes::ResourceBinding::AccelerationStructure(binding_idx, _) = binding {
-                if as_idx_2 < as_infos.len() {
-                    let as_write = [vk::WriteDescriptorSet::default()
-                        .dst_set(ds)
-                        .dst_binding(binding_idx)
-                        .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                        .descriptor_count(1)
-                        .push_next(&mut as_infos[as_idx_2])];
-                    unsafe {
-                        renderer
-                            .device
-                            .device
-                            .update_descriptor_sets(&as_write, &[]);
-                    }
-                    as_idx_2 += 1;
-                }
-            }
-        }
     }
 
     fn inject_image_barriers(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
         let renderer = ctx.renderer;
-        for (mut res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_access() {
-            if let Some(alias) = self.aliased_resources.get(&res_name) {
-                res_name = alias.clone();
+        for access in pass_node.pass.gpu_resource_access() {
+            let mut res_name: &str = access.resource_name;
+            let dst_access = access.access_flags;
+            let dst_stage = access.stage_flags;
+
+            if let Some(alias) = self.aliased_resources.get(res_name) {
+                res_name = alias;
             }
 
             let attachments = self
                 .physical_attachments
-                .get(&res_name)
-                .or_else(|| self.transient_attachments.get(&res_name));
+                .get(res_name)
+                .or_else(|| self.transient_attachments.get(res_name));
 
             if let Some(attachments) = attachments {
                 let attachment = &attachments[ctx.current_frame];
@@ -698,9 +723,13 @@ impl RenderGraph {
 
     fn inject_buffer_barriers(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
         let renderer = ctx.renderer;
-        for (res_name, dst_access, dst_stage) in pass_node.pass.gpu_resource_buffer_access() {
+        for access in pass_node.pass.gpu_resource_buffer_access() {
+            let res_name = access.resource_name;
+            let dst_access = access.access_flags;
+            let dst_stage = access.stage_flags;
+
             if let Some(buffer) =
-                renderer.get_resource_buffer(pass_node.pass.name(), &res_name, ctx.current_frame)
+                renderer.get_resource_buffer(pass_node.pass.name(), res_name, ctx.current_frame)
             {
                 let barrier = vk::BufferMemoryBarrier2::default()
                     .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)

@@ -119,12 +119,12 @@ impl LightingPass {
             )?
         };
 
-        let layouts = vec![ds_layout; MAX_FRAMES_IN_FLIGHT];
+        let ds_layouts = [ds_layout; MAX_FRAMES_IN_FLIGHT];
         let descriptor_sets = unsafe {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(descriptor_pool)
-                    .set_layouts(&layouts),
+                    .set_layouts(&ds_layouts),
             )?
         };
 
@@ -189,18 +189,18 @@ impl RenderPass for LightingPass {
 
     fn bindings(&self) -> Vec<super::ResourceBinding> {
         vec![
-            super::ResourceBinding::InputAttachment(0, "GBufferAlbedo".to_string()),
-            super::ResourceBinding::InputAttachment(1, "GBufferNormal".to_string()),
-            super::ResourceBinding::InputAttachment(2, "GBufferPBR".to_string()),
-            super::ResourceBinding::InputAttachment(3, "GBufferDepth".to_string()),
-            super::ResourceBinding::SampledImage(4, "ShadowMap".to_string()),
-            super::ResourceBinding::StorageBuffer(5, "light_buffer".to_string()),
-            super::ResourceBinding::StorageBuffer(6, "object_data_buffer".to_string()),
-            super::ResourceBinding::SampledImage(7, "SSAO".to_string()),
-            super::ResourceBinding::SampledImage(8, "irradiance".to_string()),
-            super::ResourceBinding::SampledImage(9, "specular".to_string()),
-            super::ResourceBinding::SampledImage(10, "brdf_lut".to_string()),
-            super::ResourceBinding::SampledImage(11, "SSGI".to_string()),
+            super::ResourceBinding::InputAttachment(0, "GBufferAlbedo"),
+            super::ResourceBinding::InputAttachment(1, "GBufferNormal"),
+            super::ResourceBinding::InputAttachment(2, "GBufferPBR"),
+            super::ResourceBinding::InputAttachment(3, "GBufferDepth"),
+            super::ResourceBinding::SampledImage(4, "ShadowMap"),
+            super::ResourceBinding::StorageBuffer(5, "light_buffer"),
+            super::ResourceBinding::StorageBuffer(6, "object_data_buffer"),
+            super::ResourceBinding::SampledImage(7, "SSAO"),
+            super::ResourceBinding::SampledImage(8, "irradiance"),
+            super::ResourceBinding::SampledImage(9, "specular"),
+            super::ResourceBinding::SampledImage(10, "brdf_lut"),
+            super::ResourceBinding::SampledImage(11, "SSGI"),
         ]
     }
 
@@ -212,7 +212,7 @@ impl RenderPass for LightingPass {
         let global_ds = renderer.frame_manager.frames[current_frame].global_descriptor_set;
 
         #[repr(C)]
-        struct PC {
+        struct LightingPushConstants {
             count: u32,
             metallic: f32,
             roughness: f32,
@@ -225,7 +225,7 @@ impl RenderPass for LightingPass {
             object_buffer_address: u64,
             prev_view_proj: spark_math::Mat4,
         }
-        let pc = PC {
+        let pc = LightingPushConstants {
             count: renderer.light_count,
             metallic: 0.5,
             roughness: 0.5,
@@ -246,27 +246,23 @@ impl RenderPass for LightingPass {
             prev_view_proj: renderer.prev_view_proj,
         };
         let pc_bytes = unsafe {
-            std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>())
+            std::slice::from_raw_parts(
+                &pc as *const _ as *const u8,
+                std::mem::size_of::<LightingPushConstants>(),
+            )
         };
 
         let device = &renderer.device.device;
 
         unsafe {
             if let Some(pipeline) = self.pipeline {
-                let color_attachment = vk::RenderingAttachmentInfo::default()
-                    .image_view(
-                        renderer
-                            .get_pass_resource_view("", "GBufferHDR", current_frame)
-                            .unwrap_or(renderer.common_shadow_view),
-                    )
-                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::STORE)
-                    .clear_value(vk::ClearValue {
-                        color: vk::ClearColorValue {
-                            float32: [0.1, 0.1, 0.1, 1.0],
-                        },
-                    });
+                let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(
+                    renderer
+                        .get_pass_resource_view(self.name(), "GBufferHDR", current_frame)
+                        .expect("Failed to retrieve GBufferHDR for LightingPass"),
+                )
+                .with_clear_color([0.1, 0.1, 0.1, 1.0])
+                .build();
 
                 let rendering_info = vk::RenderingInfo::default()
                     .render_area(vk::Rect2D {

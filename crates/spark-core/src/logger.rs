@@ -12,7 +12,7 @@ impl EditorLogger {
     }
 
     pub fn init(self) {
-        log::set_boxed_logger(Box::new(self)).unwrap();
+        log::set_boxed_logger(Box::new(self)).expect("Failed to initialize global logger");
         log::set_max_level(log::LevelFilter::Info);
         log_panics::init();
     }
@@ -25,7 +25,7 @@ impl Log for EditorLogger {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            let mut logs = self.logs.lock().unwrap();
+            let mut logs = self.logs.lock().expect("Failed to lock logs for writing");
             let msg = format!("[{}] {}", record.level(), record.args());
             logs.push(msg);
             if logs.len() > 1000 {

@@ -42,21 +42,25 @@ impl SystemRegistry {
     pub fn add_system<S: System + 'static>(&mut self, system: S) {
         self.systems
             .get_mut(&CoreStage::Update)
-            .unwrap()
+            .expect("Update stage missing in system registry")
             .push(Box::new(system));
     }
 
     pub fn add_system_to_stage<S: System + 'static>(&mut self, stage: CoreStage, system: S) {
-        self.systems.get_mut(&stage).unwrap().push(Box::new(system));
+        self.systems
+            .get_mut(&stage)
+            .expect("Requested stage missing in system registry")
+            .push(Box::new(system));
     }
 
     pub fn add_boxed_system(&mut self, system: Box<dyn System>) {
         self.systems
             .get_mut(&CoreStage::Update)
-            .unwrap()
+            .expect("Update stage missing in system registry")
             .push(system);
     }
 
+    /// Performs a topological sort on systems within each stage to satisfy dependencies.
     pub fn sort_systems(&mut self) {
         let stages = [
             CoreStage::First,
@@ -67,126 +71,133 @@ impl SystemRegistry {
         ];
 
         for stage in stages {
-            let mut visited = HashSet::new();
-            let mut temp_visited = HashSet::new();
-            let stage_systems = self.systems.get_mut(&stage).unwrap();
+            self.sort_systems_in_stage(stage);
+        }
+    }
 
-            let name_to_idx: HashMap<String, usize> = stage_systems
-                .iter()
-                .enumerate()
-                .map(|(i, s)| (s.name().to_string(), i))
-                .collect();
+    fn sort_systems_in_stage(&mut self, stage: CoreStage) {
+        let mut visited = HashSet::new();
+        let mut temp_visited = HashSet::new();
+        let stage_systems = self.systems.get_mut(&stage).expect("Stage not found");
 
-            let mut reverse_before: HashMap<String, Vec<usize>> = HashMap::new();
-            for (i, system) in stage_systems.iter().enumerate() {
-                for before in system.run_before() {
-                    reverse_before
-                        .entry(before.to_string())
-                        .or_default()
-                        .push(i);
+        let name_to_idx: HashMap<String, usize> = stage_systems
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name().to_string(), i))
+            .collect();
+
+        // Build a reverse mapping for `run_before` constraints: target_name -> [dependent_indices]
+        let mut reverse_before: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, system) in stage_systems.iter().enumerate() {
+            for before in system.run_before() {
+                reverse_before
+                    .entry(before.to_string())
+                    .or_default()
+                    .push(i);
+            }
+        }
+
+        let mut ordered_indices = Vec::with_capacity(stage_systems.len());
+
+        for i in 0..stage_systems.len() {
+            Self::topo_visit(
+                i,
+                stage_systems,
+                &name_to_idx,
+                &mut ordered_indices,
+                &mut visited,
+                &mut temp_visited,
+                &reverse_before,
+            );
+        }
+
+        // Reorder systems according to the topological sort
+        let mut systems_to_reorder: Vec<Option<Box<dyn System>>> =
+            stage_systems.drain(..).map(Some).collect();
+        for idx in ordered_indices {
+            stage_systems.push(systems_to_reorder[idx].take().expect("Invalid order index"));
+        }
+
+        self.build_stage_batches(stage);
+    }
+
+    /// Recursively visits systems to build a topological ordering.
+    fn topo_visit(
+        idx: usize,
+        systems: &Vec<Box<dyn System>>,
+        name_to_idx: &HashMap<String, usize>,
+        ordered: &mut Vec<usize>,
+        visited: &mut HashSet<usize>,
+        temp_visited: &mut HashSet<usize>,
+        reverse_before: &HashMap<String, Vec<usize>>,
+    ) {
+        if temp_visited.contains(&idx) {
+            panic!(
+                "Circular dependency detected in systems! System '{}' is part of a cycle.",
+                systems[idx].name()
+            );
+        }
+
+        if !visited.contains(&idx) {
+            temp_visited.insert(idx);
+
+            // 1. Explicit dependencies (this system depends on others)
+            for dep in systems[idx].dependencies() {
+                if let Some(&dep_idx) = name_to_idx.get(dep) {
+                    Self::topo_visit(
+                        dep_idx,
+                        systems,
+                        name_to_idx,
+                        ordered,
+                        visited,
+                        temp_visited,
+                        reverse_before,
+                    );
                 }
             }
 
-            fn visit(
-                idx: usize,
-                systems: &Vec<Box<dyn System>>,
-                name_to_idx: &HashMap<String, usize>,
-                ordered: &mut Vec<usize>,
-                visited: &mut HashSet<usize>,
-                temp_visited: &mut HashSet<usize>,
-                reverse_before: &HashMap<String, Vec<usize>>,
-            ) {
-                if temp_visited.contains(&idx) {
-                    panic!("Circular dependency detected in systems!");
-                }
-                if !visited.contains(&idx) {
-                    temp_visited.insert(idx);
-
-                    // 1. Explicit dependencies
-                    for dep in systems[idx].dependencies() {
-                        if let Some(&dep_idx) = name_to_idx.get(dep) {
-                            visit(
-                                dep_idx,
-                                systems,
-                                name_to_idx,
-                                ordered,
-                                visited,
-                                temp_visited,
-                                reverse_before,
-                            );
-                        }
-                    }
-
-                    // 2. run_after labels
-                    for after in systems[idx].run_after() {
-                        if let Some(&after_idx) = name_to_idx.get(after) {
-                            visit(
-                                after_idx,
-                                systems,
-                                name_to_idx,
-                                ordered,
-                                visited,
-                                temp_visited,
-                                reverse_before,
-                            );
-                        }
-                    }
-
-                    // 3. run_before labels (others wanting to run after this one)
-                    if let Some(others) = reverse_before.get(systems[idx].name()) {
-                        // This logic is slightly different: if B runs before A, then A depends on B.
-                        // So if we are visiting A, we need to visit B first.
-                        // reverse_before maps A -> [B]
-                        for &before_idx in others {
-                            // This is actually wrong in my head. If B runs before A, A depends on B.
-                            // Wait, no. If B says "run_before A", then A should be visited *after* B.
-                            // So A depends on B.
-                            // Correct.
-                            visit(
-                                before_idx,
-                                systems,
-                                name_to_idx,
-                                ordered,
-                                visited,
-                                temp_visited,
-                                reverse_before,
-                            );
-                        }
-                    }
-
-                    temp_visited.remove(&idx);
-                    visited.insert(idx);
-                    ordered.push(idx);
+            // 2. `run_after` labels (this system must run after others)
+            for after in systems[idx].run_after() {
+                if let Some(&after_idx) = name_to_idx.get(after) {
+                    Self::topo_visit(
+                        after_idx,
+                        systems,
+                        name_to_idx,
+                        ordered,
+                        visited,
+                        temp_visited,
+                        reverse_before,
+                    );
                 }
             }
 
-            let mut indices = Vec::new();
-            for i in 0..stage_systems.len() {
-                visit(
-                    i,
-                    stage_systems,
-                    &name_to_idx,
-                    &mut indices,
-                    &mut visited,
-                    &mut temp_visited,
-                    &reverse_before,
-                );
+            // 3. `run_before` labels (others declared they must run before this system)
+            // If system B says `run_before(A)`, then A depends on B.
+            if let Some(dependent_systems) = reverse_before.get(systems[idx].name()) {
+                for &before_idx in dependent_systems {
+                    Self::topo_visit(
+                        before_idx,
+                        systems,
+                        name_to_idx,
+                        ordered,
+                        visited,
+                        temp_visited,
+                        reverse_before,
+                    );
+                }
             }
 
-            // Reorder systems within the stage
-            let mut old_systems: Vec<Option<Box<dyn System>>> =
-                stage_systems.drain(..).map(Some).collect();
-            for idx in indices {
-                stage_systems.push(old_systems[idx].take().unwrap());
-            }
-
-            // Build sub-stages for parallel execution within this stage
-            self.build_stage_batches(stage);
+            temp_visited.remove(&idx);
+            visited.insert(idx);
+            ordered.push(idx);
         }
     }
 
     fn build_stage_batches(&mut self, stage: CoreStage) {
-        let stage_systems = self.systems.get(&stage).unwrap();
+        let stage_systems = self
+            .systems
+            .get(&stage)
+            .expect("Requested stage missing in system registry");
         let name_to_idx: HashMap<String, usize> = stage_systems
             .iter()
             .enumerate()
@@ -280,7 +291,8 @@ impl Scheduler {
                     }
 
                     if allowed.contains(&state)
-                        && (old_state.is_none() || !allowed.contains(old_state.as_ref().unwrap()))
+                        && (old_state.is_none()
+                            || !allowed.contains(old_state.as_ref().expect("State expected")))
                     {
                         system.on_enter(ctx);
                     }
@@ -327,7 +339,10 @@ impl Scheduler {
 
         for stage in stages {
             if let Some(batches) = registry.sorted_indices.get(&stage) {
-                let systems = registry.systems.get_mut(&stage).unwrap();
+                let systems = registry
+                    .systems
+                    .get_mut(&stage)
+                    .expect("Requested stage missing in system registry");
                 let active_state = registry.active_state.as_deref();
 
                 for batch in batches {
@@ -339,6 +354,10 @@ impl Scheduler {
                         let ctx_ptr = ctx as *const FrameContext as usize;
 
                         batch.par_iter().for_each(|&idx| unsafe {
+                            // SAFETY: The Scheduler batching logic ensures that no two systems in the same
+                            // batch have conflicting resource requirements. Systems are grouped into batches
+                            // only if they can safely run in parallel (e.g., multiple readers or a single writer).
+                            // Each thread operates on a unique system index from the batch.
                             let systems_ptr = systems_ptr as *const Box<dyn crate::System>;
                             let system = &*systems_ptr.add(idx);
 
@@ -357,6 +376,8 @@ impl Scheduler {
                             // but we can add an extra safety layer here by checking
                             // if the system only accesses allowed resources.
 
+                            // SAFETY: While we cast to a mutable reference, the Scheduler's batching
+                            // guarantees exclusive access if a system declared `Access::Write`.
                             let system_mut =
                                 &mut *(systems_ptr.add(idx) as *mut Box<dyn crate::System>);
                             system_mut.update(ctx);

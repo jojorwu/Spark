@@ -12,23 +12,23 @@ impl RenderPass for CullingPass {
         vec!["HiZPass"]
     }
 
-    fn gpu_resource_buffer_access(&self) -> Vec<(String, vk::AccessFlags, vk::PipelineStageFlags)> {
+    fn gpu_resource_buffer_access(&self) -> Vec<super::GpuResourceAccess> {
         vec![
-            (
-                "object_data_buffer".to_string(),
-                vk::AccessFlags::SHADER_READ,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-            ),
-            (
-                "indirect_commands_buffer".to_string(),
-                vk::AccessFlags::SHADER_WRITE,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-            ),
-            (
-                "draw_count_buffer".to_string(),
-                vk::AccessFlags::SHADER_WRITE,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-            ),
+            super::GpuResourceAccess {
+                resource_name: "object_data_buffer",
+                access_flags: vk::AccessFlags::SHADER_READ,
+                stage_flags: vk::PipelineStageFlags::COMPUTE_SHADER,
+            },
+            super::GpuResourceAccess {
+                resource_name: "indirect_commands_buffer",
+                access_flags: vk::AccessFlags::SHADER_WRITE,
+                stage_flags: vk::PipelineStageFlags::COMPUTE_SHADER,
+            },
+            super::GpuResourceAccess {
+                resource_name: "draw_count_buffer",
+                access_flags: vk::AccessFlags::SHADER_WRITE,
+                stage_flags: vk::PipelineStageFlags::COMPUTE_SHADER,
+            },
         ]
     }
 
@@ -123,7 +123,8 @@ impl CullingPass {
             )?
         };
 
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point =
+            std::ffi::CString::new("main").expect("Failed to create entry point name");
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(shader_module)
@@ -138,7 +139,8 @@ impl CullingPass {
                         .layout(layout)],
                     None,
                 )
-                .map_err(|e| e.1)?[0]
+                .map_err(|e| e.1)
+                .expect("Failed to create CullingPass compute pipeline")[0]
         };
 
         unsafe {
@@ -190,7 +192,7 @@ impl CullingPass {
             );
 
             #[repr(C)]
-            struct PC {
+            struct CullingPushConstants {
                 light_count: u32,
                 metallic: f32,
                 roughness: f32,
@@ -205,7 +207,7 @@ impl CullingPass {
                 .renderer_ref_for_pc_extract
                 .frame_manager
                 .current_frame];
-            let pc = PC {
+            let pc = CullingPushConstants {
                 light_count: params.renderer_ref_for_pc_extract.light_count,
                 metallic: 0.0,
                 roughness: 0.0,
@@ -221,8 +223,10 @@ impl CullingPass {
                     .as_ref()
                     .map_or(0, |b| b.address),
             };
-            let pc_bytes =
-                std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of::<PC>());
+            let pc_bytes = std::slice::from_raw_parts(
+                &pc as *const _ as *const u8,
+                std::mem::size_of::<CullingPushConstants>(),
+            );
 
             device.cmd_push_constants(
                 command_buffer,

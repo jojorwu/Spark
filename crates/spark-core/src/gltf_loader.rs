@@ -20,16 +20,26 @@ impl GltfLoader {
 
         // Pre-load images in parallel and register them in AssetManager
         let mut loaded_gpu_textures = Vec::new();
-        let image_handles: Vec<_> = images
+        let image_results: Vec<_> = images
             .par_iter()
             .map(|data| {
-                let img = image::load_from_memory(&data.pixels).unwrap_or_else(|e| {
-                    log::error!("Failed to decode glTF image: {}. Using fallback.", e);
-                    image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, 1))
-                });
-                img
+                image::load_from_memory(&data.pixels)
+                    .map_err(|e| format!("Failed to decode glTF image: {}", e))
             })
             .collect();
+
+        let mut image_handles = Vec::new();
+        for res in image_results {
+            match res {
+                Ok(img) => image_handles.push(img),
+                Err(e) => {
+                    log::warn!("{}, using fallback white texture.", e);
+                    image_handles.push(image::DynamicImage::ImageRgba8(
+                        image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255])),
+                    ));
+                }
+            }
+        }
 
         for img in image_handles {
             am.textures.add(img.clone());
@@ -81,10 +91,9 @@ impl GltfLoader {
                 let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
                 let positions = reader.read_positions().map(|p| p.collect::<Vec<_>>());
-                if positions.is_none() {
+                let Some(positions) = positions else {
                     continue;
-                }
-                let positions = positions.unwrap();
+                };
 
                 let v_offset = rm.all_vertices.len() as i32;
                 let i_start = rm.all_indices.len() as u32;
