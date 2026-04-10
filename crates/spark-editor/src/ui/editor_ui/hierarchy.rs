@@ -318,7 +318,7 @@ impl EditorUI {
         new_node
             .components
             .push(Box::new(spark_core::scene::MeshComponent {
-                vertex_count: 36,
+                vertex_count: 24,
                 index_count: 36,
                 first_index: 0,
                 vertex_offset: 0,
@@ -330,21 +330,48 @@ impl EditorUI {
         self.node_to_add = Some((scene.root, new_node));
     }
 
+    pub fn add_primitive_plane(&mut self, scene: &mut Scene) {
+        let mut new_node = Node {
+            name: "Plane".to_string(),
+            ..Default::default()
+        };
+        // Cube has 24 vertices, 36 indices
+        new_node
+            .components
+            .push(Box::new(spark_core::scene::MeshComponent {
+                vertex_count: 4,
+                index_count: 6,
+                first_index: 36,
+                vertex_offset: 24,
+                texture_handle: None,
+                material_index: Some(0),
+                bounding_radius: 10.0,
+                skin_index: None,
+            }));
+        self.node_to_add = Some((scene.root, new_node));
+    }
+
     pub fn add_primitive_sphere(&mut self, scene: &mut Scene) {
         let mut new_node = Node {
             name: "Sphere".to_string(),
             ..Default::default()
         };
+        // Plane has 4 vertices, 6 indices
+        // Total indices before sphere: 36 + 6 = 42
+        // Total vertices before sphere: 24 + 4 = 28
+        let segments = 32;
+        let v_count = (segments + 1) * (segments + 1);
+        let i_count = segments * segments * 6;
         new_node
             .components
             .push(Box::new(spark_core::scene::MeshComponent {
-                vertex_count: 0,
-                index_count: 0,
-                first_index: 0,
-                vertex_offset: 0,
+                vertex_count: v_count,
+                index_count: i_count,
+                first_index: 42,
+                vertex_offset: 28,
                 texture_handle: None,
                 material_index: Some(0),
-                bounding_radius: 1.0,
+                bounding_radius: 0.5,
                 skin_index: None,
             }));
         self.node_to_add = Some((scene.root, new_node));

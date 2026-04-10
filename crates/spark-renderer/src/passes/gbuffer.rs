@@ -55,6 +55,8 @@ impl GBufferPass {
                 .as_ref()
                 .map_or(0, |b| b.address),
         };
+        // SAFETY: GBufferPushConstants is a POD struct. We use standard Rust memory layout
+        // to pass it to Vulkan via push constants.
         let pc_bytes = unsafe {
             std::slice::from_raw_parts(
                 &pc as *const _ as *const u8,
@@ -65,6 +67,9 @@ impl GBufferPass {
         let extent = renderer.get_extent();
         let global_ds = renderer.frame_manager.frames[current_frame].global_descriptor_set;
 
+        // SAFETY: We use cmd_bind_pipeline, cmd_set_viewport, cmd_set_scissor, and other Vulkan commands
+        // in a sequence. The RenderGraph ensures that all necessary synchronization and image layout
+        // transitions are already performed before record_commands is called.
         unsafe {
             if let Some(pipeline) = &renderer.pipeline {
                 device.cmd_bind_pipeline(

@@ -15,7 +15,10 @@ impl EditorUI {
             ui.separator();
             if let Some(selected_key) = self.selected_node {
                 let mut changed_transform = None;
+                let mut has_node = false;
+
                 if let Some(node) = scene.nodes.get_mut(selected_key) {
+                    has_node = true;
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
                             ui.label("Name:");
@@ -38,8 +41,11 @@ impl EditorUI {
                     ui.add_space(4.0);
                     ui.separator();
                     ui.add_space(4.0);
+                }
 
+                if has_node {
                     ui.group(|ui| {
+                        let node = scene.nodes.get_mut(selected_key).unwrap();
                         self.draw_component_list(ui, node, asset_manager, selected_key);
                     });
                     ui.separator();
@@ -84,17 +90,24 @@ impl EditorUI {
         ui: &mut Ui,
         node: &mut Node,
     ) -> Option<(spark_math::Mat4, spark_math::Mat4)> {
-        let reset_res = ui.horizontal(|ui| {
-            ui.heading("Transform");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("⟲ Reset").on_hover_text("Reset to Identity").clicked() {
-                    let old = node.local_transform;
-                    node.local_transform = spark_math::Mat4::IDENTITY;
-                    return Some((old, spark_math::Mat4::IDENTITY));
-                }
-                None
-            }).inner
-        }).inner;
+        let reset_res = ui
+            .horizontal(|ui| {
+                ui.heading("Transform");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .button("⟲ Reset")
+                        .on_hover_text("Reset to Identity")
+                        .clicked()
+                    {
+                        let old = node.local_transform;
+                        node.local_transform = spark_math::Mat4::IDENTITY;
+                        return Some((old, spark_math::Mat4::IDENTITY));
+                    }
+                    None
+                })
+                .inner
+            })
+            .inner;
 
         if let Some(res) = reset_res {
             return Some(res);
@@ -171,8 +184,9 @@ impl EditorUI {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.menu_button("✚ Add", |ui| {
                     if ui.button("Mesh").clicked() {
-                        node.components
-                            .push(Box::new(spark_core::scene::MeshComponent {
+                        self.component_to_add = Some((
+                            selected_key,
+                            Box::new(spark_core::scene::MeshComponent {
                                 vertex_count: 0,
                                 index_count: 0,
                                 first_index: 0,
@@ -181,41 +195,48 @@ impl EditorUI {
                                 material_index: None,
                                 bounding_radius: 1.0,
                                 skin_index: None,
-                            }));
+                            }),
+                        ));
                         ui.close_menu();
                     }
                     if ui.button("Light").clicked() {
-                        node.components
-                            .push(Box::new(spark_core::scene::LightComponent {
+                        self.component_to_add = Some((
+                            selected_key,
+                            Box::new(spark_core::scene::LightComponent {
                                 light_type: spark_core::scene::LightType::Point,
                                 color: spark_math::Vec3::ONE,
                                 intensity: 1.0,
                                 range: 10.0,
                                 spot_inner_angle: 30.0,
                                 spot_outer_angle: 45.0,
-                            }));
+                            }),
+                        ));
                         ui.close_menu();
                     }
                     if ui.button("Camera").clicked() {
-                        node.components
-                            .push(Box::new(spark_core::scene::CameraComponent {
+                        self.component_to_add = Some((
+                            selected_key,
+                            Box::new(spark_core::scene::CameraComponent {
                                 fov: 45.0,
                                 near: 0.1,
                                 far: 100.0,
                                 orthographic: false,
                                 ortho_size: 5.0,
-                            }));
+                            }),
+                        ));
                         ui.close_menu();
                     }
                     if ui.button("Sprite").clicked() {
-                        node.components
-                            .push(Box::new(spark_core::scene::SpriteComponent {
+                        self.component_to_add = Some((
+                            selected_key,
+                            Box::new(spark_core::scene::SpriteComponent {
                                 texture_handle: None,
                                 color: [1.0, 1.0, 1.0, 1.0],
                                 flip_x: false,
                                 flip_y: false,
                                 size: spark_math::Vec2::new(1.0, 1.0),
-                            }));
+                            }),
+                        ));
                         ui.close_menu();
                     }
                 });

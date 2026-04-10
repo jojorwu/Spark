@@ -348,9 +348,11 @@ impl<'a> Query<'a> {
 
     /// Executes the query and returns the matching node keys.
     pub fn execute(self) -> Vec<NodeKey> {
-        self.matches
-            .map(|m| m.into_iter().collect())
-            .unwrap_or_else(|| self.scene.nodes.keys().collect())
+        if let Some(matches) = self.matches {
+            matches.into_iter().collect()
+        } else {
+            self.scene.nodes.keys().collect()
+        }
     }
 }
 
@@ -367,22 +369,6 @@ impl Scene {
             .get(&std::any::TypeId::of::<T>())
             .cloned()
             .unwrap_or_default()
-    }
-
-    pub fn update_components(
-        &mut self,
-        _delta: f32,
-        _renderer: *mut spark_renderer::Renderer,
-        _resource_manager: *mut crate::resource::ResourceManager,
-        _project: &crate::Project,
-        _task_system: &crate::task::TaskSystem,
-        _resources: &crate::resource_container::Resources,
-    ) {
-        // Component updates usually happen via SystemRegistry now,
-        // but for manual updates we'll need an AssetManager.
-        // This method seems to be a legacy/internal helper.
-        // For safety, we'll mark it as needing an AssetManager.
-        panic!("update_components requires an AssetManager now. Use the SystemRegistry instead.");
     }
 
     pub fn remove_node(&mut self, key: NodeKey) {

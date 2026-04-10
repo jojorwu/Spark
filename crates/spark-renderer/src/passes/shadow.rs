@@ -363,6 +363,8 @@ impl ShadowPass {
                     .as_ref()
                     .map_or(0, |b| b.address),
             };
+            // SAFETY: ShadowPushConstants is a POD struct. We use standard Rust memory layout
+            // to pass it to Vulkan via push constants.
             let pc_bytes = std::slice::from_raw_parts(
                 &pc as *const _ as *const u8,
                 std::mem::size_of::<ShadowPushConstants>(),
@@ -385,6 +387,11 @@ impl ShadowPass {
                     index_buffer.handle,
                     0,
                     vk::IndexType::UINT32,
+                );
+
+                renderer.last_draw_calls.fetch_add(
+                    renderer.last_object_count,
+                    std::sync::atomic::Ordering::Relaxed,
                 );
 
                 if let Some(ref count_buffer) = frame.draw_count_buffer {

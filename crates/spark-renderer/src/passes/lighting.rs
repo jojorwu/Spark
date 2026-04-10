@@ -245,6 +245,8 @@ impl RenderPass for LightingPass {
                 .map_or(0, |b| b.address),
             prev_view_proj: renderer.prev_view_proj,
         };
+        // SAFETY: LightingPushConstants is a POD struct. We use standard Rust memory layout
+        // to pass it to Vulkan via push constants.
         let pc_bytes = unsafe {
             std::slice::from_raw_parts(
                 &pc as *const _ as *const u8,
@@ -254,6 +256,8 @@ impl RenderPass for LightingPass {
 
         let device = &renderer.device.device;
 
+        // SAFETY: All required resources (GBuffer attachments, SSAO, ShadowMap) are guaranteed
+        // to be in correct layouts by the RenderGraph before record_commands is called.
         unsafe {
             if let Some(pipeline) = self.pipeline {
                 let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(

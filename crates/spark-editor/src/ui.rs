@@ -34,6 +34,62 @@ impl Command for TransformCommand {
     }
 }
 
+pub struct AddComponentCommand {
+    pub node_key: NodeKey,
+    pub component: Option<Box<dyn spark_core::scene::Component>>,
+    pub component_index: Option<usize>,
+}
+
+impl Command for AddComponentCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        if let Some(node) = scene.nodes.get_mut(self.node_key) {
+            if let Some(comp) = self.component.take() {
+                node.components.push(comp);
+                self.component_index = Some(node.components.len() - 1);
+                scene.rebuild_component_registry();
+            }
+        }
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        if let (Some(node), Some(idx)) = (scene.nodes.get_mut(self.node_key), self.component_index)
+        {
+            if idx < node.components.len() {
+                self.component = Some(node.components.remove(idx));
+                scene.rebuild_component_registry();
+            }
+        }
+    }
+}
+
+pub struct RemoveComponentCommand {
+    pub node_key: NodeKey,
+    pub component_index: usize,
+    pub removed_component: Option<Box<dyn spark_core::scene::Component>>,
+}
+
+impl Command for RemoveComponentCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        if let Some(node) = scene.nodes.get_mut(self.node_key) {
+            if self.component_index < node.components.len() {
+                self.removed_component = Some(node.components.remove(self.component_index));
+                scene.rebuild_component_registry();
+            }
+        }
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(node) = scene.nodes.get_mut(self.node_key) {
+            if let Some(comp) = self.removed_component.take() {
+                if self.component_index <= node.components.len() {
+                    node.components.insert(self.component_index, comp);
+                } else {
+                    node.components.push(comp);
+                }
+                scene.rebuild_component_registry();
+            }
+        }
+    }
+}
+
 pub struct AddNodeCommand {
     pub parent_key: NodeKey,
     pub node: Option<Node>,
@@ -158,6 +214,7 @@ pub struct EditorUI {
     pub node_to_add_child: Option<(NodeKey, NodeType)>,
     pub initial_gizmo_transform: Option<spark_math::Mat4>,
     pub component_to_remove: Option<(NodeKey, usize)>,
+    pub component_to_add: Option<(NodeKey, Box<dyn spark_core::scene::Component>)>,
     pub sim_state: SimulationState,
     pub scene_snapshot: Option<Scene>,
     pub show_hierarchy: bool,
@@ -165,6 +222,7 @@ pub struct EditorUI {
     pub show_bottom_panel: bool,
     pub status_message: String,
     pub hierarchy_force_state: Option<bool>,
+    pub asset_rename_state: Option<(std::path::PathBuf, String)>,
 }
 
 pub enum NodeType {
@@ -233,6 +291,7 @@ impl EditorUI {
             node_to_add_child: None,
             initial_gizmo_transform: None,
             component_to_remove: None,
+            component_to_add: None,
             sim_state: SimulationState::Stopped,
             scene_snapshot: None,
             show_hierarchy: true,
@@ -240,6 +299,7 @@ impl EditorUI {
             show_bottom_panel: true,
             status_message: "Ready".to_string(),
             hierarchy_force_state: None,
+            asset_rename_state: None,
         }
     }
 
@@ -437,11 +497,25 @@ impl EditorUI {
         }
 
         if let Some((node_key, comp_idx)) = self.component_to_remove.take() {
-            if let Some(node) = scene.nodes.get_mut(node_key) {
-                if comp_idx < node.components.len() {
-                    node.components.remove(comp_idx);
-                }
-            }
+            self.execute_command(
+                Box::new(RemoveComponentCommand {
+                    node_key,
+                    component_index: comp_idx,
+                    removed_component: None,
+                }),
+                scene,
+            );
+        }
+
+        if let Some((node_key, comp)) = self.component_to_add.take() {
+            self.execute_command(
+                Box::new(AddComponentCommand {
+                    node_key,
+                    component: Some(comp),
+                    component_index: None,
+                }),
+                scene,
+            );
         }
     }
 
@@ -540,6 +614,10 @@ impl EditorUI {
                         }
                         if ui.button("Sphere").clicked() {
                             self.add_primitive_sphere(scene);
+                            ui.close_menu();
+                        }
+                        if ui.button("Plane").clicked() {
+                            self.add_primitive_plane(scene);
                             ui.close_menu();
                         }
                         ui.separator();

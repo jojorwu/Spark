@@ -57,7 +57,8 @@ impl EditorUI {
                                 ui.checkbox(&mut renderer.settings.enable_bloom, "Bloom");
                                 ui.checkbox(&mut renderer.settings.enable_taa, "TAA");
                                 ui.checkbox(&mut renderer.settings.enable_grid, "Grid");
-                            }).response
+                            })
+                            .response
                         },
                     );
 

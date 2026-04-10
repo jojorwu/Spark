@@ -102,6 +102,34 @@ impl EditorUI {
         renderer: &mut spark_renderer::Renderer,
         asset_manager: &mut spark_core::asset::AssetManager,
     ) {
+        if let Some((old_path, mut new_name)) = self.asset_rename_state.take() {
+            let mut close = false;
+            egui::Window::new("Rename Asset")
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("New Name:");
+                        ui.text_edit_singleline(&mut new_name);
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Rename").clicked() {
+                            let new_path = old_path.with_file_name(&new_name);
+                            if let Err(e) = std::fs::rename(&old_path, new_path) {
+                                log::error!("Failed to rename asset: {}", e);
+                            }
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if !close {
+                self.asset_rename_state = Some((old_path, new_name));
+            }
+        }
+
         let mut asset_to_load = None;
         let mut dir_to_set = None;
 
@@ -177,7 +205,10 @@ impl EditorUI {
 
                         response.context_menu(|ui| {
                             if ui.button("Rename").clicked() {
-                                // TODO: Rename dialog
+                                self.asset_rename_state = Some((
+                                    path.clone(),
+                                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                                ));
                                 ui.close_menu();
                             }
                             if ui.button("Delete").clicked() {
@@ -193,7 +224,29 @@ impl EditorUI {
                                     .extension()
                                     .is_some_and(|ext| ext == "png" || ext == "jpg");
                                 if is_img && ui.button("Create Material from Texture").clicked() {
-                                    // TODO: Implement
+                                    let mat_path = path.with_extension("json");
+                                    let name = path.file_stem().unwrap().to_string_lossy();
+                                    let mat = spark_core::asset::Material {
+                                        name: name.into_owned(),
+                                        albedo_factor: [1.0, 1.0, 1.0, 1.0],
+                                        metallic_factor: 0.0,
+                                        roughness_factor: 0.5,
+                                        emissive_factor: [0.0, 0.0, 0.0, 1.0],
+                                        is_transparent: false,
+                                        albedo_texture: None, // Will be linked manually for now or I can try to find handle
+                                        normal_texture: None,
+                                        metallic_roughness_texture: None,
+                                    };
+                                    if let Ok(json) = serde_json::to_string_pretty(&mat) {
+                                        if let Err(e) = std::fs::write(&mat_path, json) {
+                                            log::error!("Failed to create material file: {}", e);
+                                        } else {
+                                            self.status_message = format!(
+                                                "Material created: {:?}",
+                                                mat_path.file_name().unwrap()
+                                            );
+                                        }
+                                    }
                                     ui.close_menu();
                                 }
                             }
@@ -298,7 +351,9 @@ impl EditorUI {
                     .color_edit_button_rgba_unmultiplied(&mut mat.emissive_factor)
                     .changed();
             });
-            changed |= ui.checkbox(&mut mat.is_transparent, "Transparent").changed();
+            changed |= ui
+                .checkbox(&mut mat.is_transparent, "Transparent")
+                .changed();
         });
 
         ui.add_space(4.0);
@@ -307,11 +362,15 @@ impl EditorUI {
             ui.label(egui::RichText::new("PBR Parameters").strong());
             ui.horizontal(|ui| {
                 ui.label("Metallic:");
-                changed |= ui.add(egui::Slider::new(&mut mat.metallic_factor, 0.0..=1.0)).changed();
+                changed |= ui
+                    .add(egui::Slider::new(&mut mat.metallic_factor, 0.0..=1.0))
+                    .changed();
             });
             ui.horizontal(|ui| {
                 ui.label("Roughness:");
-                changed |= ui.add(egui::Slider::new(&mut mat.roughness_factor, 0.0..=1.0)).changed();
+                changed |= ui
+                    .add(egui::Slider::new(&mut mat.roughness_factor, 0.0..=1.0))
+                    .changed();
             });
         });
 
@@ -385,27 +444,30 @@ impl EditorUI {
                 })
                 .unwrap_or_else(|| "None".to_string());
 
-            let response = egui::ComboBox::from_id_source(format!("mat_tex_{}_{}", mat_idx, tex_type))
-                .selected_text(tex_name)
-                .show_ui(ui, |ui| {
-                    let mut local_changed = false;
-                    local_changed |= ui.selectable_value(texture_handle, None, "None").changed();
-                    for t_idx in 0..resource_manager.gpu_textures.assets_len() {
-                        let h = spark_core::resource::Handle::new(t_idx as u32);
-                        let name = texture_path_map
-                            .iter()
-                            .find(|(_, &handle)| handle == h)
-                            .map(|(path, _)| {
-                                path.file_name()
-                                    .expect("Texture path has no file name")
-                                    .to_string_lossy()
-                                    .into_owned()
-                            })
-                            .unwrap_or_else(|| format!("ID: {}", t_idx));
-                        local_changed |= ui.selectable_value(texture_handle, Some(h), name).changed();
-                    }
-                    local_changed
-                });
+            let response =
+                egui::ComboBox::from_id_source(format!("mat_tex_{}_{}", mat_idx, tex_type))
+                    .selected_text(tex_name)
+                    .show_ui(ui, |ui| {
+                        let mut local_changed = false;
+                        local_changed |=
+                            ui.selectable_value(texture_handle, None, "None").changed();
+                        for t_idx in 0..resource_manager.gpu_textures.assets_len() {
+                            let h = spark_core::resource::Handle::new(t_idx as u32);
+                            let name = texture_path_map
+                                .iter()
+                                .find(|(_, &handle)| handle == h)
+                                .map(|(path, _)| {
+                                    path.file_name()
+                                        .expect("Texture path has no file name")
+                                        .to_string_lossy()
+                                        .into_owned()
+                                })
+                                .unwrap_or_else(|| format!("ID: {}", t_idx));
+                            local_changed |=
+                                ui.selectable_value(texture_handle, Some(h), name).changed();
+                        }
+                        local_changed
+                    });
             if let Some(inner) = response.inner {
                 changed |= inner;
             }

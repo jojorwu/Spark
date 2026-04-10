@@ -755,7 +755,7 @@ impl PostProcessPass {
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,
-                    size: std::mem::size_of::<PostProcessPC>() as u32,
+                        size: std::mem::size_of::<PostProcessPC>() as u32,
                     }]),
                 None,
             )?
