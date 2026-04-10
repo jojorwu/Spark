@@ -644,7 +644,7 @@ impl Renderer {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let needs_new_buffer = {
                 let frame = &self.frame_manager.frames[i];
-                frame.light_buffer.as_ref().map_or(true, |b| b.size < sz)
+                frame.light_buffer.as_ref().is_none_or(|b| b.size < sz)
             };
 
             if needs_new_buffer {
@@ -701,7 +701,7 @@ impl Renderer {
         let mut buffer = self.frame_manager.frames[frame_idx]
             .transparent_indirect_buffer
             .clone();
-        if buffer.as_ref().map_or(true, |b| b.size < cmd_sz) {
+        if buffer.as_ref().is_none_or(|b| b.size < cmd_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .transparent_indirect_buffer
                 .take()
@@ -724,7 +724,7 @@ impl Renderer {
         let mut obj_buffer = self.frame_manager.frames[frame_idx]
             .transparent_object_buffer
             .clone();
-        if obj_buffer.as_ref().map_or(true, |b| b.size < obj_sz) {
+        if obj_buffer.as_ref().is_none_or(|b| b.size < obj_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .transparent_object_buffer
                 .take()
@@ -759,7 +759,7 @@ impl Renderer {
         let mut buffer = self.frame_manager.frames[frame_idx]
             .indirect_commands_buffer
             .clone();
-        if buffer.as_ref().map_or(true, |b| b.size < cmd_sz) {
+        if buffer.as_ref().is_none_or(|b| b.size < cmd_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .indirect_commands_buffer
                 .take()
@@ -779,7 +779,7 @@ impl Renderer {
         let mut obj_buffer = self.frame_manager.frames[frame_idx]
             .object_data_buffer
             .clone();
-        if obj_buffer.as_ref().map_or(true, |b| b.size < obj_sz) {
+        if obj_buffer.as_ref().is_none_or(|b| b.size < obj_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .object_data_buffer
                 .take()
@@ -1245,7 +1245,7 @@ impl Renderer {
             let f = &self.frame_manager.frames[frame_idx];
             f.texture_staging_buffer
                 .as_ref()
-                .map_or(true, |b| b.size < sz)
+                .is_none_or(|b| b.size < sz)
         };
 
         if needs_new {

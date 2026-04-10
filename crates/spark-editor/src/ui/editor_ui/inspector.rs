@@ -245,25 +245,41 @@ impl EditorUI {
 
         let mut to_remove = None;
         for (idx, component) in node.components.iter_mut().enumerate() {
-            ui.add_space(4.0);
-            let header = match component.as_any().type_id() {
-                t if t == std::any::TypeId::of::<spark_core::scene::MeshComponent>() => "Mesh",
-                t if t == std::any::TypeId::of::<spark_core::scene::LightComponent>() => "Light",
-                t if t == std::any::TypeId::of::<spark_core::scene::CameraComponent>() => "Camera",
-                t if t == std::any::TypeId::of::<spark_core::scene::SpriteComponent>() => "Sprite",
-                _ => "Unknown",
+            ui.add_space(6.0);
+            let (header, icon) = match component.as_any().type_id() {
+                t if t == std::any::TypeId::of::<spark_core::scene::MeshComponent>() => ("Mesh", "📦"),
+                t if t == std::any::TypeId::of::<spark_core::scene::LightComponent>() => ("Light", "💡"),
+                t if t == std::any::TypeId::of::<spark_core::scene::CameraComponent>() => ("Camera", "🎥"),
+                t if t == std::any::TypeId::of::<spark_core::scene::SpriteComponent>() => ("Sprite", "🖼"),
+                _ => ("Unknown", "❓"),
             };
 
-            let response = ui.collapsing(header, |ui| {
-                self.draw_component_editor(ui, component, asset_manager);
-            });
+            egui::Frame::none()
+                .fill(ui.visuals().widgets.inactive.bg_fill)
+                .rounding(4.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add_space(4.0);
+                        let response = ui.collapsing(format!("{} {}", icon, header), |ui| {
+                            ui.add_space(4.0);
+                            self.draw_component_editor(ui, component, asset_manager);
+                            ui.add_space(4.0);
+                        });
 
-            response.header_response.context_menu(|ui| {
-                if ui.button("Remove").clicked() {
-                    to_remove = Some(idx);
-                    ui.close_menu();
-                }
-            });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("🗑").on_hover_text("Remove Component").clicked() {
+                                to_remove = Some(idx);
+                            }
+                        });
+
+                        response.header_response.context_menu(|ui| {
+                            if ui.button("Remove").clicked() {
+                                to_remove = Some(idx);
+                                ui.close_menu();
+                            }
+                        });
+                    });
+                });
         }
 
         if let Some(idx) = to_remove {

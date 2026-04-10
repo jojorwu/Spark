@@ -55,9 +55,9 @@ impl EditorUI {
 
     pub fn draw_console_tab(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.log_filter_info, "Info");
-            ui.checkbox(&mut self.log_filter_warn, "Warn");
-            ui.checkbox(&mut self.log_filter_error, "Error");
+            ui.checkbox(&mut self.log_filter_info, "ℹ Info");
+            ui.checkbox(&mut self.log_filter_warn, "⚠ Warn");
+            ui.checkbox(&mut self.log_filter_error, "🚫 Error");
             ui.separator();
             ui.label("🔍");
             ui.text_edit_singleline(&mut self.log_search);
@@ -65,7 +65,7 @@ impl EditorUI {
                 self.log_search.clear();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Clear").clicked() {
+                if ui.button("🗑 Clear").clicked() {
                     self.logs.lock().expect("Failed to lock logs").clear();
                 }
             });
@@ -73,22 +73,26 @@ impl EditorUI {
         ui.separator();
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 let logs = self.logs.lock().expect("Failed to lock logs");
                 for log in logs.iter() {
-                    let (color, visible) = if log.contains("ERROR") {
-                        (egui::Color32::LIGHT_RED, self.log_filter_error)
+                    let (color, icon, visible) = if log.contains("ERROR") {
+                        (egui::Color32::LIGHT_RED, "🚫", self.log_filter_error)
                     } else if log.contains("WARN") {
-                        (egui::Color32::KHAKI, self.log_filter_warn)
+                        (egui::Color32::KHAKI, "⚠", self.log_filter_warn)
                     } else {
-                        (egui::Color32::LIGHT_GRAY, self.log_filter_info)
+                        (egui::Color32::LIGHT_GRAY, "ℹ", self.log_filter_info)
                     };
 
                     let matches_search = self.log_search.is_empty()
                         || log.to_lowercase().contains(&self.log_search.to_lowercase());
 
                     if visible && matches_search {
-                        ui.label(egui::RichText::new(log).color(color).monospace());
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(icon).color(color));
+                            ui.label(egui::RichText::new(log).color(color).monospace());
+                        });
                     }
                 }
             });
@@ -171,8 +175,8 @@ impl EditorUI {
                     }
 
                     ui.horizontal(|ui| {
-                        let response = if path.is_dir() {
-                            ui.selectable_label(false, format!("📁 {}", label))
+                        let (icon, color) = if path.is_dir() {
+                            ("📁", egui::Color32::from_rgb(250, 210, 100))
                         } else {
                             let is_gltf = path
                                 .extension()
@@ -180,15 +184,21 @@ impl EditorUI {
                             let is_img = path
                                 .extension()
                                 .is_some_and(|ext| ext == "png" || ext == "jpg");
-                            let icon = if is_gltf {
-                                "📦"
+                            let is_json = path.extension().is_some_and(|ext| ext == "json");
+
+                            if is_gltf {
+                                ("📦", egui::Color32::from_rgb(100, 200, 250))
                             } else if is_img {
-                                "🖼"
+                                ("🖼", egui::Color32::from_rgb(150, 250, 150))
+                            } else if is_json {
+                                ("📄", egui::Color32::from_rgb(250, 150, 250))
                             } else {
-                                "📄"
-                            };
-                            ui.selectable_label(false, format!("{} {}", icon, label))
+                                ("📄", egui::Color32::from_gray(180))
+                            }
                         };
+
+                        ui.label(egui::RichText::new(icon).color(color));
+                        let response = ui.selectable_label(false, label);
 
                         if response.clicked() {
                             if path.is_dir() {

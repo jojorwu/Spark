@@ -245,12 +245,28 @@ impl EditorUI {
         let egui_ctx = Context::default();
 
         let mut visuals = Visuals::dark();
-        visuals.widgets.noninteractive.bg_fill = egui::Color32::from_gray(20);
-        visuals.widgets.noninteractive.fg_stroke =
-            egui::Stroke::new(1.0, egui::Color32::from_gray(180));
-        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(60, 100, 150);
-        visuals.widgets.hovered.bg_fill = egui::Color32::from_gray(45);
-        visuals.window_rounding = 0.0.into();
+
+        // Refined Dark Theme
+        let bg_color = egui::Color32::from_gray(24);
+        let highlight_color = egui::Color32::from_rgb(45, 100, 180);
+        let hover_color = egui::Color32::from_gray(38);
+
+        visuals.widgets.noninteractive.bg_fill = bg_color;
+        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(160));
+
+        visuals.widgets.inactive.bg_fill = egui::Color32::from_gray(30);
+        visuals.widgets.inactive.rounding = 2.0.into();
+
+        visuals.widgets.hovered.bg_fill = hover_color;
+        visuals.widgets.hovered.rounding = 2.0.into();
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+
+        visuals.widgets.active.bg_fill = highlight_color;
+        visuals.widgets.active.rounding = 2.0.into();
+
+        visuals.window_rounding = 4.0.into();
+        visuals.override_text_color = Some(egui::Color32::from_gray(220));
+
         egui_ctx.set_visuals(visuals);
 
         let egui_state = State::new(
@@ -637,79 +653,96 @@ impl EditorUI {
 
     fn draw_toolbar(&mut self, scene: &mut Scene) {
         let ctx = self.egui_ctx.clone();
-        egui::TopBottomPanel::top("toolbar").show(&ctx, |ui| {
+        egui::TopBottomPanel::top("toolbar")
+            .frame(egui::Frame::none().fill(ctx.style().visuals.widgets.noninteractive.bg_fill).inner_margin(4.0))
+            .show(&ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(
-                    &mut self.gizmo_mode,
-                    egui_gizmo::GizmoMode::Translate,
-                    "⬈ Move",
-                );
-                ui.selectable_value(
-                    &mut self.gizmo_mode,
-                    egui_gizmo::GizmoMode::Rotate,
-                    "⟲ Rotate",
-                );
-                ui.selectable_value(
-                    &mut self.gizmo_mode,
-                    egui_gizmo::GizmoMode::Scale,
-                    "⤢ Scale",
-                );
+                // Group 1: Tools
+                ui.group(|ui| {
+                    ui.style_mut().spacing.item_spacing.x = 2.0;
+                    ui.selectable_value(
+                        &mut self.gizmo_mode,
+                        egui_gizmo::GizmoMode::Translate,
+                        egui::RichText::new("⬈ Move").size(13.0),
+                    ).on_hover_text("Translate (T)");
+                    ui.selectable_value(
+                        &mut self.gizmo_mode,
+                        egui_gizmo::GizmoMode::Rotate,
+                        egui::RichText::new("⟲ Rotate").size(13.0),
+                    ).on_hover_text("Rotate (R)");
+                    ui.selectable_value(
+                        &mut self.gizmo_mode,
+                        egui_gizmo::GizmoMode::Scale,
+                        egui::RichText::new("⤢ Scale").size(13.0),
+                    ).on_hover_text("Scale (S)");
 
-                ui.separator();
-                ui.toggle_value(&mut self.gizmo_local, "Local");
-                ui.toggle_value(&mut self.snap_enabled, "Snap");
-                if self.snap_enabled {
-                    ui.add(
-                        egui::DragValue::new(&mut self.snap_distance)
-                            .speed(0.1)
-                            .clamp_range(0.0..=10.0),
-                    );
-                }
+                    ui.separator();
+                    ui.toggle_value(&mut self.gizmo_local, "Local").on_hover_text("Use local space coordinate system");
+                });
 
-                ui.separator();
+                ui.add_space(8.0);
 
-                let (play_label, play_color) = if self.sim_state == SimulationState::Playing {
-                    ("⏸ Pause", egui::Color32::KHAKI)
-                } else {
-                    ("▶ Play", egui::Color32::LIGHT_GREEN)
-                };
-
-                if ui
-                    .button(egui::RichText::new(play_label).color(play_color))
-                    .clicked()
-                {
-                    if self.sim_state == SimulationState::Stopped {
-                        let json = serde_json::to_string(scene)
-                            .expect("Failed to serialize scene for snapshot");
-                        self.scene_snapshot = Some(
-                            serde_json::from_str(&json)
-                                .expect("Failed to deserialize scene snapshot"),
+                // Group 2: Snapping
+                ui.group(|ui| {
+                    ui.toggle_value(&mut self.snap_enabled, "🧲 Snap");
+                    if self.snap_enabled {
+                        ui.add(
+                            egui::DragValue::new(&mut self.snap_distance)
+                                .speed(0.1)
+                                .clamp_range(0.0..=10.0),
                         );
                     }
-                    self.sim_state = if self.sim_state == SimulationState::Playing {
-                        SimulationState::Paused
-                    } else {
-                        SimulationState::Playing
-                    };
-                }
+                });
 
-                if ui
-                    .button(egui::RichText::new("⏹ Stop").color(egui::Color32::LIGHT_RED))
-                    .clicked()
-                {
-                    if let Some(snapshot) = self.scene_snapshot.take() {
-                        *scene = snapshot;
+                ui.add_space(8.0);
+
+                // Group 3: Simulation
+                ui.group(|ui| {
+                    let (play_label, play_color) = if self.sim_state == SimulationState::Playing {
+                        ("⏸ Pause", egui::Color32::KHAKI)
+                    } else {
+                        ("▶ Play", egui::Color32::LIGHT_GREEN)
+                    };
+
+                    if ui
+                        .button(egui::RichText::new(play_label).color(play_color).strong())
+                        .clicked()
+                    {
+                        if self.sim_state == SimulationState::Stopped {
+                            let json = serde_json::to_string(scene)
+                                .expect("Failed to serialize scene for snapshot");
+                            self.scene_snapshot = Some(
+                                serde_json::from_str(&json)
+                                    .expect("Failed to deserialize scene snapshot"),
+                            );
+                        }
+                        self.sim_state = if self.sim_state == SimulationState::Playing {
+                            SimulationState::Paused
+                        } else {
+                            SimulationState::Playing
+                        };
                     }
-                    self.sim_state = SimulationState::Stopped;
-                }
+
+                    if ui
+                        .button(egui::RichText::new("⏹ Stop").color(egui::Color32::LIGHT_RED).strong())
+                        .clicked()
+                    {
+                        if let Some(snapshot) = self.scene_snapshot.take() {
+                            *scene = snapshot;
+                        }
+                        self.sim_state = SimulationState::Stopped;
+                    }
+                });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("⟳").on_hover_text("Redo").clicked() {
-                        self.redo(scene);
-                    }
-                    if ui.button("⟲").on_hover_text("Undo").clicked() {
-                        self.undo(scene);
-                    }
+                    ui.group(|ui| {
+                        if ui.button("⟳").on_hover_text("Redo (Cmd+Shift+Z)").clicked() {
+                            self.redo(scene);
+                        }
+                        if ui.button("⟲").on_hover_text("Undo (Cmd+Z)").clicked() {
+                            self.undo(scene);
+                        }
+                    });
                 });
             });
         });
@@ -717,13 +750,27 @@ impl EditorUI {
 
     fn draw_status_bar(&mut self, fps: f32) {
         let ctx = self.egui_ctx.clone();
-        egui::TopBottomPanel::bottom("status_bar").show(&ctx, |ui| {
+        egui::TopBottomPanel::bottom("status_bar")
+            .frame(egui::Frame::none().fill(ctx.style().visuals.widgets.noninteractive.bg_fill).inner_margin(egui::Margin::symmetric(8.0, 2.0)))
+            .show(&ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!("Status: {}", self.status_message));
+                ui.label(egui::RichText::new(format!("● {}", self.status_message)).size(11.0));
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(format!("FPS: {:.1}", fps));
+                    ui.label(egui::RichText::new(format!("FPS: {:.1}", fps)).size(11.0));
                     ui.separator();
-                    ui.label("Spark Engine v0.1.0");
+
+                    let gizmo_info = format!("{} | {}",
+                        match self.gizmo_mode {
+                            egui_gizmo::GizmoMode::Translate => "Translate",
+                            egui_gizmo::GizmoMode::Rotate => "Rotate",
+                            egui_gizmo::GizmoMode::Scale => "Scale",
+                        },
+                        if self.gizmo_local { "Local" } else { "Global" }
+                    );
+                    ui.label(egui::RichText::new(gizmo_info).size(11.0));
+                    ui.separator();
+                    ui.label(egui::RichText::new("Spark Engine v0.1.0").size(11.0).italics());
                 });
             });
         });

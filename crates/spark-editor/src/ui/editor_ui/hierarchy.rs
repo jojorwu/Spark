@@ -141,26 +141,34 @@ impl EditorUI {
         icon: &str,
     ) {
         ui.horizontal(|ui| {
-            ui.label(icon);
-
-            let (visible, locked) = if let Some(node) = scene.nodes.get_mut(node_key) {
+            let (visible, locked) = if let Some(node) = scene.nodes.get(node_key) {
                 (node.visible, node.locked)
             } else {
                 (true, false)
             };
 
-            if ui.button(if visible { "👁" } else { "👓" }).clicked() {
-                if let Some(node) = scene.nodes.get_mut(node_key) {
-                    node.visible = !node.visible;
-                }
-            }
-            if ui.button(if locked { "🔒" } else { "🔓" }).clicked() {
-                if let Some(node) = scene.nodes.get_mut(node_key) {
-                    node.locked = !node.locked;
-                }
-            }
+            // Icons based on state
+            let text_color = if visible {
+                ui.visuals().text_color()
+            } else {
+                egui::Color32::from_gray(100)
+            };
 
-            let response = ui.selectable_label(is_selected, label);
+            ui.label(icon);
+            let response = ui.selectable_label(is_selected, egui::RichText::new(label).color(text_color));
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button(if visible { "👁" } else { "👓" }).on_hover_text("Toggle Visibility").clicked() {
+                    if let Some(node) = scene.nodes.get_mut(node_key) {
+                        node.visible = !node.visible;
+                    }
+                }
+                if ui.small_button(if locked { "🔒" } else { "🔓" }).on_hover_text("Toggle Lock").clicked() {
+                    if let Some(node) = scene.nodes.get_mut(node_key) {
+                        node.locked = !node.locked;
+                    }
+                }
+            });
 
             let mut delete_requested = false;
             response.context_menu(|ui| {
