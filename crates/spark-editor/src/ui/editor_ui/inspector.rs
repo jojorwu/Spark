@@ -27,12 +27,18 @@ impl EditorUI {
                         });
                     });
 
-                    ui.add_space(8.0);
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
                     ui.group(|ui| {
                         changed_transform = self.draw_transform_editor(ui, node);
                     });
 
-                    ui.add_space(8.0);
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
                     ui.group(|ui| {
                         self.draw_component_list(ui, node, asset_manager, selected_key);
                     });
@@ -78,9 +84,22 @@ impl EditorUI {
         ui: &mut Ui,
         node: &mut Node,
     ) -> Option<(spark_math::Mat4, spark_math::Mat4)> {
-        ui.vertical_centered(|ui| {
+        let reset_res = ui.horizontal(|ui| {
             ui.heading("Transform");
-        });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("⟲ Reset").on_hover_text("Reset to Identity").clicked() {
+                    let old = node.local_transform;
+                    node.local_transform = spark_math::Mat4::IDENTITY;
+                    return Some((old, spark_math::Mat4::IDENTITY));
+                }
+                None
+            }).inner
+        }).inner;
+
+        if let Some(res) = reset_res {
+            return Some(res);
+        }
+
         let (mut scale, mut rotation, mut translation) =
             node.local_transform.to_scale_rotation_translation();
 

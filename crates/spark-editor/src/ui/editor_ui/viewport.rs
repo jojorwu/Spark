@@ -2,6 +2,7 @@ use crate::ui::{EditorUI, TransformCommand};
 use egui_gizmo::Gizmo;
 use spark_core::scene::Scene;
 use spark_math::Vec4Swizzles;
+use std::sync::atomic::Ordering;
 
 impl EditorUI {
     pub fn draw_viewport(
@@ -29,16 +30,35 @@ impl EditorUI {
                     ui.put(
                         egui::Rect::from_min_size(
                             rect.min + egui::vec2(20.0, 20.0),
-                            egui::vec2(130.0, 60.0),
+                            egui::vec2(140.0, 70.0),
                         ),
                         egui::Label::new(
                             egui::RichText::new(format!(
-                                "Viewport\nObjects: {}\nTris: TODO\nDraw Calls: TODO",
-                                renderer.last_object_count
+                                "Viewport\nObjects: {}\nTris: {}\nDraw Calls: {}",
+                                renderer.last_object_count,
+                                renderer.last_triangle_count.load(Ordering::Relaxed),
+                                renderer.last_draw_calls.load(Ordering::Relaxed),
                             ))
                             .color(egui::Color32::WHITE)
                             .size(12.0),
                         ),
+                    );
+
+                    // View Options Menu
+                    ui.put(
+                        egui::Rect::from_min_size(
+                            rect.max - egui::vec2(120.0, 40.0),
+                            egui::vec2(110.0, 30.0),
+                        ),
+                        |ui: &mut egui::Ui| {
+                            ui.menu_button("👁 View Options", |ui| {
+                                ui.checkbox(&mut renderer.settings.enable_shadows, "Shadows");
+                                ui.checkbox(&mut renderer.settings.enable_ssao, "SSAO");
+                                ui.checkbox(&mut renderer.settings.enable_bloom, "Bloom");
+                                ui.checkbox(&mut renderer.settings.enable_taa, "TAA");
+                                ui.checkbox(&mut renderer.settings.enable_grid, "Grid");
+                            }).response
+                        },
                     );
 
                     // Keyboard shortcuts

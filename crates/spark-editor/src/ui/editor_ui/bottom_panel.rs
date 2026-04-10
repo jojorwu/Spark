@@ -277,55 +277,80 @@ impl EditorUI {
         >,
         resource_manager: &mut spark_core::resource::ResourceManager,
     ) {
+        let mut changed = false;
+
         ui.horizontal(|ui| {
             ui.label("Name:");
-            ui.text_edit_singleline(&mut mat.name);
+            changed |= ui.text_edit_singleline(&mut mat.name).changed();
         });
-        ui.horizontal(|ui| {
-            ui.label("Albedo:");
-            ui.color_edit_button_rgba_unmultiplied(&mut mat.albedo_factor);
-        });
-        ui.horizontal(|ui| {
-            ui.label("Metallic:");
-            ui.add(egui::Slider::new(&mut mat.metallic_factor, 0.0..=1.0));
-        });
-        ui.horizontal(|ui| {
-            ui.label("Roughness:");
-            ui.add(egui::Slider::new(&mut mat.roughness_factor, 0.0..=1.0));
-        });
-        ui.horizontal(|ui| {
-            ui.label("Emissive:");
-            ui.color_edit_button_rgba_unmultiplied(&mut mat.emissive_factor);
-        });
-        ui.checkbox(&mut mat.is_transparent, "Transparent");
 
-        Self::draw_texture_assignment(
-            ui,
-            "Albedo Texture:",
-            &mut mat.albedo_texture,
-            idx,
-            "albedo",
-            texture_path_map,
-            resource_manager,
-        );
-        Self::draw_texture_assignment(
-            ui,
-            "Normal Texture:",
-            &mut mat.normal_texture,
-            idx,
-            "normal",
-            texture_path_map,
-            resource_manager,
-        );
-        Self::draw_texture_assignment(
-            ui,
-            "Metallic/Roughness Texture:",
-            &mut mat.metallic_roughness_texture,
-            idx,
-            "mr",
-            texture_path_map,
-            resource_manager,
-        );
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Basic Properties").strong());
+            ui.horizontal(|ui| {
+                ui.label("Albedo:");
+                changed |= ui
+                    .color_edit_button_rgba_unmultiplied(&mut mat.albedo_factor)
+                    .changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Emissive:");
+                changed |= ui
+                    .color_edit_button_rgba_unmultiplied(&mut mat.emissive_factor)
+                    .changed();
+            });
+            changed |= ui.checkbox(&mut mat.is_transparent, "Transparent").changed();
+        });
+
+        ui.add_space(4.0);
+
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("PBR Parameters").strong());
+            ui.horizontal(|ui| {
+                ui.label("Metallic:");
+                changed |= ui.add(egui::Slider::new(&mut mat.metallic_factor, 0.0..=1.0)).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Roughness:");
+                changed |= ui.add(egui::Slider::new(&mut mat.roughness_factor, 0.0..=1.0)).changed();
+            });
+        });
+
+        ui.add_space(4.0);
+
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Textures").strong());
+            changed |= Self::draw_texture_assignment(
+                ui,
+                "Albedo Texture:",
+                &mut mat.albedo_texture,
+                idx,
+                "albedo",
+                texture_path_map,
+                resource_manager,
+            );
+            changed |= Self::draw_texture_assignment(
+                ui,
+                "Normal Texture:",
+                &mut mat.normal_texture,
+                idx,
+                "normal",
+                texture_path_map,
+                resource_manager,
+            );
+            changed |= Self::draw_texture_assignment(
+                ui,
+                "Metallic/Roughness Texture:",
+                &mut mat.metallic_roughness_texture,
+                idx,
+                "mr",
+                texture_path_map,
+                resource_manager,
+            );
+        });
+
+        if changed {
+            ui.ctx().request_repaint();
+        }
     }
 
     fn draw_texture_assignment(
@@ -341,7 +366,8 @@ impl EditorUI {
             spark_core::resource::Handle<spark_renderer::vulkan::texture::Texture>,
         >,
         resource_manager: &mut spark_core::resource::ResourceManager,
-    ) {
+    ) -> bool {
+        let mut changed = false;
         ui.horizontal(|ui| {
             ui.label(label);
             let tex_name = texture_handle
@@ -359,10 +385,11 @@ impl EditorUI {
                 })
                 .unwrap_or_else(|| "None".to_string());
 
-            egui::ComboBox::from_id_source(format!("mat_tex_{}_{}", mat_idx, tex_type))
+            let response = egui::ComboBox::from_id_source(format!("mat_tex_{}_{}", mat_idx, tex_type))
                 .selected_text(tex_name)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(texture_handle, None, "None");
+                    let mut local_changed = false;
+                    local_changed |= ui.selectable_value(texture_handle, None, "None").changed();
                     for t_idx in 0..resource_manager.gpu_textures.assets_len() {
                         let h = spark_core::resource::Handle::new(t_idx as u32);
                         let name = texture_path_map
@@ -375,10 +402,15 @@ impl EditorUI {
                                     .into_owned()
                             })
                             .unwrap_or_else(|| format!("ID: {}", t_idx));
-                        ui.selectable_value(texture_handle, Some(h), name);
+                        local_changed |= ui.selectable_value(texture_handle, Some(h), name).changed();
                     }
+                    local_changed
                 });
+            if let Some(inner) = response.inner {
+                changed |= inner;
+            }
         });
+        changed
     }
 
     pub fn draw_settings_tab(
@@ -522,23 +554,23 @@ impl EditorUI {
             ui.horizontal(|ui| {
                 ui.checkbox(&mut renderer.settings.enable_shadows, "Shadows");
                 if renderer.settings.enable_shadows {
-                    ui.label("PCF:");
+                    ui.label("PCF Kernel:");
                     egui::ComboBox::from_id_source("shadow_pcf")
                         .selected_text(if renderer.settings.shadow_pcf_samples == 0 {
                             "Hard"
                         } else {
-                            "Soft (3x3)"
+                            "Soft (5x5)"
                         })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut renderer.settings.shadow_pcf_samples,
                                 0,
-                                "Hard",
+                                "Hard (No Filter)",
                             );
                             ui.selectable_value(
                                 &mut renderer.settings.shadow_pcf_samples,
                                 1,
-                                "Soft (3x3)",
+                                "Soft (High Quality 5x5)",
                             );
                         });
                 }
@@ -550,6 +582,11 @@ impl EditorUI {
                     ui.add(egui::Slider::new(
                         &mut renderer.settings.ssao_radius,
                         0.1..=2.0,
+                    ));
+                    ui.label("Bias:");
+                    ui.add(egui::Slider::new(
+                        &mut renderer.settings.ssao_bias,
+                        0.001..=0.5,
                     ));
                     ui.label("Strength:");
                     ui.add(egui::Slider::new(
