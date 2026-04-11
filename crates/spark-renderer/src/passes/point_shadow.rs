@@ -3,6 +3,13 @@ use crate::resource::Attachment;
 use crate::Renderer;
 use ash::vk;
 
+#[repr(C)]
+struct PointShadowPushConstants {
+    view_proj: spark_math::Mat4,
+    light_pos: spark_math::Vec4,
+    range: f32,
+}
+
 pub struct PointShadowPass {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
@@ -58,7 +65,7 @@ impl PointShadowPass {
                     vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,
-                        size: 128,
+                        size: std::mem::size_of::<PointShadowPushConstants>() as u32,
                     },
                 ]),
                 None,

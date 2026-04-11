@@ -5,14 +5,15 @@ layout (set = 0, binding = 1) uniform sampler2D gDepth;
 layout (set = 0, binding = 2) uniform sampler2D texNoise;
 
 layout (constant_id = 0) const int SSAO_KERNEL_SIZE = 64;
-layout (constant_id = 1) const float SSAO_RADIUS = 0.5;
-layout (constant_id = 2) const float SSAO_BIAS = 0.025;
 
 layout (set = 0, binding = 3) uniform SSAOParams {
     vec4 samples[SSAO_KERNEL_SIZE];
     mat4 projection;
     mat4 view;
     vec2 screenSize;
+    float radius;
+    float bias;
+    float strength;
 } params;
 
 layout (location = 0) out float outOcclusion;
@@ -48,7 +49,7 @@ void main() {
     float occlusion = 0.0;
     for (int i = 0; i < SSAO_KERNEL_SIZE; i++) {
         vec3 samplePos = TBN * params.samples[i].xyz;
-        samplePos = viewPos + samplePos * SSAO_RADIUS;
+        samplePos = viewPos + samplePos * params.radius;
 
         vec4 offset = vec4(samplePos, 1.0);
         offset = params.projection * offset;
@@ -58,9 +59,9 @@ void main() {
         float sampleDepth = texture(gDepth, offset.xy).r;
         vec3 sampleViewPos = getViewPos(offset.xy);
 
-        float rangeCheck = smoothstep(0.0, 1.0, SSAO_RADIUS / abs(viewPos.z - sampleViewPos.z));
-        occlusion += (sampleViewPos.z >= samplePos.z + SSAO_BIAS ? 1.0 : 0.0) * rangeCheck;
+        float rangeCheck = smoothstep(0.0, 1.0, params.radius / abs(viewPos.z - sampleViewPos.z));
+        occlusion += (sampleViewPos.z >= samplePos.z + params.bias ? 1.0 : 0.0) * rangeCheck;
     }
 
-    outOcclusion = 1.0 - (occlusion / float(SSAO_KERNEL_SIZE));
+    outOcclusion = 1.0 - (occlusion / float(SSAO_KERNEL_SIZE)) * params.strength;
 }

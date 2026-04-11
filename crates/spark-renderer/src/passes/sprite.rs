@@ -67,9 +67,10 @@ impl RenderPass for SpritePass {
             .expect("Failed to get SpriteColor view");
 
         unsafe {
-            let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(sprite_view)
-                .with_clear_color([0.0, 0.0, 0.0, 0.0])
-                .build();
+            let color_attachment =
+                crate::vulkan::utils::RenderingAttachmentBuilder::new(sprite_view)
+                    .with_clear_color([0.0, 0.0, 0.0, 0.0])
+                    .build();
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {
@@ -210,7 +211,7 @@ impl SpritePass {
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,
-                        size: 64, // Mat4
+                        size: std::mem::size_of::<spark_math::Mat4>() as u32,
                     }]),
                 None,
             )?

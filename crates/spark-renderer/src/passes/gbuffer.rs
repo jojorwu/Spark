@@ -1,6 +1,19 @@
 use super::{RenderContext, RenderPass};
 use ash::vk;
 
+#[repr(C)]
+struct GBufferPushConstants {
+    count: u32,
+    metallic: f32,
+    roughness: f32,
+    width: f32,
+    height: f32,
+    padding: u32,
+    object_buffer_address: u64,
+    prev_view_proj: spark_math::Mat4,
+    vertex_buffer_address: u64,
+}
+
 pub struct GBufferPass {}
 
 impl GBufferPass {
@@ -25,18 +38,6 @@ impl GBufferPass {
         renderer: &Renderer,
         current_frame: usize,
     ) {
-        #[repr(C)]
-        struct GBufferPushConstants {
-            count: u32,
-            metallic: f32,
-            roughness: f32,
-            width: f32,
-            height: f32,
-            padding: u32,
-            object_buffer_address: u64,
-            prev_view_proj: spark_math::Mat4,
-            vertex_buffer_address: u64,
-        }
         let pc = GBufferPushConstants {
             count: renderer.light_count,
             metallic: 0.5,
@@ -55,6 +56,8 @@ impl GBufferPass {
                 .as_ref()
                 .map_or(0, |b| b.address),
         };
+        // SAFETY: GBufferPushConstants is a POD struct. We use standard Rust memory layout
+        // to pass it to Vulkan via push constants.
         let pc_bytes = unsafe {
             std::slice::from_raw_parts(
                 &pc as *const _ as *const u8,
@@ -65,6 +68,9 @@ impl GBufferPass {
         let extent = renderer.get_extent();
         let global_ds = renderer.frame_manager.frames[current_frame].global_descriptor_set;
 
+        // SAFETY: We use cmd_bind_pipeline, cmd_set_viewport, cmd_set_scissor, and other Vulkan commands
+        // in a sequence. The RenderGraph ensures that all necessary synchronization and image layout
+        // transitions are already performed before record_commands is called.
         unsafe {
             if let Some(pipeline) = &renderer.pipeline {
                 device.cmd_bind_pipeline(
@@ -92,40 +98,24 @@ impl GBufferPass {
                     pc_bytes,
                 );
 
+                let get_attachment = |name: &str| {
+                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
+                        renderer
+                            .get_pass_resource_view(self.name(), name, current_frame)
+                            .expect(name),
+                    )
+                };
+
                 let color_attachments = [
-                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
-                        renderer
-                            .get_pass_resource_view(self.name(), "GBufferAlbedo", current_frame)
-                            .expect("GBufferAlbedo missing"),
-                    )
-                    .build(),
-                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
-                        renderer
-                            .get_pass_resource_view(self.name(), "GBufferNormal", current_frame)
-                            .expect("GBufferNormal missing"),
-                    )
-                    .build(),
-                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
-                        renderer
-                            .get_pass_resource_view(self.name(), "GBufferPBR", current_frame)
-                            .expect("GBufferPBR missing"),
-                    )
-                    .build(),
-                    crate::vulkan::utils::RenderingAttachmentBuilder::new(
-                        renderer
-                            .get_pass_resource_view(self.name(), "GBufferVelocity", current_frame)
-                            .expect("GBufferVelocity missing"),
-                    )
-                    .build(),
+                    get_attachment("GBufferAlbedo").build(),
+                    get_attachment("GBufferNormal").build(),
+                    get_attachment("GBufferPBR").build(),
+                    get_attachment("GBufferVelocity").build(),
                 ];
 
-                let depth_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(
-                    renderer
-                        .get_pass_resource_view(self.name(), "GBufferDepth", current_frame)
-                        .expect("GBufferDepth missing"),
-                )
-                .with_clear_depth(1.0)
-                .build();
+                let depth_attachment = get_attachment("GBufferDepth")
+                    .with_clear_depth(1.0)
+                    .build();
 
                 let rendering_info = vk::RenderingInfo::default()
                     .render_area(vk::Rect2D {
@@ -146,8 +136,8 @@ impl GBufferPass {
                         vk::PipelineBindPoint::GRAPHICS,
                         pipeline.layout,
                         0,
-                    &[global_ds, renderer.gpu_resource_manager.bindless.set],
-                    &[],
+                        &[global_ds, renderer.gpu_resource_manager.bindless.set],
+                        &[],
                     );
 
                     if let Some(ib) = renderer.gpu_resource_manager.global_index_buffer.as_ref() {

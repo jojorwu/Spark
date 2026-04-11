@@ -6,6 +6,28 @@ use ash::vk;
 use super::{RenderContext, RenderPass};
 use crate::Renderer;
 
+#[repr(C)]
+struct PostProcessPC {
+    exposure: f32,
+    gamma: f32,
+    bloom_enabled: f32,
+    vignette_intensity: f32,
+    vignette_smoothness: f32,
+    chromatic_aberration: f32,
+    film_grain: f32,
+    motion_blur_strength: f32,
+    auto_exposure_enabled: f32,
+    dof_enabled: f32,
+    lut_index: f32,
+    time: f32,
+    rt_reflections: f32,
+    rt_shadows: f32,
+    rt_ao: f32,
+    rt_gi: f32,
+    bloom_intensity: f32,
+    bloom_threshold: f32,
+}
+
 pub struct PostProcessPipelineParams<'a> {
     pub device: &'a ash::Device,
     pub pipeline_cache: vk::PipelineCache,
@@ -18,6 +40,7 @@ pub struct PostProcessPipelineParams<'a> {
 
 pub struct PostProcessPass {
     pub pipeline: Option<vk::Pipeline>,
+    pub filter_pipeline: Option<vk::Pipeline>,
     pub downsample_pipeline: Option<vk::Pipeline>,
     pub upsample_pipeline: Option<vk::Pipeline>,
     pub layout: vk::PipelineLayout,
@@ -91,14 +114,181 @@ impl RenderPass for PostProcessPass {
         );
 
         unsafe {
-            // 1. Bloom Downsampling Chain
-            let mut current_src_view = input_view;
-            let mut current_src_res = vk::Extent2D {
-                width: renderer.get_extent().width,
-                height: renderer.get_extent().height,
+            let pc = PostProcessPC {
+                exposure: renderer.settings.exposure,
+                gamma: renderer.settings.gamma,
+                bloom_enabled: if renderer.settings.enable_bloom {
+                    1.0
+                } else {
+                    0.0
+                },
+                vignette_intensity: renderer.settings.vignette_intensity,
+                vignette_smoothness: renderer.settings.vignette_smoothness,
+                chromatic_aberration: renderer.settings.chromatic_aberration,
+                film_grain: renderer.settings.film_grain,
+                motion_blur_strength: if renderer.settings.enable_motion_blur {
+                    renderer.settings.motion_blur_strength
+                } else {
+                    0.0
+                },
+                auto_exposure_enabled: if renderer.settings.enable_auto_exposure {
+                    1.0
+                } else {
+                    0.0
+                },
+                dof_enabled: if renderer.settings.enable_dof {
+                    1.0
+                } else {
+                    0.0
+                },
+                lut_index: if renderer.settings.enable_color_grading {
+                    renderer.settings.lut_index as f32
+                } else {
+                    -1.0
+                },
+                time: (renderer.frame_manager.frame_index as f32) * 0.016,
+                rt_reflections: if renderer.settings.enable_rt_reflections {
+                    1.0
+                } else {
+                    0.0
+                },
+                rt_shadows: if renderer.settings.enable_rt_shadows {
+                    1.0
+                } else {
+                    0.0
+                },
+                rt_ao: if renderer.settings.enable_rt_ao {
+                    1.0
+                } else {
+                    0.0
+                },
+                rt_gi: if renderer.settings.enable_rt_gi {
+                    1.0
+                } else {
+                    0.0
+                },
+                bloom_intensity: renderer.settings.bloom_intensity,
+                bloom_threshold: renderer.settings.bloom_threshold,
+            };
+            let pc_bytes = std::slice::from_raw_parts(
+                &pc as *const _ as *const u8,
+                std::mem::size_of::<PostProcessPC>(),
+            );
+
+            // 1. Bloom Prefilter
+            if renderer.settings.enable_bloom {
+                let mip = &self.bloom_mips[0];
+                let ds = self.bloom_descriptor_sets[ctx.current_frame * self.bloom_mips.len()];
+
+                let img_info = [vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(input_view)
+                    .sampler(renderer.common_sampler)];
+                let write = [vk::WriteDescriptorSet::default()
+                    .dst_set(ds)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&img_info)];
+                renderer.device.device.update_descriptor_sets(&write, &[]);
+
+                let color_attachment =
+                    crate::vulkan::utils::RenderingAttachmentBuilder::new(mip.view)
+                        .with_clear_color([0.0, 0.0, 0.0, 1.0])
+                        .build();
+
+                let rendering_info = vk::RenderingInfo::default()
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: mip.extent,
+                    })
+                    .layer_count(1)
+                    .color_attachments(std::slice::from_ref(&color_attachment));
+
+                renderer
+                    .device
+                    .device
+                    .cmd_begin_rendering(ctx.command_buffer, &rendering_info);
+                renderer.device.device.cmd_bind_pipeline(
+                    ctx.command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.filter_pipeline
+                        .expect("Filter pipeline missing in PostProcessPass"),
+                );
+                renderer.device.device.cmd_bind_descriptor_sets(
+                    ctx.command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.layout,
+                    0,
+                    &[ds],
+                    &[],
+                );
+                renderer.device.device.cmd_push_constants(
+                    ctx.command_buffer,
+                    self.layout,
+                    vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    pc_bytes,
+                );
+
+                let viewport = vk::Viewport::default()
+                    .width(mip.extent.width as f32)
+                    .height(mip.extent.height as f32)
+                    .max_depth(1.0);
+                let scissor = vk::Rect2D::default().extent(mip.extent);
+                renderer
+                    .device
+                    .device
+                    .cmd_set_viewport(ctx.command_buffer, 0, &[viewport]);
+                renderer
+                    .device
+                    .device
+                    .cmd_set_scissor(ctx.command_buffer, 0, &[scissor]);
+
+                renderer
+                    .device
+                    .device
+                    .cmd_draw(ctx.command_buffer, 3, 1, 0, 0);
+                renderer.device.device.cmd_end_rendering(ctx.command_buffer);
+
+                let barrier = vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(mip.image)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        level_count: 1,
+                        layer_count: 1,
+                        ..Default::default()
+                    })
+                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ);
+                renderer.device.device.cmd_pipeline_barrier(
+                    ctx.command_buffer,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier],
+                );
+            }
+
+            // 2. Bloom Downsampling Chain
+            let mut current_src_view = if renderer.settings.enable_bloom {
+                self.bloom_mips[0].view
+            } else {
+                input_view
+            };
+            let mut current_src_res = if renderer.settings.enable_bloom {
+                self.bloom_mips[0].extent
+            } else {
+                vk::Extent2D {
+                    width: renderer.get_extent().width,
+                    height: renderer.get_extent().height,
+                }
             };
 
-            for i in 0..self.bloom_mips.len() {
+            for i in 1..self.bloom_mips.len() {
                 let mip = &self.bloom_mips[i];
                 let ds = self.bloom_descriptor_sets[ctx.current_frame * self.bloom_mips.len() + i];
 
@@ -114,9 +304,10 @@ impl RenderPass for PostProcessPass {
                     .image_info(&img_info)];
                 renderer.device.device.update_descriptor_sets(&write, &[]);
 
-                let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(mip.view)
-                    .with_clear_color([0.0, 0.0, 0.0, 1.0])
-                    .build();
+                let color_attachment =
+                    crate::vulkan::utils::RenderingAttachmentBuilder::new(mip.view)
+                        .with_clear_color([0.0, 0.0, 0.0, 1.0])
+                        .build();
 
                 let rendering_info = vk::RenderingInfo::default()
                     .render_area(vk::Rect2D {
@@ -220,9 +411,10 @@ impl RenderPass for PostProcessPass {
                     .image_info(&img_info)];
                 renderer.device.device.update_descriptor_sets(&write, &[]);
 
-                let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(dst_mip.view)
-                    .with_load_op(vk::AttachmentLoadOp::LOAD)
-                    .build();
+                let color_attachment =
+                    crate::vulkan::utils::RenderingAttachmentBuilder::new(dst_mip.view)
+                        .with_load_op(vk::AttachmentLoadOp::LOAD)
+                        .build();
 
                 let rendering_info = vk::RenderingInfo::default()
                     .render_area(vk::Rect2D {
@@ -364,25 +556,6 @@ impl RenderPass for PostProcessPass {
                 &[],
             );
 
-            #[repr(C)]
-            struct PostProcessPC {
-                exposure: f32,
-                gamma: f32,
-                bloom_enabled: f32,
-                vignette_intensity: f32,
-                vignette_smoothness: f32,
-                chromatic_aberration: f32,
-                film_grain: f32,
-                motion_blur_strength: f32,
-                auto_exposure_enabled: f32,
-                dof_enabled: f32,
-                lut_index: f32,
-                time: f32,
-                rt_reflections: f32,
-                rt_shadows: f32,
-                rt_ao: f32,
-                rt_gi: f32,
-            }
             let pc = PostProcessPC {
                 exposure: renderer.settings.exposure,
                 gamma: renderer.settings.gamma,
@@ -436,6 +609,8 @@ impl RenderPass for PostProcessPass {
                 } else {
                     0.0
                 },
+                bloom_intensity: renderer.settings.bloom_intensity,
+                bloom_threshold: renderer.settings.bloom_threshold,
             };
             let pc_bytes = std::slice::from_raw_parts(
                 &pc as *const _ as *const u8,
@@ -502,6 +677,9 @@ impl RenderPass for PostProcessPass {
                 device.destroy_pipeline(p, None);
             }
             if let Some(p) = self.upsample_pipeline {
+                device.destroy_pipeline(p, None);
+            }
+            if let Some(p) = self.filter_pipeline {
                 device.destroy_pipeline(p, None);
             }
             device.destroy_pipeline_layout(self.layout, None);
@@ -577,7 +755,7 @@ impl PostProcessPass {
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,
-                        size: 64, // Increased size for new PC
+                        size: std::mem::size_of::<PostProcessPC>() as u32,
                     }]),
                 None,
             )?
@@ -642,6 +820,7 @@ impl PostProcessPass {
 
         Ok(Self {
             pipeline: None,
+            filter_pipeline: None,
             downsample_pipeline: None,
             upsample_pipeline: None,
             layout,
@@ -654,13 +833,14 @@ impl PostProcessPass {
         })
     }
 
-    pub fn create_pipelines(&mut self, params: PostProcessPipelineParams) {
+    pub fn create_pipelines(&mut self, params: PostProcessPipelineParams, filter_spirv: &[u32]) {
         let device = params.device;
         let extent = params.extent;
         let pipeline_cache = params.pipeline_cache;
 
         let vert_module = Pipeline::create_shader_module(device, params.vert_spirv);
         let frag_module = Pipeline::create_shader_module(device, params.frag_spirv);
+        let filter_module = Pipeline::create_shader_module(device, filter_spirv);
         let downsample_module = Pipeline::create_shader_module(device, params.downsample_spirv);
         let upsample_module = Pipeline::create_shader_module(device, params.upsample_spirv);
         let entry_point =
@@ -720,6 +900,37 @@ impl PostProcessPass {
             device
                 .create_graphics_pipelines(pipeline_cache, &[info], None)
                 .expect("Failed to create final PostProcess pipeline")[0]
+        });
+
+        // Filter Pipeline
+        let filter_stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_module)
+                .name(&entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(filter_module)
+                .name(&entry_point),
+        ];
+        let bloom_formats = [vk::Format::R16G16B16A16_SFLOAT];
+        let mut bloom_rendering =
+            vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&bloom_formats);
+
+        let filter_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&filter_stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisample)
+            .color_blend_state(&color_blend)
+            .layout(self.layout)
+            .push_next(&mut bloom_rendering);
+        self.filter_pipeline = Some(unsafe {
+            device
+                .create_graphics_pipelines(pipeline_cache, &[filter_info], None)
+                .expect("Failed to create bloom filter pipeline")[0]
         });
 
         // Downsample Pipeline
@@ -795,6 +1006,7 @@ impl PostProcessPass {
         unsafe {
             device.destroy_shader_module(vert_module, None);
             device.destroy_shader_module(frag_module, None);
+            device.destroy_shader_module(filter_module, None);
             device.destroy_shader_module(downsample_module, None);
             device.destroy_shader_module(upsample_module, None);
         }

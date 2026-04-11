@@ -348,9 +348,11 @@ impl<'a> Query<'a> {
 
     /// Executes the query and returns the matching node keys.
     pub fn execute(self) -> Vec<NodeKey> {
-        self.matches
-            .map(|m| m.into_iter().collect())
-            .unwrap_or_else(|| self.scene.nodes.keys().collect())
+        if let Some(matches) = self.matches {
+            matches.into_iter().collect()
+        } else {
+            self.scene.nodes.keys().collect()
+        }
     }
 }
 
@@ -367,22 +369,6 @@ impl Scene {
             .get(&std::any::TypeId::of::<T>())
             .cloned()
             .unwrap_or_default()
-    }
-
-    pub fn update_components(
-        &mut self,
-        _delta: f32,
-        _renderer: *mut spark_renderer::Renderer,
-        _resource_manager: *mut crate::resource::ResourceManager,
-        _project: &crate::Project,
-        _task_system: &crate::task::TaskSystem,
-        _resources: &crate::resource_container::Resources,
-    ) {
-        // Component updates usually happen via SystemRegistry now,
-        // but for manual updates we'll need an AssetManager.
-        // This method seems to be a legacy/internal helper.
-        // For safety, we'll mark it as needing an AssetManager.
-        panic!("update_components requires an AssetManager now. Use the SystemRegistry instead.");
     }
 
     pub fn remove_node(&mut self, key: NodeKey) {
@@ -710,7 +696,7 @@ impl Scene {
 
         self.sort_transparent_meshes_back_to_front(&mut transparent_meshes);
 
-        let lights = self.convert_light_data(data.lights);
+        let lights = self.process_lights(data.lights);
 
         spark_renderer::resource::FramePacket {
             view_matrix: self.last_view_matrix,
@@ -719,6 +705,13 @@ impl Scene {
             transparent_meshes,
             lights,
         }
+    }
+
+    fn process_lights(
+        &self,
+        lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32, f32, f32)>,
+    ) -> Vec<spark_renderer::resource::LightDraw> {
+        self.convert_light_data(lights)
     }
 
     /// Classifies individual renderables into opaque and transparent lists.

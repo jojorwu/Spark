@@ -5,6 +5,20 @@ use spark_math::Mat4;
 
 use super::{RenderContext, RenderPass};
 
+#[repr(C)]
+struct ClusteredBuildPushConstants {
+    inv_proj: Mat4,
+    screen_size: [f32; 2],
+    z_near: f32,
+    z_far: f32,
+}
+
+#[repr(C)]
+struct ClusteredCullPushConstants {
+    view: Mat4,
+    light_count: u32,
+}
+
 impl RenderPass for ClusteredPass {
     fn name(&self) -> &str {
         "ClusteredPass"
@@ -213,7 +227,9 @@ impl ClusteredPass {
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::COMPUTE,
                         offset: 0,
-                        size: 128,
+                        size: std::mem::size_of::<ClusteredBuildPushConstants>()
+                            .max(std::mem::size_of::<ClusteredCullPushConstants>())
+                            as u32,
                     }]),
                 None,
             )?
@@ -363,13 +379,6 @@ impl ClusteredPass {
                 &[],
             );
 
-            #[repr(C)]
-            struct ClusteredBuildPushConstants {
-                inv_proj: Mat4,
-                screen_size: [f32; 2],
-                z_near: f32,
-                z_far: f32,
-            }
             let pc = ClusteredBuildPushConstants {
                 inv_proj,
                 screen_size,
@@ -432,11 +441,6 @@ impl ClusteredPass {
                 &[],
             );
 
-            #[repr(C)]
-            struct ClusteredCullPushConstants {
-                view: Mat4,
-                light_count: u32,
-            }
             let pc = ClusteredCullPushConstants { view, light_count };
             let pc_bytes = std::slice::from_raw_parts(
                 &pc as *const _ as *const u8,

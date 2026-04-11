@@ -14,12 +14,36 @@ impl GltfLoader {
         scene_tree: &mut Scene,
         renderer: &mut Renderer,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        use rayon::prelude::*;
         log::info!("Loading glTF scene: {:?}", path);
         let (doc, buffers, images) = gltf::import(&path)?;
 
-        // Pre-load images in parallel and register them in AssetManager
-        let mut loaded_gpu_textures = Vec::new();
+        let loaded_gpu_textures =
+            Self::load_images_parallel(rm, am, images, renderer)?;
+
+        let default_scene = doc.default_scene().or(doc.scenes().next());
+        if let Some(scene) = default_scene {
+            for node in scene.nodes() {
+                Self::process_node(
+                    rm,
+                    am,
+                    node,
+                    &buffers,
+                    &loaded_gpu_textures,
+                    scene_tree,
+                    scene_tree.root,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn load_images_parallel(
+        rm: &mut ResourceManager,
+        am: &mut AssetManager,
+        images: Vec<gltf::image::Data>,
+        renderer: &mut Renderer,
+    ) -> Result<Vec<crate::resource::Handle<spark_renderer::vulkan::texture::Texture>>, Box<dyn std::error::Error>> {
+        use rayon::prelude::*;
         let image_results: Vec<_> = images
             .par_iter()
             .map(|data| {
@@ -41,27 +65,13 @@ impl GltfLoader {
             }
         }
 
+        let mut loaded_gpu_textures = Vec::new();
         for img in image_handles {
             am.textures.add(img.clone());
             let tex = renderer.create_texture_from_image(&img);
             loaded_gpu_textures.push(rm.gpu_textures.add(tex));
         }
-
-        let default_scene = doc.default_scene().or(doc.scenes().next());
-        if let Some(scene) = default_scene {
-            for node in scene.nodes() {
-                Self::process_node(
-                    rm,
-                    am,
-                    node,
-                    &buffers,
-                    &loaded_gpu_textures,
-                    scene_tree,
-                    scene_tree.root,
-                );
-            }
-        }
-        Ok(())
+        Ok(loaded_gpu_textures)
     }
 
     fn process_node(

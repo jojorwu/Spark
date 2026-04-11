@@ -90,7 +90,7 @@ impl spark_renderer::RenderableAssetManager for AssetManager {
     fn is_material_transparent(&self, material_index: u32) -> bool {
         self.materials
             .get(crate::resource::Handle::new(material_index))
-            .is_some_and(|m| m.is_transparent)
+            .map_or(false, |m| m.is_transparent)
     }
 }
 

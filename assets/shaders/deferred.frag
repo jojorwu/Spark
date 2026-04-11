@@ -102,14 +102,14 @@ float calculateShadow(vec3 worldPos, float linearDepth, vec3 N) {
         return shadow;
     }
 
-    // 3x3 PCF
-    for(int x = -1; x <= 1; ++x) {
-        for(int y = -1; y <= 1; ++y) {
+    // 5x5 PCF
+    for(int x = -2; x <= 2; ++x) {
+        for(int y = -2; y <= 2; ++y) {
             float pcfDepth = texture(shadowMap, vec3(shadowCoord.xy + vec2(x, y) * texelSize, cascadeIdx)).r;
             shadow += shadowCoord.z - bias > pcfDepth ? 0.0 : 1.0;
         }
     }
-    return shadow / 9.0;
+    return shadow / 25.0;
 }
 
 /**

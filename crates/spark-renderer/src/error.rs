@@ -20,4 +20,10 @@ pub enum RendererError {
 
     #[error("Resource loading failed: {0}")]
     ResourceLoading(String),
+
+    #[error("Attachment retrieval failed: {0}")]
+    AttachmentNotFound(String),
+
+    #[error("Internal renderer error: {0}")]
+    Internal(String),
 }

@@ -152,10 +152,11 @@ impl GridPass {
                 .with_load_op(vk::AttachmentLoadOp::LOAD)
                 .build();
 
-            let depth_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(depth_view)
-                .with_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                .with_load_op(vk::AttachmentLoadOp::LOAD)
-                .build();
+            let depth_attachment =
+                crate::vulkan::utils::RenderingAttachmentBuilder::new(depth_view)
+                    .with_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                    .with_load_op(vk::AttachmentLoadOp::LOAD)
+                    .build();
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {

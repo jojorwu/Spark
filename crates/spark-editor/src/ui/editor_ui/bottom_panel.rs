@@ -55,9 +55,9 @@ impl EditorUI {
 
     pub fn draw_console_tab(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.log_filter_info, "Info");
-            ui.checkbox(&mut self.log_filter_warn, "Warn");
-            ui.checkbox(&mut self.log_filter_error, "Error");
+            ui.checkbox(&mut self.log_filter_info, "ℹ Info");
+            ui.checkbox(&mut self.log_filter_warn, "⚠ Warn");
+            ui.checkbox(&mut self.log_filter_error, "🚫 Error");
             ui.separator();
             ui.label("🔍");
             ui.text_edit_singleline(&mut self.log_search);
@@ -65,7 +65,7 @@ impl EditorUI {
                 self.log_search.clear();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Clear").clicked() {
+                if ui.button("🗑 Clear").clicked() {
                     self.logs.lock().expect("Failed to lock logs").clear();
                 }
             });
@@ -73,22 +73,26 @@ impl EditorUI {
         ui.separator();
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 let logs = self.logs.lock().expect("Failed to lock logs");
                 for log in logs.iter() {
-                    let (color, visible) = if log.contains("ERROR") {
-                        (egui::Color32::LIGHT_RED, self.log_filter_error)
+                    let (color, icon, visible) = if log.contains("ERROR") {
+                        (egui::Color32::LIGHT_RED, "🚫", self.log_filter_error)
                     } else if log.contains("WARN") {
-                        (egui::Color32::KHAKI, self.log_filter_warn)
+                        (egui::Color32::KHAKI, "⚠", self.log_filter_warn)
                     } else {
-                        (egui::Color32::LIGHT_GRAY, self.log_filter_info)
+                        (egui::Color32::LIGHT_GRAY, "ℹ", self.log_filter_info)
                     };
 
                     let matches_search = self.log_search.is_empty()
                         || log.to_lowercase().contains(&self.log_search.to_lowercase());
 
                     if visible && matches_search {
-                        ui.label(egui::RichText::new(log).color(color).monospace());
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(icon).color(color));
+                            ui.label(egui::RichText::new(log).color(color).monospace());
+                        });
                     }
                 }
             });
@@ -102,6 +106,34 @@ impl EditorUI {
         renderer: &mut spark_renderer::Renderer,
         asset_manager: &mut spark_core::asset::AssetManager,
     ) {
+        if let Some((old_path, mut new_name)) = self.asset_rename_state.take() {
+            let mut close = false;
+            egui::Window::new("Rename Asset")
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("New Name:");
+                        ui.text_edit_singleline(&mut new_name);
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Rename").clicked() {
+                            let new_path = old_path.with_file_name(&new_name);
+                            if let Err(e) = std::fs::rename(&old_path, new_path) {
+                                log::error!("Failed to rename asset: {}", e);
+                            }
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if !close {
+                self.asset_rename_state = Some((old_path, new_name));
+            }
+        }
+
         let mut asset_to_load = None;
         let mut dir_to_set = None;
 
@@ -143,24 +175,35 @@ impl EditorUI {
                     }
 
                     ui.horizontal(|ui| {
-                        let response = if path.is_dir() {
-                            ui.selectable_label(false, format!("📁 {}", label))
+                        let (icon, color) = if path.is_dir() {
+                            ("📁", egui::Color32::from_rgb(250, 210, 100))
                         } else {
                             let is_gltf = path
                                 .extension()
-                                .is_some_and(|ext| ext == "gltf" || ext == "glb");
+                                .map_or(false, |ext| ext == "gltf" || ext == "glb");
                             let is_img = path
                                 .extension()
-                                .is_some_and(|ext| ext == "png" || ext == "jpg");
-                            let icon = if is_gltf {
-                                "📦"
+                                .map_or(false, |ext| ext == "png" || ext == "jpg");
+                            let is_json = path.extension().map_or(false, |ext| ext == "json");
+                            let is_prefab = path
+                                .to_str()
+                                .map_or(false, |s| s.ends_with(".prefab.json"));
+
+                            if is_prefab {
+                                ("🧩", egui::Color32::from_rgb(250, 150, 50))
+                            } else if is_gltf {
+                                ("📦", egui::Color32::from_rgb(100, 200, 250))
                             } else if is_img {
-                                "🖼"
+                                ("🖼", egui::Color32::from_rgb(150, 250, 150))
+                            } else if is_json {
+                                ("📄", egui::Color32::from_rgb(250, 150, 250))
                             } else {
-                                "📄"
-                            };
-                            ui.selectable_label(false, format!("{} {}", icon, label))
+                                ("📄", egui::Color32::from_gray(180))
+                            }
                         };
+
+                        ui.label(egui::RichText::new(icon).color(color));
+                        let response = ui.selectable_label(false, label);
 
                         if response.clicked() {
                             if path.is_dir() {
@@ -168,7 +211,7 @@ impl EditorUI {
                             } else {
                                 let is_gltf = path
                                     .extension()
-                                    .is_some_and(|ext| ext == "gltf" || ext == "glb");
+                                    .map_or(false, |ext| ext == "gltf" || ext == "glb");
                                 if is_gltf {
                                     asset_to_load = Some(path.to_path_buf());
                                 }
@@ -177,7 +220,10 @@ impl EditorUI {
 
                         response.context_menu(|ui| {
                             if ui.button("Rename").clicked() {
-                                // TODO: Rename dialog
+                                self.asset_rename_state = Some((
+                                    path.clone(),
+                                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                                ));
                                 ui.close_menu();
                             }
                             if ui.button("Delete").clicked() {
@@ -191,9 +237,54 @@ impl EditorUI {
                             if !path.is_dir() {
                                 let is_img = path
                                     .extension()
-                                    .is_some_and(|ext| ext == "png" || ext == "jpg");
+                                    .map_or(false, |ext| ext == "png" || ext == "jpg");
+                                let is_prefab = path
+                                    .to_str()
+                                    .map_or(false, |s| s.ends_with(".prefab.json"));
+
+                                if is_prefab && ui.button("🏗 Instantiate Prefab").clicked() {
+                                    if let Ok(prefab) =
+                                        spark_core::prefab::Prefab::load_from_file(path.to_str().unwrap())
+                                    {
+                                        self.execute_command(
+                                            Box::new(crate::ui::AddNodeCommand {
+                                                parent_key: scene.root,
+                                                node: Some(prefab.root_node),
+                                                added_key: None,
+                                            }),
+                                            scene,
+                                        );
+                                        self.status_message = format!("Prefab instantiated");
+                                    } else {
+                                        log::error!("Failed to load prefab: {:?}", path);
+                                    }
+                                    ui.close_menu();
+                                }
+
                                 if is_img && ui.button("Create Material from Texture").clicked() {
-                                    // TODO: Implement
+                                    let mat_path = path.with_extension("json");
+                                    let name = path.file_stem().unwrap().to_string_lossy();
+                                    let mat = spark_core::asset::Material {
+                                        name: name.into_owned(),
+                                        albedo_factor: [1.0, 1.0, 1.0, 1.0],
+                                        metallic_factor: 0.0,
+                                        roughness_factor: 0.5,
+                                        emissive_factor: [0.0, 0.0, 0.0, 1.0],
+                                        is_transparent: false,
+                                        albedo_texture: None, // Will be linked manually for now or I can try to find handle
+                                        normal_texture: None,
+                                        metallic_roughness_texture: None,
+                                    };
+                                    if let Ok(json) = serde_json::to_string_pretty(&mat) {
+                                        if let Err(e) = std::fs::write(&mat_path, json) {
+                                            log::error!("Failed to create material file: {}", e);
+                                        } else {
+                                            self.status_message = format!(
+                                                "Material created: {:?}",
+                                                mat_path.file_name().unwrap()
+                                            );
+                                        }
+                                    }
                                     ui.close_menu();
                                 }
                             }
@@ -277,55 +368,86 @@ impl EditorUI {
         >,
         resource_manager: &mut spark_core::resource::ResourceManager,
     ) {
+        let mut changed = false;
+
         ui.horizontal(|ui| {
             ui.label("Name:");
-            ui.text_edit_singleline(&mut mat.name);
+            changed |= ui.text_edit_singleline(&mut mat.name).changed();
         });
-        ui.horizontal(|ui| {
-            ui.label("Albedo:");
-            ui.color_edit_button_rgba_unmultiplied(&mut mat.albedo_factor);
-        });
-        ui.horizontal(|ui| {
-            ui.label("Metallic:");
-            ui.add(egui::Slider::new(&mut mat.metallic_factor, 0.0..=1.0));
-        });
-        ui.horizontal(|ui| {
-            ui.label("Roughness:");
-            ui.add(egui::Slider::new(&mut mat.roughness_factor, 0.0..=1.0));
-        });
-        ui.horizontal(|ui| {
-            ui.label("Emissive:");
-            ui.color_edit_button_rgba_unmultiplied(&mut mat.emissive_factor);
-        });
-        ui.checkbox(&mut mat.is_transparent, "Transparent");
 
-        Self::draw_texture_assignment(
-            ui,
-            "Albedo Texture:",
-            &mut mat.albedo_texture,
-            idx,
-            "albedo",
-            texture_path_map,
-            resource_manager,
-        );
-        Self::draw_texture_assignment(
-            ui,
-            "Normal Texture:",
-            &mut mat.normal_texture,
-            idx,
-            "normal",
-            texture_path_map,
-            resource_manager,
-        );
-        Self::draw_texture_assignment(
-            ui,
-            "Metallic/Roughness Texture:",
-            &mut mat.metallic_roughness_texture,
-            idx,
-            "mr",
-            texture_path_map,
-            resource_manager,
-        );
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Basic Properties").strong());
+            ui.horizontal(|ui| {
+                ui.label("Albedo:");
+                changed |= ui
+                    .color_edit_button_rgba_unmultiplied(&mut mat.albedo_factor)
+                    .changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Emissive:");
+                changed |= ui
+                    .color_edit_button_rgba_unmultiplied(&mut mat.emissive_factor)
+                    .changed();
+            });
+            changed |= ui
+                .checkbox(&mut mat.is_transparent, "Transparent")
+                .changed();
+        });
+
+        ui.add_space(4.0);
+
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("PBR Parameters").strong());
+            ui.horizontal(|ui| {
+                ui.label("Metallic:");
+                changed |= ui
+                    .add(egui::Slider::new(&mut mat.metallic_factor, 0.0..=1.0))
+                    .changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Roughness:");
+                changed |= ui
+                    .add(egui::Slider::new(&mut mat.roughness_factor, 0.0..=1.0))
+                    .changed();
+            });
+        });
+
+        ui.add_space(4.0);
+
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Textures").strong());
+            changed |= Self::draw_texture_assignment(
+                ui,
+                "Albedo Texture:",
+                &mut mat.albedo_texture,
+                idx,
+                "albedo",
+                texture_path_map,
+                resource_manager,
+            );
+            changed |= Self::draw_texture_assignment(
+                ui,
+                "Normal Texture:",
+                &mut mat.normal_texture,
+                idx,
+                "normal",
+                texture_path_map,
+                resource_manager,
+            );
+            changed |= Self::draw_texture_assignment(
+                ui,
+                "Metallic/Roughness Texture:",
+                &mut mat.metallic_roughness_texture,
+                idx,
+                "mr",
+                texture_path_map,
+                resource_manager,
+            );
+        });
+
+        if changed {
+            ui.ctx().request_repaint();
+        }
     }
 
     fn draw_texture_assignment(
@@ -341,7 +463,8 @@ impl EditorUI {
             spark_core::resource::Handle<spark_renderer::vulkan::texture::Texture>,
         >,
         resource_manager: &mut spark_core::resource::ResourceManager,
-    ) {
+    ) -> bool {
+        let mut changed = false;
         ui.horizontal(|ui| {
             ui.label(label);
             let tex_name = texture_handle
@@ -359,26 +482,35 @@ impl EditorUI {
                 })
                 .unwrap_or_else(|| "None".to_string());
 
-            egui::ComboBox::from_id_source(format!("mat_tex_{}_{}", mat_idx, tex_type))
-                .selected_text(tex_name)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(texture_handle, None, "None");
-                    for t_idx in 0..resource_manager.gpu_textures.assets_len() {
-                        let h = spark_core::resource::Handle::new(t_idx as u32);
-                        let name = texture_path_map
-                            .iter()
-                            .find(|(_, &handle)| handle == h)
-                            .map(|(path, _)| {
-                                path.file_name()
-                                    .expect("Texture path has no file name")
-                                    .to_string_lossy()
-                                    .into_owned()
-                            })
-                            .unwrap_or_else(|| format!("ID: {}", t_idx));
-                        ui.selectable_value(texture_handle, Some(h), name);
-                    }
-                });
+            let response =
+                egui::ComboBox::from_id_source(format!("mat_tex_{}_{}", mat_idx, tex_type))
+                    .selected_text(tex_name)
+                    .show_ui(ui, |ui| {
+                        let mut local_changed = false;
+                        local_changed |=
+                            ui.selectable_value(texture_handle, None, "None").changed();
+                        for t_idx in 0..resource_manager.gpu_textures.assets_len() {
+                            let h = spark_core::resource::Handle::new(t_idx as u32);
+                            let name = texture_path_map
+                                .iter()
+                                .find(|(_, &handle)| handle == h)
+                                .map(|(path, _)| {
+                                    path.file_name()
+                                        .expect("Texture path has no file name")
+                                        .to_string_lossy()
+                                        .into_owned()
+                                })
+                                .unwrap_or_else(|| format!("ID: {}", t_idx));
+                            local_changed |=
+                                ui.selectable_value(texture_handle, Some(h), name).changed();
+                        }
+                        local_changed
+                    });
+            if let Some(inner) = response.inner {
+                changed |= inner;
+            }
         });
+        changed
     }
 
     pub fn draw_settings_tab(
@@ -518,27 +650,46 @@ impl EditorUI {
             }
 
             ui.separator();
+            ui.heading("Ray Tracing");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_rt_reflections, "Reflections");
+                ui.checkbox(&mut renderer.settings.enable_rt_shadows, "Shadows");
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_rt_ao, "Ambient Occlusion");
+                if renderer.settings.enable_rt_ao {
+                    ui.label("Radius:");
+                    ui.add(egui::Slider::new(&mut renderer.settings.rt_ao_radius, 0.1..=10.0));
+                    ui.label("Samples:");
+                    ui.add(egui::DragValue::new(&mut renderer.settings.rt_ao_samples).clamp_range(1..=32));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_rt_gi, "Global Illumination");
+            });
+
+            ui.separator();
             ui.heading("General Features");
             ui.horizontal(|ui| {
                 ui.checkbox(&mut renderer.settings.enable_shadows, "Shadows");
                 if renderer.settings.enable_shadows {
-                    ui.label("PCF:");
+                    ui.label("PCF Kernel:");
                     egui::ComboBox::from_id_source("shadow_pcf")
                         .selected_text(if renderer.settings.shadow_pcf_samples == 0 {
                             "Hard"
                         } else {
-                            "Soft (3x3)"
+                            "Soft (5x5)"
                         })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut renderer.settings.shadow_pcf_samples,
                                 0,
-                                "Hard",
+                                "Hard (No Filter)",
                             );
                             ui.selectable_value(
                                 &mut renderer.settings.shadow_pcf_samples,
                                 1,
-                                "Soft (3x3)",
+                                "Soft (High Quality 5x5)",
                             );
                         });
                 }
@@ -550,6 +701,11 @@ impl EditorUI {
                     ui.add(egui::Slider::new(
                         &mut renderer.settings.ssao_radius,
                         0.1..=2.0,
+                    ));
+                    ui.label("Bias:");
+                    ui.add(egui::Slider::new(
+                        &mut renderer.settings.ssao_bias,
+                        0.001..=0.5,
                     ));
                     ui.label("Strength:");
                     ui.add(egui::Slider::new(

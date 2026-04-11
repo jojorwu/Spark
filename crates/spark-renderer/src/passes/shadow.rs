@@ -5,6 +5,13 @@ use std::sync::{Arc, Mutex};
 
 pub const SHADOW_CASCADE_COUNT: usize = 4;
 
+#[repr(C)]
+struct ShadowPushConstants {
+    lvp: spark_math::Mat4,
+    address: u64,
+    vertex_address: u64,
+}
+
 pub struct ShadowPass {
     pub pipeline: Option<vk::Pipeline>,
     pub layout: vk::PipelineLayout,
@@ -183,7 +190,7 @@ impl ShadowPass {
                     vk::PushConstantRange::default()
                         .stage_flags(vk::ShaderStageFlags::VERTEX)
                         .offset(0)
-                        .size(128),
+                        .size(std::mem::size_of::<ShadowPushConstants>() as u32),
                 ]),
                 None,
             )?
@@ -347,12 +354,6 @@ impl ShadowPass {
             device.cmd_set_viewport(command_buffer, 0, &[shadow_viewport]);
             device.cmd_set_scissor(command_buffer, 0, &[shadow_scissor]);
 
-            #[repr(C)]
-            struct ShadowPushConstants {
-                lvp: spark_math::Mat4,
-                address: u64,
-                vertex_address: u64,
-            }
             let frame = &renderer.frame_manager.frames[renderer.frame_manager.current_frame];
             let pc = ShadowPushConstants {
                 lvp,
@@ -363,6 +364,8 @@ impl ShadowPass {
                     .as_ref()
                     .map_or(0, |b| b.address),
             };
+            // SAFETY: ShadowPushConstants is a POD struct. We use standard Rust memory layout
+            // to pass it to Vulkan via push constants.
             let pc_bytes = std::slice::from_raw_parts(
                 &pc as *const _ as *const u8,
                 std::mem::size_of::<ShadowPushConstants>(),
@@ -376,7 +379,7 @@ impl ShadowPass {
                 pc_bytes,
             );
 
-            if let (Some(ref indirect_buffer), Some(ref index_buffer)) = (
+            if let (Some(indirect_buffer), Some(index_buffer)) = (
                 frame.indirect_commands_buffer.as_ref(),
                 renderer.gpu_resource_manager.global_index_buffer.as_ref(),
             ) {
@@ -385,6 +388,11 @@ impl ShadowPass {
                     index_buffer.handle,
                     0,
                     vk::IndexType::UINT32,
+                );
+
+                renderer.last_draw_calls.fetch_add(
+                    renderer.last_object_count,
+                    std::sync::atomic::Ordering::Relaxed,
                 );
 
                 if let Some(ref count_buffer) = frame.draw_count_buffer {

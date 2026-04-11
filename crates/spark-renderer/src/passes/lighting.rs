@@ -13,6 +13,21 @@ pub struct LightingDescriptorParams<'a> {
     pub brdf_lut_view: vk::ImageView,
 }
 
+#[repr(C)]
+struct LightingPushConstants {
+    count: u32,
+    metallic: f32,
+    roughness: f32,
+    width: f32,
+    height: f32,
+    ssgi_intensity: f32,
+    shadow_pcf: u32,
+    z_near: f32,
+    z_far: f32,
+    object_buffer_address: u64,
+    prev_view_proj: spark_math::Mat4,
+}
+
 pub struct LightingPipelineParams<'a> {
     pub device: &'a ash::Device,
     pub pipeline_cache: vk::PipelineCache,
@@ -114,7 +129,7 @@ impl LightingPass {
                     .push_constant_ranges(&[vk::PushConstantRange::default()
                         .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                         .offset(0)
-                        .size(128)]),
+                        .size(std::mem::size_of::<LightingPushConstants>() as u32)]),
                 None,
             )?
         };
@@ -211,20 +226,6 @@ impl RenderPass for LightingPass {
         let extent = renderer.get_extent();
         let global_ds = renderer.frame_manager.frames[current_frame].global_descriptor_set;
 
-        #[repr(C)]
-        struct LightingPushConstants {
-            count: u32,
-            metallic: f32,
-            roughness: f32,
-            width: f32,
-            height: f32,
-            ssgi_intensity: f32,
-            shadow_pcf: u32,
-            z_near: f32,
-            z_far: f32,
-            object_buffer_address: u64,
-            prev_view_proj: spark_math::Mat4,
-        }
         let pc = LightingPushConstants {
             count: renderer.light_count,
             metallic: 0.5,
@@ -245,6 +246,8 @@ impl RenderPass for LightingPass {
                 .map_or(0, |b| b.address),
             prev_view_proj: renderer.prev_view_proj,
         };
+        // SAFETY: LightingPushConstants is a POD struct. We use standard Rust memory layout
+        // to pass it to Vulkan via push constants.
         let pc_bytes = unsafe {
             std::slice::from_raw_parts(
                 &pc as *const _ as *const u8,
@@ -254,6 +257,8 @@ impl RenderPass for LightingPass {
 
         let device = &renderer.device.device;
 
+        // SAFETY: All required resources (GBuffer attachments, SSAO, ShadowMap) are guaranteed
+        // to be in correct layouts by the RenderGraph before record_commands is called.
         unsafe {
             if let Some(pipeline) = self.pipeline {
                 let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(

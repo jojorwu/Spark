@@ -141,26 +141,43 @@ impl EditorUI {
         icon: &str,
     ) {
         ui.horizontal(|ui| {
-            ui.label(icon);
-
-            let (visible, locked) = if let Some(node) = scene.nodes.get_mut(node_key) {
+            let (visible, locked) = if let Some(node) = scene.nodes.get(node_key) {
                 (node.visible, node.locked)
             } else {
                 (true, false)
             };
 
-            if ui.button(if visible { "👁" } else { "👓" }).clicked() {
-                if let Some(node) = scene.nodes.get_mut(node_key) {
-                    node.visible = !node.visible;
-                }
-            }
-            if ui.button(if locked { "🔒" } else { "🔓" }).clicked() {
-                if let Some(node) = scene.nodes.get_mut(node_key) {
-                    node.locked = !node.locked;
-                }
-            }
+            // Icons based on state
+            let text_color = if visible {
+                ui.visuals().text_color()
+            } else {
+                egui::Color32::from_gray(100)
+            };
 
-            let response = ui.selectable_label(is_selected, label);
+            ui.label(icon);
+            let response =
+                ui.selectable_label(is_selected, egui::RichText::new(label).color(text_color));
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button(if visible { "👁" } else { "👓" })
+                    .on_hover_text("Toggle Visibility")
+                    .clicked()
+                {
+                    if let Some(node) = scene.nodes.get_mut(node_key) {
+                        node.visible = !node.visible;
+                    }
+                }
+                if ui
+                    .small_button(if locked { "🔒" } else { "🔓" })
+                    .on_hover_text("Toggle Lock")
+                    .clicked()
+                {
+                    if let Some(node) = scene.nodes.get_mut(node_key) {
+                        node.locked = !node.locked;
+                    }
+                }
+            });
 
             let mut delete_requested = false;
             response.context_menu(|ui| {
@@ -183,6 +200,11 @@ impl EditorUI {
                 }
                 if ui.button("Add Child Sprite").clicked() {
                     self.node_to_add_child = Some((node_key, NodeType::Sprite));
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("💾 Save as Prefab").clicked() {
+                    self.node_to_save_as_prefab = Some(node_key);
                     ui.close_menu();
                 }
             });
@@ -318,7 +340,7 @@ impl EditorUI {
         new_node
             .components
             .push(Box::new(spark_core::scene::MeshComponent {
-                vertex_count: 36,
+                vertex_count: 24,
                 index_count: 36,
                 first_index: 0,
                 vertex_offset: 0,
@@ -330,21 +352,48 @@ impl EditorUI {
         self.node_to_add = Some((scene.root, new_node));
     }
 
+    pub fn add_primitive_plane(&mut self, scene: &mut Scene) {
+        let mut new_node = Node {
+            name: "Plane".to_string(),
+            ..Default::default()
+        };
+        // Cube has 24 vertices, 36 indices
+        new_node
+            .components
+            .push(Box::new(spark_core::scene::MeshComponent {
+                vertex_count: 4,
+                index_count: 6,
+                first_index: 36,
+                vertex_offset: 24,
+                texture_handle: None,
+                material_index: Some(0),
+                bounding_radius: 10.0,
+                skin_index: None,
+            }));
+        self.node_to_add = Some((scene.root, new_node));
+    }
+
     pub fn add_primitive_sphere(&mut self, scene: &mut Scene) {
         let mut new_node = Node {
             name: "Sphere".to_string(),
             ..Default::default()
         };
+        // Plane has 4 vertices, 6 indices
+        // Total indices before sphere: 36 + 6 = 42
+        // Total vertices before sphere: 24 + 4 = 28
+        let segments = 32;
+        let v_count = (segments + 1) * (segments + 1);
+        let i_count = segments * segments * 6;
         new_node
             .components
             .push(Box::new(spark_core::scene::MeshComponent {
-                vertex_count: 0,
-                index_count: 0,
-                first_index: 0,
-                vertex_offset: 0,
+                vertex_count: v_count,
+                index_count: i_count,
+                first_index: 42,
+                vertex_offset: 28,
                 texture_handle: None,
                 material_index: Some(0),
-                bounding_radius: 1.0,
+                bounding_radius: 0.5,
                 skin_index: None,
             }));
         self.node_to_add = Some((scene.root, new_node));

@@ -116,6 +116,10 @@ impl RenderPass for SSAOPass {
             projection,
             view,
             screen_size: [extent.width as f32, extent.height as f32],
+            radius: renderer.settings.ssao_radius,
+            bias: renderer.settings.ssao_bias,
+            strength: renderer.settings.ssao_strength,
+            padding: 0.0,
         };
         renderer.upload_to_buffer(&self.ssao_params_buffer[current_frame], &[params]);
     }
@@ -239,7 +243,7 @@ impl SSAOPass {
         let mut ssao_params_buffer = Vec::new();
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             let buffer = renderer.create_buffer(
-                (64 * 16 + 64 * 2 + 8) as u64, // samples + proj + view + screen
+                std::mem::size_of::<SSAOParamsStruct>() as u64,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             );
@@ -457,9 +461,10 @@ impl SSAOPass {
         let device = &renderer.device.device;
         unsafe {
             // 1. SSAO Pass
-            let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(ssao_target_view)
-                .with_clear_color([1.0, 1.0, 1.0, 1.0])
-                .build();
+            let color_attachment =
+                crate::vulkan::utils::RenderingAttachmentBuilder::new(ssao_target_view)
+                    .with_clear_color([1.0, 1.0, 1.0, 1.0])
+                    .build();
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {
@@ -491,9 +496,10 @@ impl SSAOPass {
             // Wait, if I declare both as outputs, I can have them managed?
             // For now let's keep manual barriers if logic is sub-pass.
 
-            let blur_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(blur_target_view)
-                .with_clear_color([1.0, 1.0, 1.0, 1.0])
-                .build();
+            let blur_attachment =
+                crate::vulkan::utils::RenderingAttachmentBuilder::new(blur_target_view)
+                    .with_clear_color([1.0, 1.0, 1.0, 1.0])
+                    .build();
 
             let blur_rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {
@@ -612,4 +618,8 @@ struct SSAOParamsStruct {
     projection: Mat4,
     view: Mat4,
     screen_size: [f32; 2],
+    radius: f32,
+    bias: f32,
+    strength: f32,
+    padding: f32,
 }

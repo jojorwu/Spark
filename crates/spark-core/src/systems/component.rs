@@ -40,35 +40,46 @@ impl System for ComponentSystem {
     fn update(&mut self, ctx: &crate::FrameContext) {
         use rayon::prelude::*;
 
-        unsafe {
+        let (nodes_ptr, cached_keys) = unsafe {
             let scene = ctx.scene_mut();
 
             let current_version = scene
                 .nodes_version
                 .load(std::sync::atomic::Ordering::Acquire);
             if current_version != self.cached_version {
-                self.cached_keys = scene.nodes.keys().collect();
+                // Collect only nodes that have at least one component to update
+                let mut unique_keys = std::collections::HashSet::new();
+                for nodes in scene.component_registry.values() {
+                    for &key in nodes {
+                        unique_keys.insert(key);
+                    }
+                }
+                self.cached_keys = unique_keys.into_iter().collect();
                 self.cached_version = current_version;
             }
 
-            // Optimization: Avoid par_bridge() which has high overhead due to internal channels.
-            // Instead, we collect keys into a temporary buffer. For large scenes,
-            // the overhead of this collection is significantly lower than par_bridge.
-            // Even better, we use the raw pointer pattern to access nodes in parallel safely
-            // because each key is unique.
+            if self.cached_keys.is_empty() {
+                return;
+            }
+
             let nodes_ptr = &mut scene.nodes
                 as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node>
                 as usize;
 
-            self.cached_keys.par_iter().for_each(|&key| {
-                let nodes = &mut *(nodes_ptr
-                    as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node>);
-                if let Some(node) = nodes.get_mut(key) {
-                    for component in &mut node.components {
-                        component.on_update(key, ctx);
-                    }
+            (nodes_ptr, &self.cached_keys)
+        };
+
+        // SAFETY: Scheduler ensures we have exclusive mutable access to the Scene
+        // if we declared Access::Write. Each thread in par_iter operates on a unique key.
+        cached_keys.par_iter().for_each(|&key| {
+            let nodes = unsafe {
+                &mut *(nodes_ptr as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node>)
+            };
+            if let Some(node) = nodes.get_mut(key) {
+                for component in &mut node.components {
+                    component.on_update(key, ctx);
                 }
-            });
-        }
+            }
+        });
     }
 }

@@ -18,6 +18,16 @@ const BINDING_GBUFFER_PBR: u32 = 10;
 use super::ResourceBinding;
 
 /// A rendering pass that performs hardware-accelerated ray tracing.
+#[repr(C)]
+struct RayTracingPushConstants {
+    reflections_enabled: f32,
+    shadows_enabled: f32,
+    ao_enabled: f32,
+    gi_enabled: f32,
+    ao_radius: f32,
+    ao_samples: u32,
+}
+
 pub struct RayTracingPass {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
@@ -355,7 +365,7 @@ impl RayTracingPass {
         let pc_range = vk::PushConstantRange {
             stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
             offset: 0,
-            size: 16,
+            size: std::mem::size_of::<RayTracingPushConstants>() as u32,
         };
         unsafe {
             Ok(device.create_pipeline_layout(

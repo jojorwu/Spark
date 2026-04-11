@@ -84,6 +84,19 @@ pub struct CullingRecordParams<'a> {
     pub renderer_ref_for_pc_extract: &'a Renderer,
 }
 
+#[repr(C)]
+struct CullingPushConstants {
+    light_count: u32,
+    metallic: f32,
+    roughness: f32,
+    width: f32,
+    height: f32,
+    padding: u32,
+    object_buffer_address: u64,
+    prev_view_proj: spark_math::Mat4,
+    vertex_buffer_address: u64,
+}
+
 pub struct CullingPass {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
@@ -105,7 +118,7 @@ impl CullingPass {
         let push_constant_ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .offset(0)
-            .size(128)];
+            .size(std::mem::size_of::<CullingPushConstants>() as u32)];
 
         let layout = unsafe {
             device.create_pipeline_layout(
@@ -191,18 +204,6 @@ impl CullingPass {
                 &[],
             );
 
-            #[repr(C)]
-            struct CullingPushConstants {
-                light_count: u32,
-                metallic: f32,
-                roughness: f32,
-                width: f32,
-                height: f32,
-                padding: u32,
-                object_buffer_address: u64,
-                prev_view_proj: spark_math::Mat4,
-                vertex_buffer_address: u64,
-            }
             let frame = &params.renderer_ref_for_pc_extract.frame_manager.frames[params
                 .renderer_ref_for_pc_extract
                 .frame_manager

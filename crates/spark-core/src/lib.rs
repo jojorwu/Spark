@@ -671,8 +671,7 @@ impl Engine {
     /// This includes updating input state from the event bus and executing
     /// all registered systems across multiple parallel stages.
     pub fn update_phase(&mut self, delta: f32) {
-        let events = self.event_bus.read_events::<crate::event::EngineEvent>();
-        self.input_manager.update(&events);
+        self.process_events();
 
         {
             let mut ctx = FrameContext::new(
@@ -688,11 +687,18 @@ impl Engine {
                 &self.command_queue,
                 &self.event_bus,
             );
-
             crate::systems::Scheduler::run(&mut self.system_registry, &mut ctx);
         }
 
-        // Execute all deferred commands after system updates
+        self.apply_deferred_commands();
+    }
+
+    fn process_events(&mut self) {
+        let events = self.event_bus.read_events::<crate::event::EngineEvent>();
+        self.input_manager.update(&events);
+    }
+
+    fn apply_deferred_commands(&mut self) {
         self.command_queue
             .execute_all(&mut self.scene, &mut self.resource_manager);
     }

@@ -338,9 +338,11 @@ impl TAAPass {
                 &[history_barrier],
             );
 
-            let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(self.history_images[current_frame].view)
-                .with_clear_color([0.0, 0.0, 0.0, 1.0])
-                .build();
+            let color_attachment = crate::vulkan::utils::RenderingAttachmentBuilder::new(
+                self.history_images[current_frame].view,
+            )
+            .with_clear_color([0.0, 0.0, 0.0, 1.0])
+            .build();
 
             let rendering_info = vk::RenderingInfo::default()
                 .render_area(vk::Rect2D {

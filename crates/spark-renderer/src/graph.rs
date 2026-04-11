@@ -38,6 +38,7 @@ pub struct RenderGraph {
     pub passes: Vec<RenderGraphPassNode>,
     pub resources: HashMap<String, RenderGraphResource>,
     pub sorted_passes: Vec<usize>,
+    pub batches: Vec<Vec<usize>>,
     /// Постоянные вложения (например, G-Buffer), существующие на протяжении всей работы движка.
     pub physical_attachments: HashMap<String, Vec<crate::resource::Attachment>>,
     /// Временные вложения, создаваемые для нужд конкретных проходов.
@@ -54,6 +55,7 @@ impl RenderGraph {
             passes: Vec::new(),
             resources: HashMap::new(),
             sorted_passes: Vec::new(),
+            batches: Vec::new(),
             physical_attachments: HashMap::new(),
             transient_attachments: HashMap::new(),
             aliased_resources: HashMap::new(),
@@ -175,7 +177,52 @@ impl RenderGraph {
             );
         }
 
-        self.sorted_passes = order;
+        self.sorted_passes = order.clone();
+        self.build_batches(&order, &resource_producers, &name_to_idx);
+    }
+
+    fn build_batches(
+        &mut self,
+        order: &[usize],
+        resource_producers: &HashMap<String, usize>,
+        name_to_idx: &HashMap<String, usize>,
+    ) {
+        let mut pass_batches = vec![0; self.passes.len()];
+        let mut max_batch = 0;
+
+        for &idx in order {
+            let pass_node = &self.passes[idx];
+            let mut batch = 0;
+
+            // Dependency 1: Resources this pass consumes
+            for input in &pass_node.inputs {
+                if let Some(&producer_idx) = resource_producers.get(input) {
+                    if producer_idx != idx {
+                        batch = batch.max(pass_batches[producer_idx] + 1);
+                    }
+                }
+            }
+
+            // Dependency 2: Explicit dependencies
+            for dep in pass_node.pass.dependencies() {
+                if let Some(&dep_idx) = name_to_idx.get(dep) {
+                    batch = batch.max(pass_batches[dep_idx] + 1);
+                }
+            }
+
+            pass_batches[idx] = batch;
+            max_batch = max_batch.max(batch);
+        }
+
+        let mut batches = vec![Vec::new(); max_batch + 1];
+        for (idx, &batch) in pass_batches.iter().enumerate() {
+            batches[batch].push(idx);
+        }
+        self.batches = batches;
+        log::debug!(
+            "Built {} parallel batches for RenderGraph",
+            self.batches.len()
+        );
     }
 
     fn visit_pass(
@@ -286,14 +333,17 @@ impl RenderGraph {
             if let Some(alias) =
                 self.find_compatible_alias(&transient_pool, format, usage, width, height, start)
             {
-                self.aliased_resources.insert(res_name.clone(), alias.clone());
+                self.aliased_resources
+                    .insert(res_name.clone(), alias.clone());
                 // Update the end lifetime of the alias in the pool
                 if let Some(pool_entry) = transient_pool.iter_mut().find(|e| e.0 == alias) {
                     pool_entry.5 = end;
                 }
             } else {
-                let attachments = self.create_transient_attachments(renderer, width, height, format, usage);
-                self.transient_attachments.insert(res_name.clone(), attachments);
+                let attachments =
+                    self.create_transient_attachments(renderer, width, height, format, usage);
+                self.transient_attachments
+                    .insert(res_name.clone(), attachments);
                 transient_pool.push((res_name.clone(), format, usage, width, height, end));
             }
         }
@@ -407,29 +457,71 @@ impl RenderGraph {
     /// Выполняет граф рендеринга, проходя по отсортированным проходам.
     /// Автоматически обрабатывает обновление дескрипторов и инъекцию барьеров памяти.
     ///
-    /// Executes the render graph by iterating through sorted passes.
-    /// Automatically handles descriptor updates and memory barrier injection.
+    /// Executes the render graph by iterating through sorted batches of passes.
+    /// Passes within each batch are recorded in parallel into secondary command buffers.
     pub fn execute(&self, ctx: &RenderContext, _secondary_commands: &[Vec<vk::CommandBuffer>]) {
-        for &idx in &self.sorted_passes {
-            let pass_node = &self.passes[idx];
+        use rayon::prelude::*;
 
-            if !pass_node.pass.is_enabled(ctx.renderer) {
+        for batch in &self.batches {
+            // 1. Pre-process batch: Descriptor updates and barriers (must be on primary CB)
+            let mut active_passes = Vec::new();
+            for &idx in batch {
+                let pass_node = &self.passes[idx];
+                if pass_node.pass.is_enabled(ctx.renderer) {
+                    self.update_pass_descriptors(ctx, pass_node);
+                    self.inject_barriers(ctx, pass_node);
+                    active_passes.push(pass_node);
+                }
+            }
+
+            if active_passes.is_empty() {
                 continue;
             }
 
-            self.execute_pass(ctx, pass_node);
+            // 2. Record commands in parallel
+            let secondary_cbs: Vec<vk::CommandBuffer> = active_passes
+                .par_iter()
+                .map(|pass_node| {
+                    let scb = ctx.renderer.allocate_secondary_command_buffer();
+
+                    let thread_ctx = RenderContext {
+                        renderer: ctx.renderer,
+                        command_buffer: scb,
+                        current_frame: ctx.current_frame,
+                        image_index: ctx.image_index,
+                        delta: ctx.delta,
+                    };
+
+                    let begin_info = vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+                    unsafe {
+                        ctx.renderer
+                            .device
+                            .device
+                            .begin_command_buffer(scb, &begin_info)
+                            .expect("Failed to begin secondary command buffer");
+                        pass_node.pass.record_commands(&thread_ctx);
+                        ctx.renderer
+                            .device
+                            .device
+                            .end_command_buffer(scb)
+                            .expect("Failed to end secondary command buffer");
+                    }
+                    scb
+                })
+                .collect();
+
+            // 3. Execute all recorded commands in the primary command buffer
+            if !secondary_cbs.is_empty() {
+                unsafe {
+                    ctx.renderer
+                        .device
+                        .device
+                        .cmd_execute_commands(ctx.command_buffer, &secondary_cbs);
+                }
+            }
         }
-    }
-
-    fn execute_pass(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
-        // 1. Update descriptor sets for the pass if any of its bound resources have changed.
-        self.update_pass_descriptors(ctx, pass_node);
-
-        // 2. Inject memory barriers based on declarative access requirements.
-        self.inject_barriers(ctx, pass_node);
-
-        // 3. Record primary commands for the pass.
-        pass_node.pass.record_commands(ctx);
     }
 
     fn inject_barriers(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {

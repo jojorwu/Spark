@@ -18,14 +18,29 @@ pub struct ResourceRegistry {
 
 impl ResourceManager {
     pub fn new() -> Self {
-        Self {
+        let mut rm = Self {
             gpu_textures: AssetStorage::new(),
             all_vertices: Vec::new(),
             all_indices: Vec::new(),
             all_materials_ssbo: Vec::new(),
-            needs_upload: false,
+            needs_upload: true,
             registry: ResourceRegistry::default(),
-        }
+        };
+
+        // Pre-generate primitive meshes
+        let (v_cube, i_cube) = MeshGenerator::generate_cube();
+        rm.all_vertices.extend(v_cube);
+        rm.all_indices.extend(i_cube);
+
+        let (v_plane, i_plane) = MeshGenerator::generate_plane(10.0);
+        rm.all_vertices.extend(v_plane);
+        rm.all_indices.extend(i_plane);
+
+        let (v_sphere, i_sphere) = MeshGenerator::generate_sphere(0.5, 32);
+        rm.all_vertices.extend(v_sphere);
+        rm.all_indices.extend(i_sphere);
+
+        rm
     }
 }
 
@@ -36,6 +51,146 @@ impl Default for ResourceManager {
 }
 
 impl spark_renderer::RenderableResourceManager for ResourceManager {}
+
+pub struct MeshGenerator;
+
+impl MeshGenerator {
+    pub fn generate_cube() -> (Vec<spark_renderer::vertex::Vertex>, Vec<u32>) {
+        use spark_math::{Vec2, Vec3};
+        use spark_renderer::vertex::Vertex;
+
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        let positions = [
+            // Front
+            [-0.5, -0.5, 0.5],
+            [0.5, -0.5, 0.5],
+            [0.5, 0.5, 0.5],
+            [-0.5, 0.5, 0.5],
+            // Back
+            [-0.5, -0.5, -0.5],
+            [0.5, -0.5, -0.5],
+            [0.5, 0.5, -0.5],
+            [-0.5, 0.5, -0.5],
+        ];
+
+        let normals = [
+            [0.0, 0.0, 1.0],  // Front
+            [0.0, 0.0, -1.0], // Back
+            [0.0, 1.0, 0.0],  // Top
+            [0.0, -1.0, 0.0], // Bottom
+            [1.0, 0.0, 0.0],  // Right
+            [-1.0, 0.0, 0.0], // Left
+        ];
+
+        let face_indices = [
+            [0, 1, 2, 3], // Front
+            [5, 4, 7, 6], // Back
+            [3, 2, 6, 7], // Top
+            [1, 0, 4, 5], // Bottom
+            [1, 5, 6, 2], // Right
+            [4, 0, 3, 7], // Left
+        ];
+
+        let uvs = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
+
+        for (i, face) in face_indices.iter().enumerate() {
+            let n = Vec3::from_array(normals[i]);
+            for (j, &idx) in face.iter().enumerate() {
+                let p = Vec3::from_array(positions[idx]);
+                let uv = Vec2::from_array(uvs[j]);
+                vertices.push(Vertex::pack(p, n, uv, Vec3::ONE, Vec3::X));
+            }
+            let base = (i * 4) as u32;
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+
+        (vertices, indices)
+    }
+
+    pub fn generate_plane(size: f32) -> (Vec<spark_renderer::vertex::Vertex>, Vec<u32>) {
+        use spark_math::{Vec2, Vec3};
+        use spark_renderer::vertex::Vertex;
+
+        let h = size * 0.5;
+        let vertices = vec![
+            Vertex::pack(
+                Vec3::new(-h, 0.0, h),
+                Vec3::Y,
+                Vec2::new(0.0, 1.0),
+                Vec3::ONE,
+                Vec3::X,
+            ),
+            Vertex::pack(
+                Vec3::new(h, 0.0, h),
+                Vec3::Y,
+                Vec2::new(1.0, 1.0),
+                Vec3::ONE,
+                Vec3::X,
+            ),
+            Vertex::pack(
+                Vec3::new(h, 0.0, -h),
+                Vec3::Y,
+                Vec2::new(1.0, 0.0),
+                Vec3::ONE,
+                Vec3::X,
+            ),
+            Vertex::pack(
+                Vec3::new(-h, 0.0, -h),
+                Vec3::Y,
+                Vec2::new(0.0, 0.0),
+                Vec3::ONE,
+                Vec3::X,
+            ),
+        ];
+        let indices = vec![0, 1, 2, 0, 2, 3];
+        (vertices, indices)
+    }
+
+    pub fn generate_sphere(
+        radius: f32,
+        segments: u32,
+    ) -> (Vec<spark_renderer::vertex::Vertex>, Vec<u32>) {
+        use spark_math::{Vec2, Vec3};
+        use spark_renderer::vertex::Vertex;
+        use std::f32::consts::PI;
+
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        for y in 0..=segments {
+            for x in 0..=segments {
+                let x_segment = x as f32 / segments as f32;
+                let y_segment = y as f32 / segments as f32;
+                let x_pos = (x_segment * 2.0 * PI).cos() * (y_segment * PI).sin();
+                let y_pos = (y_segment * PI).cos();
+                let z_pos = (x_segment * 2.0 * PI).sin() * (y_segment * PI).sin();
+
+                let pos = Vec3::new(x_pos, y_pos, z_pos) * radius;
+                let normal = Vec3::new(x_pos, y_pos, z_pos).normalize();
+                let uv = Vec2::new(x_segment, y_segment);
+
+                vertices.push(Vertex::pack(pos, normal, uv, Vec3::ONE, Vec3::X));
+            }
+        }
+
+        for y in 0..segments {
+            for x in 0..segments {
+                let base = y * (segments + 1) + x;
+                indices.push(base);
+                indices.push(base + segments + 1);
+                indices.push(base + segments + 2);
+
+                indices.push(base);
+                indices.push(base + segments + 2);
+                indices.push(base + 1);
+            }
+        }
+
+        (vertices, indices)
+    }
+}
 
 impl ResourceManager {
     pub fn upload_global_buffers(&mut self, renderer: &mut spark_renderer::Renderer) {
@@ -167,7 +322,10 @@ impl ResourceManager {
         path: &Path,
         renderer: &mut spark_renderer::Renderer,
         asset_manager: &mut crate::asset::AssetManager,
-    ) -> Result<Handle<spark_renderer::vulkan::texture::Texture>, spark_renderer::error::RendererError> {
+    ) -> Result<
+        Handle<spark_renderer::vulkan::texture::Texture>,
+        spark_renderer::error::RendererError,
+    > {
         if let Some(&handle) = asset_manager.texture_path_map.get(path) {
             return Ok(handle);
         }

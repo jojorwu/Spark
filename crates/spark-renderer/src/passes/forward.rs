@@ -2,6 +2,19 @@ use super::{RenderContext, RenderPass};
 use crate::Renderer;
 use ash::vk;
 
+#[repr(C)]
+struct ForwardPushConstants {
+    count: u32,
+    metallic: f32,
+    roughness: f32,
+    width: f32,
+    height: f32,
+    padding: u32,
+    object_buffer_address: u64,
+    prev_view_proj: spark_math::Mat4,
+    vertex_buffer_address: u64,
+}
+
 pub struct ForwardPass {
     pub pipeline: Option<vk::Pipeline>,
     pub layout: vk::PipelineLayout,
@@ -84,20 +97,8 @@ impl RenderPass for ForwardPass {
                 .device
                 .cmd_set_scissor(ctx.command_buffer, 0, &[scissor]);
 
-            #[repr(C)]
-            struct ForwardPushConstants {
-                light_count: u32,
-                metallic: f32,
-                roughness: f32,
-                width: f32,
-                height: f32,
-                padding: u32,
-                object_buffer_address: u64,
-                prev_view_proj: spark_math::Mat4,
-                vertex_buffer_address: u64,
-            }
             let pc = ForwardPushConstants {
-                light_count: renderer.light_count,
+                count: renderer.light_count,
                 metallic: 0.5,
                 roughness: 0.5,
                 width: extent.width as f32,
@@ -190,7 +191,7 @@ impl ForwardPass {
         let push_constant_ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(128)];
+            .size(std::mem::size_of::<ForwardPushConstants>() as u32)];
 
         let set_layouts = [
             renderer.global_descriptor_set_layout,

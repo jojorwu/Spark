@@ -229,6 +229,12 @@ fn setup_renderer_passes(app: &mut App, compiler: &ShaderCompiler) {
         tonemap_frag: compiler
             .compile("assets/shaders/tonemap.frag", shaderc::ShaderKind::Fragment)
             .expect("Failed to compile tonemap.frag"),
+        bloom_filter: compiler
+            .compile(
+                "assets/shaders/bloom_filter.frag",
+                shaderc::ShaderKind::Fragment,
+            )
+            .expect("Failed to compile bloom_filter.frag"),
         bloom_downsample: compiler
             .compile(
                 "assets/shaders/bloom_downsample.frag",
