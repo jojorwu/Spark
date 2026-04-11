@@ -3,7 +3,7 @@ use ash::vk;
 
 #[repr(C)]
 struct GBufferPushConstants {
-    count: u32,
+    light_count: u32,
     metallic: f32,
     roughness: f32,
     width: f32,
@@ -39,7 +39,7 @@ impl GBufferPass {
         current_frame: usize,
     ) {
         let pc = GBufferPushConstants {
-            count: renderer.light_count,
+            light_count: renderer.light_count,
             metallic: 0.5,
             roughness: 0.5,
             width: renderer.swapchain.extent.width as f32,

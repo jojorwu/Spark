@@ -15,7 +15,7 @@ pub struct LightingDescriptorParams<'a> {
 
 #[repr(C)]
 struct LightingPushConstants {
-    count: u32,
+    light_count: u32,
     metallic: f32,
     roughness: f32,
     width: f32,
@@ -227,7 +227,7 @@ impl RenderPass for LightingPass {
         let global_ds = renderer.frame_manager.frames[current_frame].global_descriptor_set;
 
         let pc = LightingPushConstants {
-            count: renderer.light_count,
+            light_count: renderer.light_count,
             metallic: 0.5,
             roughness: 0.5,
             width: extent.width as f32,

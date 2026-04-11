@@ -313,13 +313,39 @@ impl ResourceTracker {
         dst_stage: vk::PipelineStageFlags,
         aspect_mask: vk::ImageAspectFlags,
     ) {
+        if let Some(barrier) = self.get_image_barrier(
+            image,
+            new_layout,
+            dst_access,
+            dst_stage,
+            aspect_mask,
+        ) {
+            let dependency_info =
+                vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier));
+
+            unsafe {
+                device.cmd_pipeline_barrier2(cb, &dependency_info);
+            }
+        }
+    }
+
+    /// Generates a barrier for an image transition and updates internal state.
+    /// Returns None if the image is already in the target layout.
+    pub fn get_image_barrier(
+        &self,
+        image: vk::Image,
+        new_layout: vk::ImageLayout,
+        dst_access: vk::AccessFlags,
+        dst_stage: vk::PipelineStageFlags,
+        aspect_mask: vk::ImageAspectFlags,
+    ) -> Option<vk::ImageMemoryBarrier2<'_>> {
         let mut layouts = self
             .image_layouts
             .lock()
             .expect("Failed to lock image layouts");
         let old_layout = *layouts.get(&image).unwrap_or(&vk::ImageLayout::UNDEFINED);
-        if old_layout == new_layout {
-            return;
+        if old_layout == new_layout && new_layout != vk::ImageLayout::UNDEFINED {
+            return None;
         }
 
         let barrier = vk::ImageMemoryBarrier2::default()
@@ -338,13 +364,8 @@ impl ResourceTracker {
                 layer_count: 1,
             });
 
-        let dependency_info =
-            vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier));
-
-        unsafe {
-            device.cmd_pipeline_barrier2(cb, &dependency_info);
-        }
         layouts.insert(image, new_layout);
+        Some(barrier)
     }
 }
 

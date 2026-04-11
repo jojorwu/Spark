@@ -48,20 +48,7 @@ impl RenderPass for CullingPass {
                 .draw_count_buffer
                 .as_ref(),
         ) {
-            // Reusing the main command buffer instead of allocating a separate compute one
-            // This simplifies synchronization via the RenderGraph's barriers.
-            let cb = ctx.command_buffer;
-
-            let params = CullingRecordParams {
-                device: &renderer.device.device,
-                command_buffer: cb,
-                object_count: renderer.last_object_count,
-                global_ds,
-                indirect_buffer: ind_buf,
-                count_buffer: cnt_buf,
-                renderer_ref_for_pc_extract: renderer,
-            };
-            self.record_commands_impl(&params);
+            self.record_culling_commands(ctx, global_ds, ind_buf, cnt_buf);
         }
     }
 
@@ -163,13 +150,18 @@ impl CullingPass {
         Ok(Self { pipeline, layout })
     }
 
-    pub fn record_commands_impl(&self, params: &CullingRecordParams) {
-        let device = params.device;
-        let command_buffer = params.command_buffer;
-        let object_count = params.object_count;
-        let global_ds = params.global_ds;
-        let indirect_buffer = params.indirect_buffer;
-        let count_buffer = params.count_buffer;
+    fn record_culling_commands(
+        &self,
+        ctx: &RenderContext,
+        global_ds: vk::DescriptorSet,
+        indirect_buffer: &Buffer,
+        count_buffer: &Buffer,
+    ) {
+        let renderer = ctx.renderer;
+        let device = &renderer.device.device;
+        let command_buffer = ctx.command_buffer;
+        let object_count = renderer.last_object_count;
+
         unsafe {
             // Reset count buffer
             device.cmd_fill_buffer(command_buffer, count_buffer.handle, 0, 4, 0);
@@ -204,21 +196,17 @@ impl CullingPass {
                 &[],
             );
 
-            let frame = &params.renderer_ref_for_pc_extract.frame_manager.frames[params
-                .renderer_ref_for_pc_extract
-                .frame_manager
-                .current_frame];
+            let frame = &renderer.frame_manager.frames[ctx.current_frame];
             let pc = CullingPushConstants {
-                light_count: params.renderer_ref_for_pc_extract.light_count,
+                light_count: renderer.light_count,
                 metallic: 0.0,
                 roughness: 0.0,
-                width: params.renderer_ref_for_pc_extract.get_extent().width as f32,
-                height: params.renderer_ref_for_pc_extract.get_extent().height as f32,
+                width: renderer.get_extent().width as f32,
+                height: renderer.get_extent().height as f32,
                 padding: 0,
                 object_buffer_address: frame.object_data_buffer.as_ref().map_or(0, |b| b.address),
-                prev_view_proj: params.renderer_ref_for_pc_extract.prev_view_proj,
-                vertex_buffer_address: params
-                    .renderer_ref_for_pc_extract
+                prev_view_proj: renderer.prev_view_proj,
+                vertex_buffer_address: renderer
                     .gpu_resource_manager
                     .global_vertex_buffer
                     .as_ref()
