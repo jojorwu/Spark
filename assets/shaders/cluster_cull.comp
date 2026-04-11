@@ -1,6 +1,6 @@
 #version 450
 
-layout (local_size_x = 16, local_size_y = 9, local_size_z = 4) in;
+layout (local_size_x = 8, local_size_y = 8, local_size_z = 4) in;
 
 struct ClusterAABB {
     vec4 min;
@@ -8,8 +8,10 @@ struct ClusterAABB {
 };
 
 struct Light {
-    vec4 pos;
-    vec4 color; // xyz = color, w = intensity/range
+    vec4 pos;         // xyz = position, w = range
+    vec4 dir;         // xyz = direction, w = type
+    vec4 col;         // xyz = color, w = intensity
+    vec4 spotAngles;  // xy = inner/outer (cos)
 };
 
 struct LightGrid {
@@ -42,6 +44,9 @@ layout (push_constant) uniform PushConstants {
     uint lightCount;
 } push;
 
+// Shared memory for tiled light culling
+shared Light sharedLights[256];
+
 bool intersectSphereAABB(vec3 center, float radius, vec3 minB, vec3 maxB) {
     float sqDist = 0.0;
     for (int i = 0; i < 3; i++) {
@@ -54,22 +59,38 @@ bool intersectSphereAABB(vec3 center, float radius, vec3 minB, vec3 maxB) {
 
 void main() {
     uint clusterIndex = gl_GlobalInvocationID.x +
-                        gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x +
-                        gl_GlobalInvocationID.z * gl_NumWorkGroups.x * gl_WorkGroupSize.x * gl_NumWorkGroups.y * gl_WorkGroupSize.y;
+                        gl_GlobalInvocationID.y * 16 +
+                        gl_GlobalInvocationID.z * 16 * 16;
+
+    if (gl_GlobalInvocationID.x >= 16 || gl_GlobalInvocationID.y >= 16 || gl_GlobalInvocationID.z >= 24) return;
 
     ClusterAABB cluster = clusters[clusterIndex];
     uint visibleLightCount = 0;
     uint visibleLightIndices[128]; // Max lights per cluster
 
-    for (uint i = 0; i < push.lightCount; i++) {
-        vec3 center = (push.view * vec4(lights[i].pos.xyz, 1.0)).xyz;
-        float radius = lights[i].color.w; // Range
+    uint numBatches = (push.lightCount + 255) / 256;
+    for (uint batch = 0; batch < numBatches; batch++) {
+        uint lightIdx = batch * 256 + gl_LocalInvocationIndex;
+        if (lightIdx < push.lightCount) {
+            sharedLights[gl_LocalInvocationIndex] = lights[lightIdx];
+        }
 
-        if (intersectSphereAABB(center, radius, cluster.min.xyz, cluster.max.xyz)) {
-            if (visibleLightCount < 128) {
-                visibleLightIndices[visibleLightCount++] = i;
+        barrier(); // Wait for workgroup to load light batch
+
+        uint lightsInBatch = min(256, push.lightCount - batch * 256);
+        for (uint i = 0; i < lightsInBatch; i++) {
+            Light l = sharedLights[i];
+            vec3 center = (push.view * vec4(l.pos.xyz, 1.0)).xyz;
+            float radius = l.pos.w; // Range is in pos.w in LD struct
+
+            if (intersectSphereAABB(center, radius, cluster.min.xyz, cluster.max.xyz)) {
+                if (visibleLightCount < 128) {
+                    visibleLightIndices[visibleLightCount++] = batch * 256 + i;
+                }
             }
         }
+
+        barrier(); // Ensure all threads finished testing before loading next batch
     }
 
     uint offset = atomicAdd(globalIndexCounter, visibleLightCount);

@@ -835,27 +835,53 @@ impl PostProcessPass {
 
     pub fn create_pipelines(&mut self, params: PostProcessPipelineParams, filter_spirv: &[u32]) {
         let device = params.device;
-        let extent = params.extent;
-        let pipeline_cache = params.pipeline_cache;
 
         let vert_module = Pipeline::create_shader_module(device, params.vert_spirv);
         let frag_module = Pipeline::create_shader_module(device, params.frag_spirv);
         let filter_module = Pipeline::create_shader_module(device, filter_spirv);
         let downsample_module = Pipeline::create_shader_module(device, params.downsample_spirv);
         let upsample_module = Pipeline::create_shader_module(device, params.upsample_spirv);
-        let entry_point =
-            std::ffi::CString::new("main").expect("Failed to create entry point name");
 
+        self.init_final_pipeline(&params, vert_module, frag_module);
+        self.init_filter_pipeline(&params, vert_module, filter_module);
+        self.init_downsample_pipeline(&params, vert_module, downsample_module);
+        self.init_upsample_pipeline(&params, vert_module, upsample_module);
+
+        unsafe {
+            device.destroy_shader_module(vert_module, None);
+            device.destroy_shader_module(frag_module, None);
+            device.destroy_shader_module(filter_module, None);
+            device.destroy_shader_module(downsample_module, None);
+            device.destroy_shader_module(upsample_module, None);
+        }
+    }
+
+    fn init_final_pipeline(
+        &mut self,
+        params: &PostProcessPipelineParams,
+        vert: vk::ShaderModule,
+        frag: vk::ShaderModule,
+    ) {
+        let entry_point = std::ffi::CString::new("main").unwrap();
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vert_module)
+                .module(vert)
                 .name(&entry_point),
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(frag_module)
+                .module(frag)
                 .name(&entry_point),
         ];
+
+        let viewport = [vk::Viewport::default()
+            .width(params.extent.width as f32)
+            .height(params.extent.height as f32)
+            .max_depth(1.0)];
+        let scissor = [vk::Rect2D::default().extent(params.extent)];
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewports(&viewport)
+            .scissors(&scissor);
 
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
@@ -866,20 +892,10 @@ impl PostProcessPass {
             .line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(vk::ColorComponentFlags::RGBA)
-            .blend_enable(false);
+        let color_blend_attachment = [vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)];
         let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
-            .attachments(std::slice::from_ref(&color_blend_attachment));
-
-        let viewport = vk::Viewport::default()
-            .width(extent.width as f32)
-            .height(extent.height as f32)
-            .max_depth(1.0);
-        let scissor = vk::Rect2D::default().extent(extent);
-        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-            .viewports(std::slice::from_ref(&viewport))
-            .scissors(std::slice::from_ref(&scissor));
+            .attachments(&color_blend_attachment);
 
         let color_formats = [self.swapchain_format];
         let mut rendering_info =
@@ -897,28 +913,59 @@ impl PostProcessPass {
             .push_next(&mut rendering_info);
 
         self.pipeline = Some(unsafe {
-            device
-                .create_graphics_pipelines(pipeline_cache, &[info], None)
+            params.device
+                .create_graphics_pipelines(params.pipeline_cache, &[info], None)
                 .expect("Failed to create final PostProcess pipeline")[0]
         });
+    }
 
-        // Filter Pipeline
-        let filter_stages = [
+    fn init_filter_pipeline(
+        &mut self,
+        params: &PostProcessPipelineParams,
+        vert: vk::ShaderModule,
+        frag: vk::ShaderModule,
+    ) {
+        let entry_point = std::ffi::CString::new("main").unwrap();
+        let stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vert_module)
+                .module(vert)
                 .name(&entry_point),
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(filter_module)
+                .module(frag)
                 .name(&entry_point),
         ];
+
+        let viewport = [vk::Viewport::default()
+            .width(params.extent.width as f32)
+            .height(params.extent.height as f32)
+            .max_depth(1.0)];
+        let scissor = [vk::Rect2D::default().extent(params.extent)];
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewports(&viewport)
+            .scissors(&scissor);
+
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let color_blend_attachment = [vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)];
+        let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
+            .attachments(&color_blend_attachment);
+
         let bloom_formats = [vk::Format::R16G16B16A16_SFLOAT];
         let mut bloom_rendering =
             vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&bloom_formats);
 
-        let filter_info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&filter_stages)
+        let info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
             .vertex_input_state(&vertex_input)
             .input_assembly_state(&input_assembly)
             .viewport_state(&viewport_state)
@@ -927,29 +974,61 @@ impl PostProcessPass {
             .color_blend_state(&color_blend)
             .layout(self.layout)
             .push_next(&mut bloom_rendering);
+
         self.filter_pipeline = Some(unsafe {
-            device
-                .create_graphics_pipelines(pipeline_cache, &[filter_info], None)
+            params.device
+                .create_graphics_pipelines(params.pipeline_cache, &[info], None)
                 .expect("Failed to create bloom filter pipeline")[0]
         });
+    }
 
-        // Downsample Pipeline
-        let ds_stages = [
+    fn init_downsample_pipeline(
+        &mut self,
+        params: &PostProcessPipelineParams,
+        vert: vk::ShaderModule,
+        frag: vk::ShaderModule,
+    ) {
+        let entry_point = std::ffi::CString::new("main").unwrap();
+        let stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vert_module)
+                .module(vert)
                 .name(&entry_point),
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(downsample_module)
+                .module(frag)
                 .name(&entry_point),
         ];
+
+        let viewport = [vk::Viewport::default()
+            .width(params.extent.width as f32)
+            .height(params.extent.height as f32)
+            .max_depth(1.0)];
+        let scissor = [vk::Rect2D::default().extent(params.extent)];
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewports(&viewport)
+            .scissors(&scissor);
+
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let color_blend_attachment = [vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)];
+        let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
+            .attachments(&color_blend_attachment);
+
         let bloom_formats = [vk::Format::R16G16B16A16_SFLOAT];
         let mut bloom_rendering =
             vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&bloom_formats);
 
-        let ds_info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&ds_stages)
+        let info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
             .vertex_input_state(&vertex_input)
             .input_assembly_state(&input_assembly)
             .viewport_state(&viewport_state)
@@ -958,24 +1037,52 @@ impl PostProcessPass {
             .color_blend_state(&color_blend)
             .layout(self.layout)
             .push_next(&mut bloom_rendering);
+
         self.downsample_pipeline = Some(unsafe {
-            device
-                .create_graphics_pipelines(pipeline_cache, &[ds_info], None)
+            params.device
+                .create_graphics_pipelines(params.pipeline_cache, &[info], None)
                 .expect("Failed to create bloom downsample pipeline")[0]
         });
+    }
 
-        // Upsample Pipeline (Additive)
-        let us_stages = [
+    fn init_upsample_pipeline(
+        &mut self,
+        params: &PostProcessPipelineParams,
+        vert: vk::ShaderModule,
+        frag: vk::ShaderModule,
+    ) {
+        let entry_point = std::ffi::CString::new("main").unwrap();
+        let stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vert_module)
+                .module(vert)
                 .name(&entry_point),
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(upsample_module)
+                .module(frag)
                 .name(&entry_point),
         ];
-        let us_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+
+        let viewport = [vk::Viewport::default()
+            .width(params.extent.width as f32)
+            .height(params.extent.height as f32)
+            .max_depth(1.0)];
+        let scissor = [vk::Rect2D::default().extent(params.extent)];
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewports(&viewport)
+            .scissors(&scissor);
+
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+        let us_blend_attachment = [vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
             .blend_enable(true)
             .src_color_blend_factor(vk::BlendFactor::ONE)
@@ -983,12 +1090,16 @@ impl PostProcessPass {
             .color_blend_op(vk::BlendOp::ADD)
             .src_alpha_blend_factor(vk::BlendFactor::ONE)
             .dst_alpha_blend_factor(vk::BlendFactor::ONE)
-            .alpha_blend_op(vk::BlendOp::ADD);
+            .alpha_blend_op(vk::BlendOp::ADD)];
         let us_blend = vk::PipelineColorBlendStateCreateInfo::default()
-            .attachments(std::slice::from_ref(&us_blend_attachment));
+            .attachments(&us_blend_attachment);
 
-        let us_info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&us_stages)
+        let bloom_formats = [vk::Format::R16G16B16A16_SFLOAT];
+        let mut bloom_rendering =
+            vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&bloom_formats);
+
+        let info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
             .vertex_input_state(&vertex_input)
             .input_assembly_state(&input_assembly)
             .viewport_state(&viewport_state)
@@ -997,18 +1108,11 @@ impl PostProcessPass {
             .color_blend_state(&us_blend)
             .layout(self.layout)
             .push_next(&mut bloom_rendering);
+
         self.upsample_pipeline = Some(unsafe {
-            device
-                .create_graphics_pipelines(pipeline_cache, &[us_info], None)
+            params.device
+                .create_graphics_pipelines(params.pipeline_cache, &[info], None)
                 .expect("Failed to create bloom upsample pipeline")[0]
         });
-
-        unsafe {
-            device.destroy_shader_module(vert_module, None);
-            device.destroy_shader_module(frag_module, None);
-            device.destroy_shader_module(filter_module, None);
-            device.destroy_shader_module(downsample_module, None);
-            device.destroy_shader_module(upsample_module, None);
-        }
     }
 }

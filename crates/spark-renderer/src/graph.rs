@@ -465,12 +465,27 @@ impl RenderGraph {
         for batch in &self.batches {
             // 1. Pre-process batch: Descriptor updates and barriers (must be on primary CB)
             let mut active_passes = Vec::new();
+            let mut image_barriers = Vec::new();
+            let mut buffer_barriers = Vec::new();
+
             for &idx in batch {
                 let pass_node = &self.passes[idx];
                 if pass_node.pass.is_enabled(ctx.renderer) {
                     self.update_pass_descriptors(ctx, pass_node);
-                    self.inject_barriers(ctx, pass_node);
+                    self.collect_barriers(ctx, pass_node, &mut image_barriers, &mut buffer_barriers);
                     active_passes.push(pass_node);
+                }
+            }
+
+            if !image_barriers.is_empty() || !buffer_barriers.is_empty() {
+                let dependency_info = vk::DependencyInfo::default()
+                    .image_memory_barriers(&image_barriers)
+                    .buffer_memory_barriers(&buffer_barriers);
+                unsafe {
+                    ctx.renderer
+                        .device
+                        .device
+                        .cmd_pipeline_barrier2(ctx.command_buffer, &dependency_info);
                 }
             }
 
@@ -524,9 +539,15 @@ impl RenderGraph {
         }
     }
 
-    fn inject_barriers(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
-        self.inject_image_barriers(ctx, pass_node);
-        self.inject_buffer_barriers(ctx, pass_node);
+    fn collect_barriers<'a>(
+        &self,
+        ctx: &RenderContext<'a>,
+        pass_node: &RenderGraphPassNode,
+        image_barriers: &mut Vec<vk::ImageMemoryBarrier2<'a>>,
+        buffer_barriers: &mut Vec<vk::BufferMemoryBarrier2<'a>>,
+    ) {
+        self.collect_image_barriers(ctx, pass_node, image_barriers);
+        self.collect_buffer_barriers(ctx, pass_node, buffer_barriers);
     }
 
     fn update_pass_descriptors(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
@@ -746,7 +767,12 @@ impl RenderGraph {
         }
     }
 
-    fn inject_image_barriers(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
+    fn collect_image_barriers<'a>(
+        &self,
+        ctx: &RenderContext<'a>,
+        pass_node: &RenderGraphPassNode,
+        image_barriers: &mut Vec<vk::ImageMemoryBarrier2<'a>>,
+    ) {
         let renderer = ctx.renderer;
         for access in pass_node.pass.gpu_resource_access() {
             let mut res_name: &str = access.resource_name;
@@ -776,17 +802,15 @@ impl RenderGraph {
 
                 let new_layout = self.determine_layout(dst_access, dst_stage);
 
-                renderer.resource_tracker.transition_image(
-                    ctx.command_buffer,
-                    &renderer.device.device,
+                if let Some(barrier) = renderer.resource_tracker.get_image_barrier(
                     attachment.image,
                     new_layout,
-                    vk::AccessFlags::MEMORY_WRITE | vk::AccessFlags::MEMORY_READ,
                     dst_access,
-                    vk::PipelineStageFlags::ALL_COMMANDS,
                     dst_stage,
                     aspect,
-                );
+                ) {
+                    image_barriers.push(barrier);
+                }
             }
         }
     }
@@ -813,7 +837,12 @@ impl RenderGraph {
         }
     }
 
-    fn inject_buffer_barriers(&self, ctx: &RenderContext, pass_node: &RenderGraphPassNode) {
+    fn collect_buffer_barriers<'a>(
+        &self,
+        ctx: &RenderContext<'a>,
+        pass_node: &RenderGraphPassNode,
+        buffer_barriers: &mut Vec<vk::BufferMemoryBarrier2<'a>>,
+    ) {
         let renderer = ctx.renderer;
         for access in pass_node.pass.gpu_resource_buffer_access() {
             let res_name = access.resource_name;
@@ -832,15 +861,7 @@ impl RenderGraph {
                     .offset(0)
                     .size(buffer.size);
 
-                let dependency_info = vk::DependencyInfo::default()
-                    .buffer_memory_barriers(std::slice::from_ref(&barrier));
-
-                unsafe {
-                    renderer
-                        .device
-                        .device
-                        .cmd_pipeline_barrier2(ctx.command_buffer, &dependency_info);
-                }
+                buffer_barriers.push(barrier);
             }
         }
     }

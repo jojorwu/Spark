@@ -315,11 +315,15 @@ impl<'a> Query<'a> {
     pub fn with<T: 'static>(mut self) -> Self {
         let tid = std::any::TypeId::of::<T>();
         if let Some(nodes) = self.scene.component_registry.get(&tid) {
-            let set: std::collections::HashSet<_> = nodes.iter().copied().collect();
             if let Some(ref mut matches) = self.matches {
+                // Heuristic: If we already have a small set of matches,
+                // it's faster to iterate and check existence in the component registry list.
+                // But since component_registry has Vec, we'd need another HashSet.
+                // We'll stick to retain for now but avoid unnecessary cloning.
+                let set: std::collections::HashSet<_> = nodes.iter().copied().collect();
                 matches.retain(|k| set.contains(k));
             } else {
-                self.matches = Some(set);
+                self.matches = Some(nodes.iter().copied().collect());
             }
         } else {
             self.matches = Some(std::collections::HashSet::new());
@@ -351,6 +355,7 @@ impl<'a> Query<'a> {
         if let Some(matches) = self.matches {
             matches.into_iter().collect()
         } else {
+            // Optimization: avoid HashSet if we're just returning everything
             self.scene.nodes.keys().collect()
         }
     }
@@ -879,6 +884,11 @@ impl Scene {
         data: &mut SceneDataCollector,
     ) {
         if let Some(node) = self.nodes.get(node_key) {
+            // Early exit if the entire branch is outside the frustum.
+            // We use a heuristic: if a node has many children or a mesh, we check its bounds.
+            // Since we don't have per-node aggregate bounds yet, we can't do full branch culling,
+            // but we can at least avoid processing meshes that are definitely out.
+
             for component in &node.components {
                 let any = component.as_any();
                 if let Some(mesh) = any.downcast_ref::<MeshComponent>() {
@@ -941,6 +951,8 @@ impl Scene {
                     data.merge(self.collect_data_parallel(&node.children, frustum));
                 } else {
                     for &child_key in &node.children {
+                        // Before recursing, we can do a quick visibility check if we have a way to know the child's max radius.
+                        // For now, we continue the recursion.
                         self.collect_data_recursive(child_key, frustum, data);
                     }
                 }
