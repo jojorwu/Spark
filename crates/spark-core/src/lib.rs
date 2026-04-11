@@ -272,6 +272,24 @@ impl<'a> FrameContext<'a> {
         None
     }
 
+    /// Returns a mutable reference to a component of type `T` on the given node.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the current system has declared `Access::Write`
+    /// for the `Scene` resource.
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn get_component_mut<T: 'static>(&self, node: crate::scene::NodeKey) -> Option<&mut T> {
+        if let Some(node) = self.scene_mut().nodes.get_mut(node) {
+            for comp in &mut node.components {
+                if let Some(c) = comp.as_any_mut().downcast_mut::<T>() {
+                    return Some(c);
+                }
+            }
+        }
+        None
+    }
+
     pub fn query_nodes<T: 'static>(&self) -> Vec<crate::scene::NodeKey> {
         self.scene().query_components::<T>()
     }
@@ -293,6 +311,7 @@ impl<'a> FrameContext<'a> {
     ) -> Option<std::sync::Arc<std::sync::RwLock<Box<dyn std::any::Any + Send + Sync>>>> {
         self.resources.get_by_id(id)
     }
+
 }
 
 /// A trait representing a system that processes engine state.
@@ -320,10 +339,6 @@ pub trait System: Send + Sync {
     }
     fn resource_access(&self) -> ResourceAccess {
         ResourceAccess::new()
-            .with_scene(Access::Write)
-            .with_renderer(Access::Write)
-            .with_resource_manager(Access::Write)
-            .with::<crate::asset::AssetManager>(Access::Write)
     }
 }
 
