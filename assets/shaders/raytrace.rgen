@@ -29,6 +29,8 @@ layout(push_constant) uniform PushConstants {
     float shadows_enabled;
     float ao_enabled;
     float gi_enabled;
+    float ao_radius;
+    uint ao_samples;
 } pc;
 
 uint seed;
@@ -147,13 +149,13 @@ void main()
     // Ray-Traced Ambient Occlusion.
     if (pc.ao_enabled > 0.5) {
         float ao = 0.0;
-        const int aoSamples = 4; // Количество лучей для AO. Rays per pixel for AO.
+        uint aoSamples = max(pc.ao_samples, 1); // Количество лучей для AO. Rays per pixel for AO.
         for (int i = 0; i < aoSamples; i++) {
             vec3 aoDir = randomHemispherePoint(normal);
             uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
 
             payload.hit = 1;
-            traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, aoDir, 2.0, 0);
+            traceRayEXT(topLevelAS, rayFlags, 0xff, 0, 0, 0, hitPos + normal * 0.001, 0.001, aoDir, pc.ao_radius, 0);
             if (payload.hit == 0) ao += 1.0;
         }
         ao /= float(aoSamples);

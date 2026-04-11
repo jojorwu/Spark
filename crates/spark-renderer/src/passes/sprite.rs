@@ -211,7 +211,7 @@ impl SpritePass {
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                         offset: 0,
-                        size: 64, // Mat4
+                        size: std::mem::size_of::<spark_math::Mat4>() as u32,
                     }]),
                 None,
             )?

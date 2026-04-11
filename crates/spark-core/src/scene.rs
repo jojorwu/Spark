@@ -696,7 +696,7 @@ impl Scene {
 
         self.sort_transparent_meshes_back_to_front(&mut transparent_meshes);
 
-        let lights = self.convert_light_data(data.lights);
+        let lights = self.process_lights(data.lights);
 
         spark_renderer::resource::FramePacket {
             view_matrix: self.last_view_matrix,
@@ -705,6 +705,13 @@ impl Scene {
             transparent_meshes,
             lights,
         }
+    }
+
+    fn process_lights(
+        &self,
+        lights: Vec<(Mat4, LightType, spark_math::Vec3, f32, f32, f32, f32)>,
+    ) -> Vec<spark_renderer::resource::LightDraw> {
+        self.convert_light_data(lights)
     }
 
     /// Classifies individual renderables into opaque and transparent lists.

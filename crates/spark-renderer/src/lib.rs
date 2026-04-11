@@ -236,7 +236,7 @@ impl Renderer {
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(gpu_resource_manager.descriptor_pool)
                     .set_layouts(&global_layouts),
-            )?
+            ).map_err(|e| RendererError::Internal(format!("Failed to allocate global descriptor sets: {}", e)))?
         };
 
         for (i, frame) in frame_manager.frames.iter_mut().enumerate() {
@@ -651,7 +651,7 @@ impl Renderer {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let needs_new_buffer = {
                 let frame = &self.frame_manager.frames[i];
-                frame.light_buffer.as_ref().is_none_or(|b| b.size < sz)
+                frame.light_buffer.as_ref().map_or(true, |b| b.size < sz)
             };
 
             if needs_new_buffer {
@@ -708,7 +708,7 @@ impl Renderer {
         let mut buffer = self.frame_manager.frames[frame_idx]
             .transparent_indirect_buffer
             .clone();
-        if buffer.as_ref().is_none_or(|b| b.size < cmd_sz) {
+        if buffer.as_ref().map_or(true, |b| b.size < cmd_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .transparent_indirect_buffer
                 .take()
@@ -731,7 +731,7 @@ impl Renderer {
         let mut obj_buffer = self.frame_manager.frames[frame_idx]
             .transparent_object_buffer
             .clone();
-        if obj_buffer.as_ref().is_none_or(|b| b.size < obj_sz) {
+        if obj_buffer.as_ref().map_or(true, |b| b.size < obj_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .transparent_object_buffer
                 .take()
@@ -766,7 +766,7 @@ impl Renderer {
         let mut buffer = self.frame_manager.frames[frame_idx]
             .indirect_commands_buffer
             .clone();
-        if buffer.as_ref().is_none_or(|b| b.size < cmd_sz) {
+        if buffer.as_ref().map_or(true, |b| b.size < cmd_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .indirect_commands_buffer
                 .take()
@@ -786,7 +786,7 @@ impl Renderer {
         let mut obj_buffer = self.frame_manager.frames[frame_idx]
             .object_data_buffer
             .clone();
-        if obj_buffer.as_ref().is_none_or(|b| b.size < obj_sz) {
+        if obj_buffer.as_ref().map_or(true, |b| b.size < obj_sz) {
             if let Some(old) = self.frame_manager.frames[frame_idx]
                 .object_data_buffer
                 .take()
@@ -1252,7 +1252,7 @@ impl Renderer {
             let f = &self.frame_manager.frames[frame_idx];
             f.texture_staging_buffer
                 .as_ref()
-                .is_none_or(|b| b.size < sz)
+                .map_or(true, |b| b.size < sz)
         };
 
         if needs_new {
@@ -1912,6 +1912,54 @@ impl Renderer {
 
     /// Updates the global Uniform Buffer, calculates CSM matrices, and handles projection jitter.
     fn update_global_ubo(&mut self, packet: &crate::resource::FramePacket) {
+        let view_proj = self.calculate_view_proj(packet);
+        self.current_view_proj = view_proj;
+
+        let light_view_projs = self.calculate_csm_matrices(view_proj);
+
+        let current_frame = self.frame_manager.current_frame;
+        self.frame_manager.frames[current_frame].light_view_projs = light_view_projs;
+        self.main_light_view_proj = light_view_projs[0];
+
+        let inv_v = packet.view_matrix.inverse();
+        let camera_pos = [inv_v.w_axis.x, inv_v.w_axis.y, inv_v.w_axis.z, 1.0];
+        let frustum = Self::calculate_frustum_planes(view_proj);
+
+        let cascade_splits = [10.0, 25.0, 50.0, 100.0];
+        let ubo = GlobalUBO {
+            vp: view_proj,
+            lvp: light_view_projs,
+            inv_vp: view_proj.inverse(),
+            camera_pos,
+            frustum,
+            cascade_splits: spark_math::Vec4::new(
+                cascade_splits[0],
+                cascade_splits[1],
+                cascade_splits[2],
+                cascade_splits[3],
+            ),
+        };
+
+        if self.frame_manager.frames[0].global_buffer.is_none() {
+            for i in 0..MAX_FRAMES_IN_FLIGHT {
+                let new_buffer = self.create_buffer(
+                    std::mem::size_of::<GlobalUBO>() as u64,
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                );
+                self.frame_manager.frames[i].global_buffer = Some(new_buffer);
+            }
+            self.ensure_global_descriptor_set();
+        }
+        let gb = self.frame_manager.frames[self.frame_manager.current_frame]
+            .global_buffer
+            .as_ref()
+            .cloned()
+            .expect("Global UBO buffer was not initialized before upload");
+        self.upload_to_buffer(&gb, &[ubo]);
+    }
+
+    fn calculate_view_proj(&self, packet: &crate::resource::FramePacket) -> spark_math::Mat4 {
         let extent = self.get_extent();
         let jitter = self.get_jitter();
 
@@ -1927,10 +1975,10 @@ impl Renderer {
         };
         projection.col_mut(2).x += jitter[0] * projection.col(0).x;
         projection.col_mut(2).y += jitter[1] * projection.col(1).y;
-        let view_proj = projection * packet.view_matrix;
-        self.current_view_proj = view_proj;
+        projection * packet.view_matrix
+    }
 
-        let cascade_splits = [10.0, 25.0, 50.0, 100.0];
+    fn calculate_csm_matrices(&self, view_proj: spark_math::Mat4) -> [spark_math::Mat4; 4] {
         let mut light_view_projs = [spark_math::Mat4::IDENTITY; 4];
 
         let light_dir = spark_math::Vec3::new(0.5, -1.0, 0.5).normalize();
@@ -1977,46 +2025,7 @@ impl Renderer {
             );
             *proj = light_proj * light_view;
         }
-
-        let current_frame = self.frame_manager.current_frame;
-        self.frame_manager.frames[current_frame].light_view_projs = light_view_projs;
-        self.main_light_view_proj = light_view_projs[0];
-
-        let inv_v = packet.view_matrix.inverse();
-        let camera_pos = [inv_v.w_axis.x, inv_v.w_axis.y, inv_v.w_axis.z, 1.0];
-        let frustum = Self::calculate_frustum_planes(view_proj);
-
-        let ubo = GlobalUBO {
-            vp: view_proj,
-            lvp: light_view_projs,
-            inv_vp: view_proj.inverse(),
-            camera_pos,
-            frustum,
-            cascade_splits: spark_math::Vec4::new(
-                cascade_splits[0],
-                cascade_splits[1],
-                cascade_splits[2],
-                cascade_splits[3],
-            ),
-        };
-
-        if self.frame_manager.frames[0].global_buffer.is_none() {
-            for i in 0..MAX_FRAMES_IN_FLIGHT {
-                let new_buffer = self.create_buffer(
-                    std::mem::size_of::<GlobalUBO>() as u64,
-                    vk::BufferUsageFlags::UNIFORM_BUFFER,
-                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                );
-                self.frame_manager.frames[i].global_buffer = Some(new_buffer);
-            }
-            self.ensure_global_descriptor_set();
-        }
-        let gb = self.frame_manager.frames[self.frame_manager.current_frame]
-            .global_buffer
-            .as_ref()
-            .cloned()
-            .expect("Global UBO buffer was not initialized before upload");
-        self.upload_to_buffer(&gb, &[ubo]);
+        light_view_projs
     }
 
     /// Returns the raw ash::Device.

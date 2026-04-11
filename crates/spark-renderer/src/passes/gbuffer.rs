@@ -1,6 +1,19 @@
 use super::{RenderContext, RenderPass};
 use ash::vk;
 
+#[repr(C)]
+struct GBufferPushConstants {
+    count: u32,
+    metallic: f32,
+    roughness: f32,
+    width: f32,
+    height: f32,
+    padding: u32,
+    object_buffer_address: u64,
+    prev_view_proj: spark_math::Mat4,
+    vertex_buffer_address: u64,
+}
+
 pub struct GBufferPass {}
 
 impl GBufferPass {
@@ -25,18 +38,6 @@ impl GBufferPass {
         renderer: &Renderer,
         current_frame: usize,
     ) {
-        #[repr(C)]
-        struct GBufferPushConstants {
-            count: u32,
-            metallic: f32,
-            roughness: f32,
-            width: f32,
-            height: f32,
-            padding: u32,
-            object_buffer_address: u64,
-            prev_view_proj: spark_math::Mat4,
-            vertex_buffer_address: u64,
-        }
         let pc = GBufferPushConstants {
             count: renderer.light_count,
             metallic: 0.5,

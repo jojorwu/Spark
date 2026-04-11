@@ -13,6 +13,12 @@ pub struct Particle {
     pub padding: [f32; 2],
 }
 
+#[repr(C)]
+struct ParticlePushConstants {
+    delta: f32,
+    count: f32,
+}
+
 pub struct ParticlePass {
     pub compute_pipeline: vk::Pipeline,
     pub graphics_pipeline: vk::Pipeline,
@@ -50,13 +56,20 @@ impl RenderPass for ParticlePass {
                 &[],
             );
 
-            let pc = [ctx.delta, self.particle_count as f32];
+            let pc = ParticlePushConstants {
+                delta: ctx.delta,
+                count: self.particle_count as f32,
+            };
+            let pc_bytes = std::slice::from_raw_parts(
+                &pc as *const _ as *const u8,
+                std::mem::size_of::<ParticlePushConstants>(),
+            );
             device.cmd_push_constants(
                 ctx.command_buffer,
                 self.compute_layout,
                 vk::ShaderStageFlags::COMPUTE,
                 0,
-                bytemuck::cast_slice(&pc),
+                pc_bytes,
             );
 
             device.cmd_dispatch(ctx.command_buffer, self.particle_count.div_ceil(256), 1, 1);
@@ -193,7 +206,7 @@ impl ParticlePass {
                     .push_constant_ranges(&[vk::PushConstantRange::default()
                         .stage_flags(vk::ShaderStageFlags::COMPUTE)
                         .offset(0)
-                        .size(8)]),
+                        .size(std::mem::size_of::<ParticlePushConstants>() as u32)]),
                 None,
             )?
         };

@@ -202,6 +202,11 @@ impl EditorUI {
                     self.node_to_add_child = Some((node_key, NodeType::Sprite));
                     ui.close_menu();
                 }
+                ui.separator();
+                if ui.button("💾 Save as Prefab").clicked() {
+                    self.node_to_save_as_prefab = Some(node_key);
+                    ui.close_menu();
+                }
             });
 
             if delete_requested {

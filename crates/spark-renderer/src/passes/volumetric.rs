@@ -2,6 +2,14 @@ use crate::resource::Attachment;
 use crate::Renderer;
 use ash::vk;
 
+#[repr(C)]
+struct VolumetricPushConstants {
+    color: [f32; 3],
+    density: f32,
+    height_falloff: f32,
+    padding: [f32; 3],
+}
+
 pub struct VolumetricPass {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
@@ -134,7 +142,7 @@ impl VolumetricPass {
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::COMPUTE,
                         offset: 0,
-                        size: 32,
+                        size: std::mem::size_of::<VolumetricPushConstants>() as u32,
                     }]),
                 None,
             )?
@@ -283,14 +291,7 @@ impl VolumetricPass {
                 &[],
             );
 
-            #[repr(C)]
-            struct FogPC {
-                color: [f32; 3],
-                density: f32,
-                height_falloff: f32,
-                padding: [f32; 3],
-            }
-            let pc = FogPC {
+            let pc = VolumetricPushConstants {
                 color: renderer.settings.fog_color,
                 density: renderer.settings.fog_density,
                 height_falloff: renderer.settings.fog_height_falloff,
@@ -298,7 +299,7 @@ impl VolumetricPass {
             };
             let pc_bytes = std::slice::from_raw_parts(
                 &pc as *const _ as *const u8,
-                std::mem::size_of::<FogPC>(),
+                std::mem::size_of::<VolumetricPushConstants>(),
             );
             device.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::COMPUTE, 0, pc_bytes);
 

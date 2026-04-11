@@ -4,6 +4,16 @@ use crate::Renderer;
 use crate::MAX_FRAMES_IN_FLIGHT;
 use ash::vk;
 
+#[repr(C)]
+struct LuminancePushConstants {
+    width: u32,
+    height: u32,
+    min_log_lum: f32,
+    max_log_lum: f32,
+    speed: f32,
+    delta_time: f32,
+}
+
 pub struct LuminancePass {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
@@ -73,16 +83,7 @@ impl RenderPass for LuminancePass {
                 &[],
             );
 
-            #[repr(C)]
-            struct LuminancePC {
-                width: u32,
-                height: u32,
-                min_log_lum: f32,
-                max_log_lum: f32,
-                speed: f32,
-                delta_time: f32,
-            }
-            let pc = LuminancePC {
+            let pc = LuminancePushConstants {
                 width: extent.width,
                 height: extent.height,
                 min_log_lum: renderer.settings.auto_exposure_min.log2(),
@@ -92,7 +93,7 @@ impl RenderPass for LuminancePass {
             };
             let pc_bytes = std::slice::from_raw_parts(
                 &pc as *const _ as *const u8,
-                std::mem::size_of::<LuminancePC>(),
+                std::mem::size_of::<LuminancePushConstants>(),
             );
             renderer.device.device.cmd_push_constants(
                 ctx.command_buffer,
@@ -168,7 +169,7 @@ impl LuminancePass {
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::COMPUTE,
                         offset: 0,
-                        size: 32,
+                        size: std::mem::size_of::<LuminancePushConstants>() as u32,
                     }]),
                 None,
             )?

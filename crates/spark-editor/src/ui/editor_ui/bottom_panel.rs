@@ -180,13 +180,18 @@ impl EditorUI {
                         } else {
                             let is_gltf = path
                                 .extension()
-                                .is_some_and(|ext| ext == "gltf" || ext == "glb");
+                                .map_or(false, |ext| ext == "gltf" || ext == "glb");
                             let is_img = path
                                 .extension()
-                                .is_some_and(|ext| ext == "png" || ext == "jpg");
-                            let is_json = path.extension().is_some_and(|ext| ext == "json");
+                                .map_or(false, |ext| ext == "png" || ext == "jpg");
+                            let is_json = path.extension().map_or(false, |ext| ext == "json");
+                            let is_prefab = path
+                                .to_str()
+                                .map_or(false, |s| s.ends_with(".prefab.json"));
 
-                            if is_gltf {
+                            if is_prefab {
+                                ("🧩", egui::Color32::from_rgb(250, 150, 50))
+                            } else if is_gltf {
                                 ("📦", egui::Color32::from_rgb(100, 200, 250))
                             } else if is_img {
                                 ("🖼", egui::Color32::from_rgb(150, 250, 150))
@@ -206,7 +211,7 @@ impl EditorUI {
                             } else {
                                 let is_gltf = path
                                     .extension()
-                                    .is_some_and(|ext| ext == "gltf" || ext == "glb");
+                                    .map_or(false, |ext| ext == "gltf" || ext == "glb");
                                 if is_gltf {
                                     asset_to_load = Some(path.to_path_buf());
                                 }
@@ -232,7 +237,30 @@ impl EditorUI {
                             if !path.is_dir() {
                                 let is_img = path
                                     .extension()
-                                    .is_some_and(|ext| ext == "png" || ext == "jpg");
+                                    .map_or(false, |ext| ext == "png" || ext == "jpg");
+                                let is_prefab = path
+                                    .to_str()
+                                    .map_or(false, |s| s.ends_with(".prefab.json"));
+
+                                if is_prefab && ui.button("🏗 Instantiate Prefab").clicked() {
+                                    if let Ok(prefab) =
+                                        spark_core::prefab::Prefab::load_from_file(path.to_str().unwrap())
+                                    {
+                                        self.execute_command(
+                                            Box::new(crate::ui::AddNodeCommand {
+                                                parent_key: scene.root,
+                                                node: Some(prefab.root_node),
+                                                added_key: None,
+                                            }),
+                                            scene,
+                                        );
+                                        self.status_message = format!("Prefab instantiated");
+                                    } else {
+                                        log::error!("Failed to load prefab: {:?}", path);
+                                    }
+                                    ui.close_menu();
+                                }
+
                                 if is_img && ui.button("Create Material from Texture").clicked() {
                                     let mat_path = path.with_extension("json");
                                     let name = path.file_stem().unwrap().to_string_lossy();
@@ -620,6 +648,25 @@ impl EditorUI {
                     ));
                 });
             }
+
+            ui.separator();
+            ui.heading("Ray Tracing");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_rt_reflections, "Reflections");
+                ui.checkbox(&mut renderer.settings.enable_rt_shadows, "Shadows");
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_rt_ao, "Ambient Occlusion");
+                if renderer.settings.enable_rt_ao {
+                    ui.label("Radius:");
+                    ui.add(egui::Slider::new(&mut renderer.settings.rt_ao_radius, 0.1..=10.0));
+                    ui.label("Samples:");
+                    ui.add(egui::DragValue::new(&mut renderer.settings.rt_ao_samples).clamp_range(1..=32));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut renderer.settings.enable_rt_gi, "Global Illumination");
+            });
 
             ui.separator();
             ui.heading("General Features");

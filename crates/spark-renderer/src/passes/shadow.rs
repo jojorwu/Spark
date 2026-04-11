@@ -5,6 +5,13 @@ use std::sync::{Arc, Mutex};
 
 pub const SHADOW_CASCADE_COUNT: usize = 4;
 
+#[repr(C)]
+struct ShadowPushConstants {
+    lvp: spark_math::Mat4,
+    address: u64,
+    vertex_address: u64,
+}
+
 pub struct ShadowPass {
     pub pipeline: Option<vk::Pipeline>,
     pub layout: vk::PipelineLayout,
@@ -183,7 +190,7 @@ impl ShadowPass {
                     vk::PushConstantRange::default()
                         .stage_flags(vk::ShaderStageFlags::VERTEX)
                         .offset(0)
-                        .size(128),
+                        .size(std::mem::size_of::<ShadowPushConstants>() as u32),
                 ]),
                 None,
             )?
@@ -347,12 +354,6 @@ impl ShadowPass {
             device.cmd_set_viewport(command_buffer, 0, &[shadow_viewport]);
             device.cmd_set_scissor(command_buffer, 0, &[shadow_scissor]);
 
-            #[repr(C)]
-            struct ShadowPushConstants {
-                lvp: spark_math::Mat4,
-                address: u64,
-                vertex_address: u64,
-            }
             let frame = &renderer.frame_manager.frames[renderer.frame_manager.current_frame];
             let pc = ShadowPushConstants {
                 lvp,

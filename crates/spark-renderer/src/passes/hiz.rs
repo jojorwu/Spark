@@ -2,6 +2,12 @@ use crate::vulkan::device::VulkanDevice;
 use ash::vk;
 use std::sync::{Arc, Mutex};
 
+#[repr(C)]
+struct HiZPushConstants {
+    width: f32,
+    height: f32,
+}
+
 pub struct HiZPass {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
@@ -259,7 +265,7 @@ impl HiZPass {
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::COMPUTE,
                         offset: 0,
-                        size: 8,
+                        size: std::mem::size_of::<HiZPushConstants>() as u32,
                     }]),
                 None,
             )?
@@ -406,8 +412,14 @@ impl HiZPass {
                     &[],
                 );
 
-                let pc = [w as f32, h as f32];
-                let pc_bytes = std::slice::from_raw_parts(pc.as_ptr() as *const u8, 8);
+                let pc = HiZPushConstants {
+                    width: w as f32,
+                    height: h as f32,
+                };
+                let pc_bytes = std::slice::from_raw_parts(
+                    &pc as *const _ as *const u8,
+                    std::mem::size_of::<HiZPushConstants>(),
+                );
                 device.cmd_push_constants(
                     command_buffer,
                     self.layout,

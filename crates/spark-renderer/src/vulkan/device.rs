@@ -250,7 +250,7 @@ impl VulkanDevice {
         unsafe {
             instance
                 .create_device(pdevice, &device_create_info, None)
-                .map_err(|_| RendererError::NoSuitableDevice)
+                .map_err(|e| RendererError::Internal(format!("Failed to create logical device: {}", e)))
         }
     }
 

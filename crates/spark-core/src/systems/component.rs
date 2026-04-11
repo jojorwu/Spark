@@ -40,7 +40,7 @@ impl System for ComponentSystem {
     fn update(&mut self, ctx: &crate::FrameContext) {
         use rayon::prelude::*;
 
-        unsafe {
+        let (nodes_ptr, cached_keys) = unsafe {
             let scene = ctx.scene_mut();
 
             let current_version = scene
@@ -66,17 +66,20 @@ impl System for ComponentSystem {
                 as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node>
                 as usize;
 
-            // SAFETY: Scheduler ensures we have exclusive mutable access to the Scene
-            // if we declared Access::Write. Each thread in par_iter operates on a unique key.
-            self.cached_keys.par_iter().for_each(|&key| {
-                let nodes = &mut *(nodes_ptr
-                    as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node>);
-                if let Some(node) = nodes.get_mut(key) {
-                    for component in &mut node.components {
-                        component.on_update(key, ctx);
-                    }
+            (nodes_ptr, &self.cached_keys)
+        };
+
+        // SAFETY: Scheduler ensures we have exclusive mutable access to the Scene
+        // if we declared Access::Write. Each thread in par_iter operates on a unique key.
+        cached_keys.par_iter().for_each(|&key| {
+            let nodes = unsafe {
+                &mut *(nodes_ptr as *mut slotmap::SlotMap<crate::scene::NodeKey, crate::scene::Node>)
+            };
+            if let Some(node) = nodes.get_mut(key) {
+                for component in &mut node.components {
+                    component.on_update(key, ctx);
                 }
-            });
-        }
+            }
+        });
     }
 }

@@ -4,6 +4,14 @@ use crate::Renderer;
 use crate::MAX_FRAMES_IN_FLIGHT;
 use ash::vk;
 
+#[repr(C)]
+struct DoFPC {
+    focus_distance: f32,
+    focus_range: f32,
+    bokeh_size: f32,
+    enabled: f32,
+}
+
 pub struct DoFPass {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
@@ -84,13 +92,6 @@ impl RenderPass for DoFPass {
                 &[],
             );
 
-            #[repr(C)]
-            struct DoFPC {
-                focus_distance: f32,
-                focus_range: f32,
-                bokeh_size: f32,
-                enabled: f32,
-            }
             let pc = DoFPC {
                 focus_distance: renderer.settings.dof_focus_distance,
                 focus_range: renderer.settings.dof_focus_range,
@@ -186,7 +187,7 @@ impl DoFPass {
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::COMPUTE,
                         offset: 0,
-                        size: 16,
+                        size: std::mem::size_of::<DoFPC>() as u32,
                     }]),
                 None,
             )?

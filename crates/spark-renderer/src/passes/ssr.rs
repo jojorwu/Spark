@@ -3,6 +3,16 @@ use crate::Renderer;
 use crate::MAX_FRAMES_IN_FLIGHT;
 use ash::vk;
 
+#[repr(C)]
+struct SSRPushConstants {
+    width: u32,
+    height: u32,
+    max_steps: u32,
+    step_size: f32,
+    thickness: f32,
+    enabled: f32,
+}
+
 pub struct SSRPass {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
@@ -87,16 +97,7 @@ impl RenderPass for SSRPass {
                 &[],
             );
 
-            #[repr(C)]
-            struct Ssrpc {
-                width: u32,
-                height: u32,
-                max_steps: u32,
-                step_size: f32,
-                thickness: f32,
-                enabled: f32,
-            }
-            let pc = Ssrpc {
+            let pc = SSRPushConstants {
                 width: extent.width,
                 height: extent.height,
                 max_steps: renderer.settings.ssr_max_steps,
@@ -110,7 +111,7 @@ impl RenderPass for SSRPass {
             };
             let pc_bytes = std::slice::from_raw_parts(
                 &pc as *const _ as *const u8,
-                std::mem::size_of::<Ssrpc>(),
+                std::mem::size_of::<SSRPushConstants>(),
             );
             device.cmd_push_constants(
                 ctx.command_buffer,
@@ -199,7 +200,7 @@ impl SSRPass {
                     .push_constant_ranges(&[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::COMPUTE,
                         offset: 0,
-                        size: 24,
+                        size: std::mem::size_of::<SSRPushConstants>() as u32,
                     }]),
                 None,
             )?

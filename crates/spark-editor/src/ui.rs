@@ -223,6 +223,7 @@ pub struct EditorUI {
     pub status_message: String,
     pub hierarchy_force_state: Option<bool>,
     pub asset_rename_state: Option<(std::path::PathBuf, String)>,
+    pub node_to_save_as_prefab: Option<NodeKey>,
 }
 
 pub enum NodeType {
@@ -317,6 +318,7 @@ impl EditorUI {
             status_message: "Ready".to_string(),
             hierarchy_force_state: None,
             asset_rename_state: None,
+            node_to_save_as_prefab: None,
         }
     }
 
@@ -533,6 +535,21 @@ impl EditorUI {
                 }),
                 scene,
             );
+        }
+
+        if let Some(node_key) = self.node_to_save_as_prefab.take() {
+            if let Some(prefab) = spark_core::prefab::Prefab::from_node(scene, node_key) {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Spark Prefab", &["prefab.json"])
+                    .save_file()
+                {
+                    if let Err(e) = prefab.save_to_file(path.to_str().unwrap()) {
+                        log::error!("Failed to save prefab: {}", e);
+                    } else {
+                        self.status_message = format!("Prefab saved successfully");
+                    }
+                }
+            }
         }
     }
 
