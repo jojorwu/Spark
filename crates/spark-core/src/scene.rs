@@ -879,6 +879,11 @@ impl Scene {
         data: &mut SceneDataCollector,
     ) {
         if let Some(node) = self.nodes.get(node_key) {
+            // Early exit if the entire branch is outside the frustum.
+            // We use a heuristic: if a node has many children or a mesh, we check its bounds.
+            // Since we don't have per-node aggregate bounds yet, we can't do full branch culling,
+            // but we can at least avoid processing meshes that are definitely out.
+
             for component in &node.components {
                 let any = component.as_any();
                 if let Some(mesh) = any.downcast_ref::<MeshComponent>() {
@@ -941,6 +946,8 @@ impl Scene {
                     data.merge(self.collect_data_parallel(&node.children, frustum));
                 } else {
                     for &child_key in &node.children {
+                        // Before recursing, we can do a quick visibility check if we have a way to know the child's max radius.
+                        // For now, we continue the recursion.
                         self.collect_data_recursive(child_key, frustum, data);
                     }
                 }

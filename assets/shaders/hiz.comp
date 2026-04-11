@@ -2,7 +2,7 @@
 
 layout (local_size_x = 16, local_size_y = 16) in;
 
-layout (binding = 0) uniform sampler2D inDepth;
+layout (binding = 0, r32f) uniform readonly image2D inDepth;
 layout (binding = 1, r32f) uniform writeonly image2D outDepth;
 
 layout (push_constant) uniform PushConstants {
@@ -11,31 +11,21 @@ layout (push_constant) uniform PushConstants {
 
 void main() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    if (pos.x >= push.size.x || pos.y >= push.size.y) return;
+    if (pos.x >= int(push.size.x) || pos.y >= int(push.size.y)) return;
 
-    // Source coordinates
-    vec2 uv = (vec2(pos) + 0.5) / push.size;
+    // Source coordinates in the previous mip level
+    ivec2 srcPos = pos * 2;
 
-    // Sample 4 pixels from the previous level
-    // We use a manual reduction to get the max depth (furthest) for min-depth culling
-    // Wait, for occlusion culling, we want the MIN depth (closest point in that area)
-    // to check if our object is behind it.
-    // So if object_min_depth > pyramid_max_depth, it's occluded.
-    // Or if we use reversed-Z, if object_max_depth < pyramid_min_depth, it's occluded.
-    // Assuming standard Z [0, 1] and MIN reduction:
-    // We want the MAX depth in the quad to be conservative? No.
-    // If we want to know if an object is occluded, we compare its NEAREST depth to the FARTHEST depth of the background in that area.
-    // Actually, usually Hi-Z uses a MIN reduction (closest depth) if you want to check if something is IN FRONT of something else.
-    // For occlusion: if object_nearest_z > hi_z_farthest_z, it's occluded.
-    // So we need a MAX reduction pyramid.
+    // Read 4 pixels from the previous level using imageLoad for better precision in hierarchical reduction
+    float d0 = imageLoad(inDepth, srcPos + ivec2(0, 0)).r;
+    float d1 = imageLoad(inDepth, srcPos + ivec2(1, 0)).r;
+    float d2 = imageLoad(inDepth, srcPos + ivec2(0, 1)).r;
+    float d3 = imageLoad(inDepth, srcPos + ivec2(1, 1)).r;
 
-    vec4 depths;
-    depths.x = textureOffset(inDepth, uv, ivec2(0, 0)).r;
-    depths.y = textureOffset(inDepth, uv, ivec2(1, 0)).r;
-    depths.z = textureOffset(inDepth, uv, ivec2(0, 1)).r;
-    depths.w = textureOffset(inDepth, uv, ivec2(1, 1)).r;
-
-    float maxDepth = max(max(depths.x, depths.y), max(depths.z, depths.w));
+    // For conservative occlusion culling with standard [0, 1] depth:
+    // If object_min_z > background_max_z, then the object is occluded.
+    // Therefore, we need a MAX reduction pyramid to represent the farthest point in each region.
+    float maxDepth = max(max(d0, d1), max(d2, d3));
 
     imageStore(outDepth, pos, vec4(maxDepth));
 }
