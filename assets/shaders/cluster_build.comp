@@ -1,6 +1,6 @@
 #version 450
 
-layout (local_size_x = 16, local_size_y = 9, local_size_z = 4) in;
+layout (local_size_x = 8, local_size_y = 8, local_size_z = 4) in;
 
 struct ClusterAABB {
     vec4 min;
@@ -33,10 +33,12 @@ vec3 intersectPlane(vec3 a, vec3 b, float z) {
 
 void main() {
     uint clusterIndex = gl_GlobalInvocationID.x +
-                        gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x +
-                        gl_GlobalInvocationID.z * gl_NumWorkGroups.x * gl_WorkGroupSize.x * gl_NumWorkGroups.y * gl_WorkGroupSize.y;
+                        gl_GlobalInvocationID.y * 16 +
+                        gl_GlobalInvocationID.z * 16 * 16;
 
-    vec2 tileSize = push.screenSize / vec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+    if (gl_GlobalInvocationID.x >= 16 || gl_GlobalInvocationID.y >= 16 || gl_GlobalInvocationID.z >= 24) return;
+
+    vec2 tileSize = push.screenSize / vec2(16, 16);
 
     // Screen space coordinates for the tile
     vec4 minScreen = vec4(vec2(gl_GlobalInvocationID.xy) * tileSize, 0.0, 1.0);

@@ -140,7 +140,7 @@ pub struct ClusteredPass {
 }
 
 impl ClusteredPass {
-    pub const GRID_SIZE: (u32, u32, u32) = (16, 9, 24); // Adjust as needed
+    pub const GRID_SIZE: (u32, u32, u32) = (16, 16, 24); // Power of two for better workgroup alignment
     pub const TOTAL_CLUSTERS: u32 = Self::GRID_SIZE.0 * Self::GRID_SIZE.1 * Self::GRID_SIZE.2;
 
     pub fn new(
@@ -397,7 +397,7 @@ impl ClusteredPass {
                 pc_bytes,
             );
 
-            device.cmd_dispatch(command_buffer, 1, 1, 6); // 16x9x24 total
+            device.cmd_dispatch(command_buffer, 2, 2, 6); // 16x16x24 total (8x8x4 groups)
         }
     }
 
@@ -454,7 +454,7 @@ impl ClusteredPass {
                 pc_bytes,
             );
 
-            device.cmd_dispatch(command_buffer, 1, 1, 6);
+            device.cmd_dispatch(command_buffer, 2, 2, 6); // 16x16x24 total
         }
     }
 }
